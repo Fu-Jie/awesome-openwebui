@@ -1,135 +1,135 @@
 """
-title: 异步上下文压缩
+title: Async Context Compression
 id: async_context_compression
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie
 funding_url: https://github.com/Fu-Jie/awesome-openwebui
-description: 通过智能摘要和消息压缩，降低长对话的 token 消耗，同时保持对话连贯性。
+description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
 version: 1.0.0
 license: MIT
 
 ═══════════════════════════════════════════════════════════════════════════════
-📌 功能概述
+📌 Overview
 ═══════════════════════════════════════════════════════════════════════════════
 
-本过滤器通过智能摘要和消息压缩技术，显著降低长对话的 token 消耗，同时保持对话连贯性。
+This filter significantly reduces token consumption in long conversations by using intelligent summarization and message compression, while maintaining conversational coherence.
 
-核心特性：
-  ✅ 自动触发压缩（基于消息数量阈值）
-  ✅ 异步生成摘要（不阻塞用户响应）
-  ✅ 数据库持久化存储（支持 PostgreSQL 和 SQLite）
-  ✅ 灵活的保留策略（可配置保留对话的头部和尾部）
-  ✅ 智能注入摘要，保持上下文连贯性
+Core Features:
+  ✅ Automatic compression triggered by a message count threshold
+  ✅ Asynchronous summary generation (does not block user response)
+  ✅ Persistent storage with database support (PostgreSQL and SQLite)
+  ✅ Flexible retention policy (configurable to keep first and last N messages)
+  ✅ Smart summary injection to maintain context
 
 ═══════════════════════════════════════════════════════════════════════════════
-🔄 工作流程
+🔄 Workflow
 ═══════════════════════════════════════════════════════════════════════════════
 
-阶段 1: inlet（请求前处理）
+Phase 1: Inlet (Pre-request processing)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  1. 接收当前对话的所有消息。
-  2. 检查是否存在已保存的摘要。
-  3. 如果有摘要且消息数超过保留阈值：
-     ├─ 提取要保留的头部消息（例如，第一条消息）。
-     ├─ 将摘要注入到头部消息中。
-     ├─ 提取要保留的尾部消息。
-     └─ 组合成新的消息列表：[头部消息+摘要] + [尾部消息]。
-  4. 发送压缩后的消息到 LLM。
+  1. Receives all messages in the current conversation.
+  2. Checks for a previously saved summary.
+  3. If a summary exists and the message count exceeds the retention threshold:
+     ├─ Extracts the first N messages to be kept.
+     ├─ Injects the summary into the first message.
+     ├─ Extracts the last N messages to be kept.
+     └─ Combines them into a new message list: [Kept First Messages + Summary] + [Kept Last Messages].
+  4. Sends the compressed message list to the LLM.
 
-阶段 2: outlet（响应后处理）
+Phase 2: Outlet (Post-response processing)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  1. LLM 响应完成后触发。
-  2. 检查消息数是否达到压缩阈值。
-  3. 如果达到阈值，则在后台异步生成摘要：
-     ├─ 提取需要摘要的消息（排除保留的头部和尾部）。
-     ├─ 调用 LLM 生成简洁摘要。
-     └─ 将摘要保存到数据库。
+  1. Triggered after the LLM response is complete.
+  2. Checks if the message count has reached the compression threshold.
+  3. If the threshold is met, an asynchronous background task is started to generate a summary:
+     ├─ Extracts messages to be summarized (excluding the kept first and last messages).
+     ├─ Calls the LLM to generate a concise summary.
+     └─ Saves the summary to the database.
 
 ═══════════════════════════════════════════════════════════════════════════════
-💾 存储方案
+💾 Storage
 ═══════════════════════════════════════════════════════════════════════════════
 
-本过滤器使用数据库进行持久化存储，通过 `DATABASE_URL` 环境变量进行配置，支持 PostgreSQL 和 SQLite。
+This filter uses a database for persistent storage, configured via the `DATABASE_URL` environment variable. It supports both PostgreSQL and SQLite.
 
-配置方式：
-  - 必须设置 `DATABASE_URL` 环境变量。
-  - PostgreSQL 示例: `postgresql://user:password@host:5432/openwebui`
-  - SQLite 示例: `sqlite:///path/to/your/database.db`
+Configuration:
+  - The `DATABASE_URL` environment variable must be set.
+  - PostgreSQL Example: `postgresql://user:password@host:5432/openwebui`
+  - SQLite Example: `sqlite:///path/to/your/database.db`
 
-过滤器会根据 `DATABASE_URL` 的前缀（`postgres` 或 `sqlite`）自动选择合适的数据库驱动。
+The filter automatically selects the appropriate database driver based on the `DATABASE_URL` prefix (`postgres` or `sqlite`).
 
-  表结构：
-    - id: 主键（自增）
-    - chat_id: 对话唯一标识（唯一索引）
-    - summary: 摘要内容（TEXT）
-    - compressed_message_count: 原始消息数
-    - created_at: 创建时间
-    - updated_at: 更新时间
+  Table Structure (`chat_summary`):
+    - id: Primary Key (auto-increment)
+    - chat_id: Unique chat identifier (indexed)
+    - summary: The summary content (TEXT)
+    - compressed_message_count: The original number of messages
+    - created_at: Timestamp of creation
+    - updated_at: Timestamp of last update
 
 ═══════════════════════════════════════════════════════════════════════════════
-📊 压缩效果示例
+📊 Compression Example
 ═══════════════════════════════════════════════════════════════════════════════
 
-场景：20 条消息的对话 (默认设置: 保留前 1 条, 后 6 条)
+Scenario: A 20-message conversation (Default settings: keep first 1, keep last 6)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  压缩前：
-    消息 1: [初始设定 + 初始问题]
-    消息 2-14: [历史对话内容]
-    消息 15-20: [最近对话]
-    总计: 20 条完整消息
+  Before Compression:
+    Message 1: [Initial prompt + First question]
+    Messages 2-14: [Historical conversation]
+    Messages 15-20: [Recent conversation]
+    Total: 20 full messages
 
-  压缩后：
-    消息 1: [初始设定 + 历史摘要 + 初始问题]
-    消息 15-20: [最近 6 条完整消息]
-    总计: 7 条消息
+  After Compression:
+    Message 1: [Initial prompt + Historical summary + First question]
+    Messages 15-20: [Last 6 full messages]
+    Total: 7 messages
 
-  效果：
-    ✓ 节省 13 条消息（约 65%）
-    ✓ 保留完整上下文信息
-    ✓ 保护重要的初始设定
+  Effect:
+    ✓ Saves 13 messages (approx. 65%)
+    ✓ Retains full context
+    ✓ Protects important initial prompts
 
 ═══════════════════════════════════════════════════════════════════════════════
-⚙️ 配置参数说明
+⚙️ Configuration
 ═══════════════════════════════════════════════════════════════════════════════
 
-priority (优先级)
-  默认: 10
-  说明: 过滤器执行顺序，数值越小越先执行。
+priority
+  Default: 10
+  Description: The execution order of the filter. Lower numbers run first.
 
-compression_threshold (压缩阈值)
-  默认: 15
-  说明: 当消息数达到此值时，将在对话结束后触发后台摘要生成。
-  建议: 根据模型上下文窗口和成本调整。
+compression_threshold
+  Default: 15
+  Description: When the message count reaches this value, a background summary generation will be triggered after the conversation ends.
+  Recommendation: Adjust based on your model's context window and cost.
 
-keep_first (保留初始消息数)
-  默认: 1
-  说明: 始终保留对话开始的 N 条消息。设置为 0 则不保留。第一条消息通常包含重要的提示或环境变量。
+keep_first
+  Default: 1
+  Description: Always keep the first N messages of the conversation. Set to 0 to disable. The first message often contains important system prompts.
 
-keep_last (保留最近消息数)
-  默认: 6
-  说明: 始终保留对话末尾的 N 条完整消息，以确保上下文的连贯性。
+keep_last
+  Default: 6
+  Description: Always keep the last N full messages of the conversation to ensure context coherence.
 
-summary_model (摘要模型)
-  默认: gemini-2.5-flash
-  说明: 用于生成摘要的 LLM 模型。留空则使用当前对话的模型。
-  建议: 使用快速且经济的模型，如 `gemini-2.5-flash`, `gpt-4o-mini`。
+summary_model
+  Default: gemini-2.5-flash
+  Description: The LLM used to generate the summary. If left empty, the model from the current conversation will be used.
+  Recommendation: Use a fast and economical model, such as `gemini-2.5-flash` or `gpt-4o-mini`.
 
-max_summary_tokens (摘要长度)
-  默认: 4000
-  说明: 生成摘要时允许的最大 token 数。
+max_summary_tokens
+  Default: 4000
+  Description: The maximum number of tokens allowed for the generated summary.
 
-summary_temperature (摘要温度)
-  默认: 0.3
-  说明: 控制摘要生成的随机性，较低的值会产生更确定性的输出。
+summary_temperature
+  Default: 0.3
+  Description: Controls the randomness of the summary generation. Lower values produce more deterministic output.
 
-debug_mode (调试模式)
-  默认: true
-  说明: 在日志中打印详细的调试信息。生产环境建议设为 `false`。
+debug_mode
+  Default: true
+  Description: Prints detailed debug information to the log. Recommended to set to `false` in production.
 
-🔧 部署配置
+🔧 Deployment
 ═══════════════════════════════════════════════════════
 
-Docker Compose 示例：
+Docker Compose Example:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   services:
     openwebui:
@@ -145,21 +145,21 @@ Docker Compose 示例：
         POSTGRES_PASSWORD: password
         POSTGRES_DB: openwebui
 
-过滤器安装顺序建议：
+Suggested Filter Installation Order:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-建议将此过滤器的优先级设置得相对较高（数值较小），以确保它在其他可能修改消息内容的过滤器之前运行。一个典型的顺序可能是：
+It is recommended to set the priority of this filter relatively high (a smaller number) to ensure it runs before other filters that might modify message content. A typical order might be:
 
-  1. 需要访问完整、未压缩历史记录的过滤器 (priority < 10)
-     (例如: 注入系统级提示的过滤器)
-  2. 本压缩过滤器 (priority = 10)
-  3. 在压缩后运行的过滤器 (priority > 10)
-     (例如: 最终输出格式化过滤器)
+  1. Filters that need access to the full, uncompressed history (priority < 10)
+     (e.g., a filter that injects a system-level prompt)
+  2. This compression filter (priority = 10)
+  3. Filters that run after compression (priority > 10)
+     (e.g., a final output formatting filter)
 
 ═══════════════════════════════════════════════════════════════════════════════
-📝 数据库查询示例
+📝 Database Query Examples
 ═══════════════════════════════════════════════════════════════════════════════
 
-查看所有摘要：
+View all summaries:
   SELECT
     chat_id,
     LEFT(summary, 100) as summary_preview,
@@ -168,16 +168,16 @@ Docker Compose 示例：
   FROM chat_summary
   ORDER BY updated_at DESC;
 
-查询特定对话：
+Query a specific conversation:
   SELECT *
   FROM chat_summary
   WHERE chat_id = 'your_chat_id';
 
-删除过期摘要：
+Delete old summaries:
   DELETE FROM chat_summary
   WHERE updated_at < NOW() - INTERVAL '30 days';
 
-统计信息：
+Statistics:
   SELECT
     COUNT(*) as total_summaries,
     AVG(LENGTH(summary)) as avg_summary_length,
@@ -185,57 +185,57 @@ Docker Compose 示例：
   FROM chat_summary;
 
 ═══════════════════════════════════════════════════════════════════════════════
-⚠️ 注意事项
+⚠️ Important Notes
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. 数据库权限
-   ⚠ 确保 `DATABASE_URL` 指向的用户有创建表的权限。
-   ⚠ 首次运行会自动创建 `chat_summary` 表。
+1. Database Permissions
+   ⚠ Ensure the user specified in `DATABASE_URL` has permissions to create tables.
+   ⚠ The `chat_summary` table will be created automatically on first run.
 
-2. 保留策略
-   ⚠ `keep_first` 配置对于保留包含提示或环境变量的初始消息非常重要。请根据需要进行配置。
+2. Retention Policy
+   ⚠ The `keep_first` setting is crucial for preserving initial messages that contain system prompts. Configure it as needed.
 
-3. 性能考虑
-   ⚠ 摘要生成是异步的，不会阻塞用户响应。
-   ⚠ 首次达到阈值时会有短暂的后台处理时间。
+3. Performance
+   ⚠ Summary generation is asynchronous and will not block the user response.
+   ⚠ There will be a brief background processing time when the threshold is first met.
 
-4. 成本优化
-   ⚠ 每次达到阈值会调用一次摘要模型。
-   ⚠ 合理设置 `compression_threshold` 避免频繁调用。
-   ⚠ 建议使用快速且经济的模型（如 `gemini-flash`）生成摘要。
+4. Cost Optimization
+   ⚠ The summary model is called once each time the threshold is met.
+   ⚠ Set `compression_threshold` reasonably to avoid frequent calls.
+   ⚠ It's recommended to use a fast and economical model to generate summaries.
 
-5. 多模态支持
-   ✓ 本过滤器支持包含图片的多模态消息。
-   ✓ 摘要仅针对文本内容生成。
-   ✓ 在压缩过程中，非文本部分（如图片）会被保留在原始消息中。
+5. Multimodal Support
+   ✓ This filter supports multimodal messages containing images.
+   ✓ The summary is generated only from the text content.
+   ✓ Non-text parts (like images) are preserved in their original messages during compression.
 
 ═══════════════════════════════════════════════════════════════════════════════
-🐛 故障排除
+🐛 Troubleshooting
 ═══════════════════════════════════════════════════════════════════════════════
 
-问题：数据库连接失败
-解决：
-  1. 确认 `DATABASE_URL` 环境变量已正确设置。
-  2. 确认 `DATABASE_URL` 以 `sqlite` 或 `postgres` 开头。
-  3. 确认数据库服务正在运行，并且网络连接正常。
-  4. 验证连接 URL 中的用户名、密码、主机和端口是否正确。
-  5. 查看 Open WebUI 的容器日志以获取详细的错误信息。
+Problem: Database connection failed
+Solution:
+  1. Verify that the `DATABASE_URL` environment variable is set correctly.
+  2. Confirm that `DATABASE_URL` starts with either `sqlite` or `postgres`.
+  3. Ensure the database service is running and network connectivity is normal.
+  4. Validate the username, password, host, and port in the connection URL.
+  5. Check the Open WebUI container logs for detailed error messages.
 
-问题：摘要未生成
-解决：
-  1. 检查是否达到 `compression_threshold`。
-  2. 查看 `summary_model` 是否配置正确。
-  3. 检查调试日志中的错误信息。
+Problem: Summary not generated
+Solution:
+  1. Check if the `compression_threshold` has been met.
+  2. Verify that the `summary_model` is configured correctly.
+  3. Check the debug logs for any error messages.
 
-问题：初始的提示或环境变量丢失
-解决：
-  - 确保 `keep_first` 设置为大于 0 的值，以保留包含这些信息的初始消息。
+Problem: Initial system prompt is lost
+Solution:
+  - Ensure `keep_first` is set to a value greater than 0 to preserve the initial messages containing this information.
 
-问题：压缩效果不明显
-解决：
-  1. 适当提高 `compression_threshold`。
-  2. 减少 `keep_last` 或 `keep_first` 的数量。
-  3. 检查对话是否真的很长。
+Problem: Compression effect is not significant
+Solution:
+  1. Increase the `compression_threshold` appropriately.
+  2. Decrease the number of `keep_last` or `keep_first`.
+  3. Check if the conversation is actually long enough.
 
 
 """
@@ -247,13 +247,13 @@ import json
 import hashlib
 import os
 
-# Open WebUI 内置导入
+# Open WebUI built-in imports
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.models.users import Users
 from fastapi.requests import Request
 from open_webui.main import app as webui_app
 
-# 数据库导入
+# Database imports
 from sqlalchemy import create_engine, Column, String, Text, DateTime, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -263,7 +263,7 @@ Base = declarative_base()
 
 
 class ChatSummary(Base):
-    """对话摘要存储表"""
+    """Chat Summary Storage Table"""
 
     __tablename__ = "chat_summary"
 
@@ -283,12 +283,12 @@ class Filter:
         self._init_database()
 
     def _init_database(self):
-        """初始化数据库连接和表"""
+        """Initializes the database connection and table."""
         try:
             database_url = os.getenv("DATABASE_URL")
 
             if not database_url:
-                print("[数据库] ❌ 错误: DATABASE_URL 环境变量未设置。请设置该变量。")
+                print("[Database] ❌ Error: DATABASE_URL environment variable is not set. Please set this variable.")
                 self._db_engine = None
                 self._SessionLocal = None
                 return
@@ -308,7 +308,7 @@ class Filter:
                     database_url = database_url.replace(
                         "postgres://", "postgresql://", 1
                     )
-                    print("[数据库] ℹ️ 已自动将 postgres:// 转换为 postgresql://")
+                    print("[Database] ℹ️ Automatically converted postgres:// to postgresql://")
                 engine_args = {
                     "pool_pre_ping": True,
                     "pool_recycle": 3600,
@@ -316,27 +316,27 @@ class Filter:
                 }
             else:
                 print(
-                    f"[数据库] ❌ 错误: 不支持的数据库类型。DATABASE_URL 必须以 'sqlite' 或 'postgres' 开头。当前值: {database_url}"
+                    f"[Database] ❌ Error: Unsupported database type. DATABASE_URL must start with 'sqlite' or 'postgres'. Current value: {database_url}"
                 )
                 self._db_engine = None
                 self._SessionLocal = None
                 return
 
-            # 创建数据库引擎
+            # Create database engine
             self._db_engine = create_engine(database_url, **engine_args)
 
-            # 创建会话工厂
+            # Create session factory
             self._SessionLocal = sessionmaker(
                 autocommit=False, autoflush=False, bind=self._db_engine
             )
 
-            # 创建表（如果不存在）
+            # Create table if it doesn't exist
             Base.metadata.create_all(bind=self._db_engine)
 
-            print(f"[数据库] ✅ 成功连接到 {db_type} 并初始化 chat_summary 表")
+            print(f"[Database] ✅ Successfully connected to {db_type} and initialized the chat_summary table.")
 
         except Exception as e:
-            print(f"[数据库] ❌ 初始化失败: {str(e)}")
+            print(f"[Database] ❌ Initialization failed: {str(e)}")
             self._db_engine = None
             self._SessionLocal = None
 
@@ -345,56 +345,56 @@ class Filter:
             default=10, description="Priority level for the filter operations."
         )
         compression_threshold: int = Field(
-            default=15, ge=0, description="触发压缩的消息数阈值"
+            default=15, ge=0, description="The number of messages at which to trigger compression."
         )
         keep_first: int = Field(
-            default=1, ge=0, description="始终保留最初的 N 条消息。设置为 0 则不保留。"
+            default=1, ge=0, description="Always keep the first N messages. Set to 0 to disable."
         )
-        keep_last: int = Field(default=6, ge=0, description="始终保留最近的 N 条完整消息。")
+        keep_last: int = Field(default=6, ge=0, description="Always keep the last N messages.")
         summary_model: str = Field(
             default="gemini-2.5-flash",
-            description="用于生成摘要的模型（留空则使用当前对话的模型）",
+            description="The model to use for generating the summary. If empty, uses the current conversation's model.",
         )
         max_summary_tokens: int = Field(
-            default=4000, ge=1, description="摘要的最大 token 数"
+            default=4000, ge=1, description="The maximum number of tokens for the summary."
         )
         summary_temperature: float = Field(
-            default=0.3, ge=0.0, le=2.0, description="摘要生成的温度参数"
+            default=0.3, ge=0.0, le=2.0, description="The temperature for summary generation."
         )
-        debug_mode: bool = Field(default=True, description="调试模式，打印详细日志")
+        debug_mode: bool = Field(default=True, description="Enable detailed logging for debugging.")
 
         @model_validator(mode="after")
         def check_thresholds(self) -> "Valves":
             kept_count = self.keep_first + self.keep_last
             if self.compression_threshold <= kept_count:
                 raise ValueError(
-                    f"compression_threshold ({self.compression_threshold}) 必须大于 "
-                    f"keep_first ({self.keep_first}) 和 keep_last ({self.keep_last}) 的总和 ({kept_count})。"
+                    f"compression_threshold ({self.compression_threshold}) must be greater than "
+                    f"the sum of keep_first ({self.keep_first}) and keep_last ({self.keep_last}) ({kept_count})."
                 )
             return self
 
     def _save_summary(self, chat_id: str, summary: str, body: dict):
-        """保存摘要到数据库"""
+        """Saves the summary to the database."""
         if not self._SessionLocal:
             if self.valves.debug_mode:
-                print("[存储] 数据库未初始化，跳过保存摘要")
+                print("[Storage] Database not initialized, skipping summary save.")
             return
 
         try:
             session = self._SessionLocal()
             try:
-                # 查找现有记录
+                # Find existing record
                 existing = (
                     session.query(ChatSummary).filter_by(chat_id=chat_id).first()
                 )
 
                 if existing:
-                    # 更新现有记录
+                    # Update existing record
                     existing.summary = summary
                     existing.compressed_message_count = len(body.get("messages", []))
                     existing.updated_at = datetime.utcnow()
                 else:
-                    # 创建新记录
+                    # Create new record
                     new_summary = ChatSummary(
                         chat_id=chat_id,
                         summary=summary,
@@ -405,20 +405,20 @@ class Filter:
                 session.commit()
 
                 if self.valves.debug_mode:
-                    action = "更新" if existing else "创建"
-                    print(f"[存储] 摘要已{action}到数据库 (Chat ID: {chat_id})")
+                    action = "Updated" if existing else "Created"
+                    print(f"[Storage] Summary has been {action.lower()} in the database (Chat ID: {chat_id})")
 
             finally:
                 session.close()
 
         except Exception as e:
-            print(f"[存储] ❌ 数据库保存失败: {str(e)}")
+            print(f"[Storage] ❌ Database save failed: {str(e)}")
 
     def _load_summary(self, chat_id: str, body: dict) -> Optional[str]:
-        """从数据库加载摘要"""
+        """Loads the summary from the database."""
         if not self._SessionLocal:
             if self.valves.debug_mode:
-                print("[加载] 数据库未初始化，无法加载摘要")
+                print("[Storage] Database not initialized, cannot load summary.")
             return None
 
         try:
@@ -430,9 +430,9 @@ class Filter:
 
                 if record:
                     if self.valves.debug_mode:
-                        print(f"[加载] 从数据库加载摘要 (Chat ID: {chat_id})")
+                        print(f"[Storage] Loaded summary from database (Chat ID: {chat_id})")
                         print(
-                            f"[加载] 更新时间: {record.updated_at}, 原消息数: {record.compressed_message_count}"
+                            f"[Storage] Last updated: {record.updated_at}, Original message count: {record.compressed_message_count}"
                         )
                     return record.summary
 
@@ -440,18 +440,18 @@ class Filter:
                 session.close()
 
         except Exception as e:
-            print(f"[加载] ❌ 数据库读取失败: {str(e)}")
+            print(f"[Storage] ❌ Database read failed: {str(e)}")
 
         return None
 
     def _inject_summary_to_first_message(self, message: dict, summary: str) -> dict:
-        """将摘要注入到第一条消息中（追加到内容前面）"""
+        """Injects the summary into the first message by prepending it."""
         content = message.get("content", "")
-        summary_block = f"【历史对话摘要】\n{summary}\n\n---\n以下是最近的对话：\n\n"
+        summary_block = f"【Historical Conversation Summary】\n{summary}\n\n---\nBelow is the recent conversation:\n\n"
 
-        # 处理不同内容类型
-        if isinstance(content, list):  # 多模态内容
-            # 查找第一个文本部分并在其前面插入摘要
+        # Handle different content types
+        if isinstance(content, list):  # Multimodal content
+            # Find the first text part and insert the summary before it
             new_content = []
             summary_inserted = False
 
@@ -461,7 +461,7 @@ class Filter:
                     and part.get("type") == "text"
                     and not summary_inserted
                 ):
-                    # 在第一个文本部分前插入摘要
+                    # Prepend summary to the first text part
                     new_content.append(
                         {"type": "text", "text": summary_block + part.get("text", "")}
                     )
@@ -469,13 +469,13 @@ class Filter:
                 else:
                     new_content.append(part)
 
-            # 如果没有文本部分，在开头插入
+            # If no text part, insert at the beginning
             if not summary_inserted:
                 new_content.insert(0, {"type": "text", "text": summary_block})
 
             message["content"] = new_content
 
-        elif isinstance(content, str):  # 纯文本
+        elif isinstance(content, str):  # Plain text
             message["content"] = summary_block + content
 
         return message
@@ -484,11 +484,11 @@ class Filter:
         self, body: dict, __user__: Optional[dict] = None, __metadata__: dict = None
     ) -> dict:
         """
-        在发送到 LLM 之前执行
-        压缩策略：
-        1. 保留最初的 N 条消息
-        2. 将摘要注入到第一条消息前面 (如果 keep_first > 0)
-        3. 保留最近的 N 条消息
+        Executed before sending to the LLM.
+        Compression Strategy:
+        1. Keep the first N messages.
+        2. Inject the summary into the first message (if keep_first > 0).
+        3. Keep the last N messages.
         """
         messages = body.get("messages", [])
         chat_id = __metadata__["chat_id"]
@@ -496,59 +496,59 @@ class Filter:
         if self.valves.debug_mode:
             print(f"\n{'='*60}")
             print(f"[Inlet] Chat ID: {chat_id}")
-            print(f"[Inlet] 收到 {len(messages)} 条消息")
+            print(f"[Inlet] Received {len(messages)} messages")
 
-        # 加载已保存的摘要
+        # Load saved summary
         saved_summary = self._load_summary(chat_id, body)
 
         total_kept_count = self.valves.keep_first + self.valves.keep_last
 
         if saved_summary and len(messages) > total_kept_count:
             if self.valves.debug_mode:
-                print(f"[Inlet] 找到已保存的摘要，准备应用压缩")
+                print(f"[Inlet] Found saved summary, applying compression.")
 
             first_messages_to_keep = []
 
             if self.valves.keep_first > 0:
-                # 复制要保留的初始消息
+                # Copy the initial messages to keep
                 first_messages_to_keep = [
                     m.copy() for m in messages[: self.valves.keep_first]
                 ]
-                # 将摘要注入到第一条消息中
+                # Inject the summary into the very first message
                 first_messages_to_keep[0] = self._inject_summary_to_first_message(
                     first_messages_to_keep[0], saved_summary
                 )
             else:
-                # 如果不保留初始消息，则创建一个新的系统消息来存放摘要
+                # If not keeping initial messages, create a new system message for the summary
                 summary_block = (
-                    f"【历史对话摘要】\n{saved_summary}\n\n---\n以下是最近的对话：\n\n"
+                    f"【Historical Conversation Summary】\n{saved_summary}\n\n---\nBelow is the recent conversation:\n\n"
                 )
                 first_messages_to_keep.append(
                     {"role": "system", "content": summary_block}
                 )
 
-            # 保留最近的消息
+            # Keep the last messages
             last_messages_to_keep = (
                 messages[-self.valves.keep_last :] if self.valves.keep_last > 0 else []
             )
 
-            # 组合：[保留的初始消息（含摘要）] + [保留的最近消息]
+            # Combine: [Kept initial messages (with summary)] + [Kept recent messages]
             body["messages"] = first_messages_to_keep + last_messages_to_keep
 
             if self.valves.debug_mode:
-                print(f"[Inlet] ✂️ 压缩完成:")
-                print(f"  - 原始消息: {len(messages)} 条")
-                print(f"  - 压缩后: {len(body['messages'])} 条")
+                print(f"[Inlet] ✂️ Compression complete:")
+                print(f"  - Original messages: {len(messages)}")
+                print(f"  - Compressed to: {len(body['messages'])}")
                 print(
-                    f"  - 结构: [保留前 {self.valves.keep_first} 条(带摘要)] + [保留后 {self.valves.keep_last} 条]"
+                    f"  - Structure: [Keep first {self.valves.keep_first} (with summary)] + [Keep last {self.valves.keep_last}]"
                 )
-                print(f"  - 节省: {len(messages) - len(body['messages'])} 条消息")
+                print(f"  - Saved: {len(messages) - len(body['messages'])} messages")
         else:
             if self.valves.debug_mode:
                 if not saved_summary:
-                    print(f"[Inlet] 未找到摘要，使用完整对话历史")
+                    print(f"[Inlet] No summary found, using full conversation history.")
                 else:
-                    print(f"[Inlet] 消息数量未超过保留阈值，不压缩")
+                    print(f"[Inlet] Message count does not exceed retention threshold, no compression applied.")
 
         if self.valves.debug_mode:
             print(f"{'='*60}\n")
@@ -559,8 +559,8 @@ class Filter:
         self, body: dict, __user__: Optional[dict] = None, __metadata__: dict = None
     ) -> dict:
         """
-        在 LLM 响应完成后执行
-        异步触发摘要生成（不阻塞当前响应）
+        Executed after the LLM response is complete.
+        Triggers summary generation asynchronously.
         """
         messages = body.get("messages", [])
         chat_id = __metadata__["chat_id"]
@@ -568,24 +568,24 @@ class Filter:
         if self.valves.debug_mode:
             print(f"\n{'='*60}")
             print(f"[Outlet] Chat ID: {chat_id}")
-            print(f"[Outlet] 响应完成，当前 {len(messages)} 条消息")
+            print(f"[Outlet] Response complete, current message count: {len(messages)}")
 
-        # 检查是否需要压缩
+        # Check if compression is needed
         if len(messages) >= self.valves.compression_threshold:
             if self.valves.debug_mode:
                 print(
-                    f"[Outlet] ⚡ 触发压缩阈值 ({len(messages)} >= {self.valves.compression_threshold})"
+                    f"[Outlet] ⚡ Compression threshold reached ({len(messages)} >= {self.valves.compression_threshold})"
                 )
-                print(f"[Outlet] 准备在后台生成摘要...")
+                print(f"[Outlet] Preparing to generate summary in the background...")
 
-            # 在后台异步生成摘要（不等待完成）
+            # Generate summary asynchronously in the background
             asyncio.create_task(
                 self._generate_summary_async(messages, chat_id, body, __user__)
             )
         else:
             if self.valves.debug_mode:
                 print(
-                    f"[Outlet] 未触发压缩阈值 ({len(messages)} < {self.valves.compression_threshold})"
+                    f"[Outlet] Compression threshold not reached ({len(messages)} < {self.valves.compression_threshold})"
                 )
 
         if self.valves.debug_mode:
@@ -597,13 +597,13 @@ class Filter:
         self, messages: list, chat_id: str, body: dict, user_data: Optional[dict]
     ):
         """
-        异步生成摘要（后台执行，不阻塞响应）
+        Generates a summary asynchronously in the background.
         """
         try:
             if self.valves.debug_mode:
-                print(f"\n[🤖 异步摘要任务] 开始...")
+                print(f"\n[🤖 Async Summary Task] Starting...")
 
-            # 需要压缩的消息：排除保留的初始和末尾消息
+            # Messages to summarize: exclude kept initial and final messages
             if self.valves.keep_last > 0:
                 messages_to_summarize = messages[
                     self.valves.keep_first : -self.valves.keep_last
@@ -613,47 +613,47 @@ class Filter:
 
             if len(messages_to_summarize) == 0:
                 if self.valves.debug_mode:
-                    print(f"[🤖 异步摘要任务] 没有需要摘要的消息，跳过")
+                    print(f"[🤖 Async Summary Task] No messages to summarize, skipping.")
                 return
 
             if self.valves.debug_mode:
-                print(f"[🤖 异步摘要任务] 准备摘要 {len(messages_to_summarize)} 条消息")
+                print(f"[🤖 Async Summary Task] Preparing to summarize {len(messages_to_summarize)} messages.")
                 print(
-                    f"[🤖 异步摘要任务] 保护: 前 {self.valves.keep_first} 条 + 后 {self.valves.keep_last} 条"
+                    f"[🤖 Async Summary Task] Protecting: First {self.valves.keep_first} + Last {self.valves.keep_last} messages."
                 )
 
-            # 构建对话历史文本
+            # Build conversation history text
             conversation_text = self._format_messages_for_summary(messages_to_summarize)
 
-            # 调用 LLM 生成摘要
+            # Call LLM to generate summary
             summary = await self._call_summary_llm(conversation_text, body, user_data)
 
-            # 保存摘要
+            # Save summary
             self._save_summary(chat_id, summary, body)
 
             if self.valves.debug_mode:
-                print(f"[🤖 异步摘要任务] ✅ 完成！摘要长度: {len(summary)} 字符")
-                print(f"[🤖 异步摘要任务] 摘要预览: {summary[:150]}...")
+                print(f"[🤖 Async Summary Task] ✅ Complete! Summary length: {len(summary)} characters.")
+                print(f"[🤖 Async Summary Task] Summary preview: {summary[:150]}...")
 
         except Exception as e:
-            print(f"[🤖 异步摘要任务] ❌ 错误: {str(e)}")
+            print(f"[🤖 Async Summary Task] ❌ Error: {str(e)}")
             import traceback
 
             traceback.print_exc()
-            # 即使失败也设置一个简单的占位符
+            # Save a simple placeholder even on failure
             fallback_summary = (
-                f"[历史对话概要] 包含约 {len(messages_to_summarize)} 条消息的内容。"
+                f"[Historical Conversation Summary] Contains content from approximately {len(messages_to_summarize)} messages."
             )
             self._save_summary(chat_id, fallback_summary, body)
 
     def _format_messages_for_summary(self, messages: list) -> str:
-        """格式化消息用于摘要"""
+        """Formats messages for summarization."""
         formatted = []
         for i, msg in enumerate(messages, 1):
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
 
-            # 处理多模态内容
+            # Handle multimodal content
             if isinstance(content, list):
                 text_parts = []
                 for part in content:
@@ -661,10 +661,10 @@ class Filter:
                         text_parts.append(part.get("text", ""))
                 content = " ".join(text_parts)
 
-            # 处理角色名称
-            role_name = {"user": "用户", "assistant": "助手"}.get(role, role)
+            # Handle role name
+            role_name = {"user": "User", "assistant": "Assistant"}.get(role, role)
 
-            # 限制每条消息的长度，避免过长
+            # Limit length of each message to avoid excessive length
             if len(content) > 500:
                 content = content[:500] + "..."
 
@@ -676,42 +676,42 @@ class Filter:
         self, conversation_text: str, body: dict, user_data: dict
     ) -> str:
         """
-        使用 Open WebUI 内置方法调用 LLM 生成摘要
+        Calls the LLM to generate a summary using Open WebUI's built-in method.
         """
         if self.valves.debug_mode:
-            print(f"[🤖 LLM 调用] 使用 Open WebUI 内置方法")
+            print(f"[🤖 LLM Call] Using Open WebUI's built-in method.")
 
-        # 构建摘要提示词
+        # Build summary prompt
         summary_prompt = f"""
-你是一个专业的对话上下文压缩助手。你的任务是将下面的【对话内容】进行高保真压缩，输出一段可直接作为后续对话上下文使用的精炼摘要。严格遵守以下要求：
+You are a professional conversation context compression assistant. Your task is to perform a high-fidelity compression of the [Conversation Content] below, producing a concise summary that can be used directly as context for subsequent conversation. Strictly adhere to the following requirements:
 
-必须保留：主题/目标、用户意图、关键事实与数据、重要参数与限制、时间节点、决策/结论、待办事项与状态、代码/命令等技术细节（代码须保留原样）。
-删除：寒暄、客套、重复表述、与任务无关的闲聊、过程性细节（如非必要可省略）。对已被推翻或过时的信息，保留时请标注“已废弃：<说明>”。
-冲突处理：若存在矛盾或多次修改，保留最新一致结论，并在“需澄清处”中列出未决或冲突点。
-结构与语气：按结构化要点输出，逻辑连贯、用词客观简洁、以第三方视角概括，中文输出。遇到技术/代码片段须用代码块保留原样。
-输出长度：摘要内容严格控制在 {int(self.valves.max_summary_tokens * 3)} 字符以内。优先保证关键信息，不足则删减细节而非核心结论。
-格式约束：仅输出摘要文本，不要附加任何额外说明、执行日志或生成过程。须使用以下标题（若某项无内容写“无”）：
-核心主题：
-关键信息：
-…（要点列举，3-6 条为宜）
-决策/结论：
-待跟进项（含负责人/截止时间若有）：
-相关角色/偏好：
-风险/依赖/假设：
-需澄清处：
-压缩率：原文约X字 → 摘要约Y字（估算）
-对话内容：
+MUST RETAIN: Topics/goals, user intent, key facts and data, important parameters and constraints, deadlines, decisions/conclusions, action items and their status, and technical details like code/commands (code must be preserved as is).
+REMOVE: Greetings, politeness, repetitive statements, off-topic chatter, and procedural details (unless essential). For information that has been overturned or is outdated, please mark it as "Obsolete: <explanation>" when retaining.
+CONFLICT RESOLUTION: If there are contradictions or multiple revisions, retain the latest consistent conclusion and list unresolved or conflicting points under "Points to Clarify".
+STRUCTURE AND TONE: Output in structured bullet points. Be logical, objective, and concise. Summarize from a third-person perspective. Use code blocks to preserve technical/code snippets verbatim.
+OUTPUT LENGTH: Strictly limit the summary content to within {int(self.valves.max_summary_tokens * 3)} characters. Prioritize key information; if space is insufficient, trim details rather than core conclusions.
+FORMATTING: Output only the summary text. Do not add any extra explanations, execution logs, or generation processes. You must use the following headings (if a section has no content, write "None"):
+Core Theme:
+Key Information:
+... (List 3-6 key points)
+Decisions/Conclusions:
+Action Items (with owner/deadline if any):
+Relevant Roles/Preferences:
+Risks/Dependencies/Assumptions:
+Points to Clarify:
+Compression Ratio: Original ~X words → Summary ~Y words (estimate)
+Conversation Content:
 {conversation_text}
 
-请直接输出符合上述要求的压缩摘要（仅摘要文本）。
+Please directly output the compressed summary that meets the above requirements (summary text only).
 """
-        # 确定使用的模型
+        # Determine the model to use
         model = self.valves.summary_model or body.get("model", "")
 
         if self.valves.debug_mode:
-            print(f"[🤖 LLM 调用] 模型: {model}")
+            print(f"[🤖 LLM Call] Model: {model}")
 
-        # 构建 payload
+        # Build payload
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": summary_prompt}],
@@ -721,36 +721,36 @@ class Filter:
         }
 
         try:
-            # 获取用户对象
+            # Get user object
             user_id = user_data.get("id") if user_data else None
             if not user_id:
-                raise ValueError("无法获取用户 ID")
+                raise ValueError("Could not get user ID")
 
             user = Users.get_user_by_id(user_id)
             if not user:
-                raise ValueError(f"无法找到用户: {user_id}")
+                raise ValueError(f"Could not find user: {user_id}")
 
             if self.valves.debug_mode:
-                print(f"[🤖 LLM 调用] 用户: {user.email}")
-                print(f"[🤖 LLM 调用] 发送请求...")
+                print(f"[🤖 LLM Call] User: {user.email}")
+                print(f"[🤖 LLM Call] Sending request...")
 
-            # 创建 Request 对象
+            # Create Request object
             request = Request(scope={"type": "http", "app": webui_app})
 
-            # 调用 generate_chat_completion
+            # Call generate_chat_completion
             response = await generate_chat_completion(request, payload, user)
 
             if not response or "choices" not in response or not response["choices"]:
-                raise ValueError("LLM 响应格式不正确或为空")
+                raise ValueError("LLM response is not in the correct format or is empty")
 
             summary = response["choices"][0]["message"]["content"].strip()
 
             if self.valves.debug_mode:
-                print(f"[🤖 LLM 调用] ✅ 成功获取摘要")
+                print(f"[🤖 LLM Call] ✅ Successfully received summary.")
 
             return summary
 
         except Exception as e:
             if self.valves.debug_mode:
-                print(f"[🤖 LLM 调用] ❌ 错误: {str(e)}")
-            raise Exception(f"调用 LLM 时发生错误: {str(e)}")
+                print(f"[🤖 LLM Call] ❌ Error: {str(e)}")
+            raise Exception(f"An error occurred while calling the LLM: {str(e)}")
