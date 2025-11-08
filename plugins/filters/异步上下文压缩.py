@@ -239,7 +239,7 @@ Docker Compose 示例：
 
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 import asyncio
 import json
@@ -343,26 +343,34 @@ class Filter:
         priority: int = Field(
             default=10, description="Priority level for the filter operations."
         )
-        # 触发压缩的条件
         compression_threshold: int = Field(
-            default=30, description="触发压缩的消息数阈值"
+            default=15, ge=0, description="触发压缩的消息数阈值"
         )
-        # 保留策略
         keep_first: int = Field(
-            default=1, description="始终保留最初的 N 条消息。设置为 0 则不保留。"
+            default=1, ge=0, description="始终保留最初的 N 条消息。设置为 0 则不保留。"
         )
-        keep_last: int = Field(default=6, description="始终保留最近的 N 条完整消息。")
-        # 摘要设置
+        keep_last: int = Field(default=6, ge=0, description="始终保留最近的 N 条完整消息。")
         summary_model: str = Field(
             default="gemini-2.5-flash",
             description="用于生成摘要的模型（留空则使用当前对话的模型）",
         )
-        # 高级选项
-        max_summary_tokens: int = Field(default=4000, description="摘要的最大 token 数")
+        max_summary_tokens: int = Field(
+            default=4000, ge=1, description="摘要的最大 token 数"
+        )
         summary_temperature: float = Field(
-            default=0.3, description="摘要生成的温度参数"
+            default=0.3, ge=0.0, le=2.0, description="摘要生成的温度参数"
         )
         debug_mode: bool = Field(default=True, description="调试模式，打印详细日志")
+
+        @model_validator(mode="after")
+        def check_thresholds(self) -> "Valves":
+            kept_count = self.keep_first + self.keep_last
+            if self.compression_threshold <= kept_count:
+                raise ValueError(
+                    f"compression_threshold ({self.compression_threshold}) 必须大于 "
+                    f"keep_first ({self.keep_first}) 和 keep_last ({self.keep_last}) 的总和 ({kept_count})。"
+                )
+            return self
 
     def _save_summary(self, chat_id: str, summary: str, body: dict):
         """保存摘要到数据库"""
