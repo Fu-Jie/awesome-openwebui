@@ -110,9 +110,13 @@ keep_last
   Description: Always keep the last N full messages of the conversation to ensure context coherence.
 
 summary_model
-  Default: gemini-2.5-flash
-  Description: The LLM used to generate the summary. If left empty, the model from the current conversation will be used.
-  Recommendation: Use a fast and economical model, such as `gemini-2.5-flash` or `gpt-4o-mini`.
+  Default: None
+  Description: The LLM used to generate the summary.
+  Recommendation:
+    - It is strongly recommended to configure a fast, economical, and compatible model, such as `deepseek-v3`、`gemini-2.5-flash`、`gpt-4.1`。
+    - If left empty, the filter will attempt to use the model from the current conversation.
+  Note:
+    - If the current conversation uses a pipeline (Pipe) model or a model that does not support standard generation APIs, leaving this field empty may cause summary generation to fail. In this case, you must specify a valid model.
 
 max_summary_tokens
   Default: 4000
@@ -352,7 +356,7 @@ class Filter:
         )
         keep_last: int = Field(default=6, ge=0, description="Always keep the last N messages.")
         summary_model: str = Field(
-            default="gemini-2.5-flash",
+            default=None,
             description="The model to use for generating the summary. If empty, uses the current conversation's model.",
         )
         max_summary_tokens: int = Field(
@@ -751,6 +755,14 @@ Please directly output the compressed summary that meets the above requirements 
             return summary
 
         except Exception as e:
+            error_message = f"An error occurred while calling the LLM ({model}) to generate a summary: {str(e)}"
+            if not self.valves.summary_model:
+                error_message += (
+                    "\n[Hint] You did not specify a summary_model, so the filter attempted to use the current conversation's model. "
+                    "If this is a pipeline (Pipe) model or an incompatible model, please specify a compatible summary model (e.g., 'gemini-2.5-flash') in the configuration."
+                )
+
             if self.valves.debug_mode:
-                print(f"[🤖 LLM Call] ❌ Error: {str(e)}")
-            raise Exception(f"An error occurred while calling the LLM: {str(e)}")
+                print(f"[🤖 LLM Call] ❌ {error_message}")
+
+            raise Exception(error_message)
