@@ -9,6 +9,7 @@ Pipes process and enhance LLM responses after they are generated and before they
 | Plugin Name | Description | Documentation |
 | :--- | :--- | :--- |
 | **Example Pipe** | A template/example for creating pipe plugins | [English](./example-pipe/README.md) / [中文](./example-pipe/README_CN.md) |
+| **AI Agent Pipe** | Transforms AI responses into agent-style multi-step analysis with tool recommendations | [English](./ai-agent-pipe/README.md) / [中文](./ai-agent-pipe/README_CN.md) |
 
 ## 🎯 What are Pipe Plugins?
 

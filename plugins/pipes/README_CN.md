@@ -9,6 +9,7 @@
 | 插件名称 | 描述 | 文档 |
 | :--- | :--- | :--- |
 | **示例管道** | 创建管道插件的模板/示例 | [中文](./example-pipe/README_CN.md) / [English](./example-pipe/README.md) |
+| **AI代理管道** | 将AI响应转换为代理式多步骤分析和工具推荐 | [中文](./ai-agent-pipe/README_CN.md) / [English](./ai-agent-pipe/README.md) |
 
 ## 🎯 什么是管道插件？
 
