@@ -1145,3 +1145,319 @@ graph LR
 | **提示词管理** | 📋 文件夹级 + 交互式表单 | 通常无模板系统 |
 | **多模型协同** | 🔶🔷🔹🔸 四大核心功能 | 基础的多模型切换 |
 | **开源友好度** | ⭐⭐⭐⭐⭐ 高度可定制 | 部分不开源 |
+
+## 第三部分：精细化模型管理——自定义模型功能
+
+### 一、自定义模型配置：打造专属的 AI 助手
+
+OpenWebUI 提供了强大的模型自定义功能，允许用户精细化配置每个模型的行为、权限和能力，满足不同场景下的专业需求。
+
+#### 自定义模型的核心配置项
+
+```mermaid
+graph TB
+    subgraph core ["核心配置维度"]
+        A["👥 用户权限<br/>━━━<br/>控制模型可见性<br/>设置使用权限"]
+        
+        B["🏷️ 模型标签<br/>━━━<br/>分类管理<br/>快速筛选"]
+        
+        C["📝 系统提示词<br/>━━━<br/>定义角色与风格<br/>预设行为规范"]
+        
+        D["⚙️ 接口参数<br/>━━━<br/>通用参数配置<br/>自定义请求参数"]
+    end
+    
+    subgraph enhance ["增强功能"]
+        E["💡 提示词建议<br/>━━━<br/>智能补全<br/>场景化推荐"]
+        
+        F["📚 知识库绑定<br/>━━━<br/>专业领域知识<br/>自动检索注入"]
+        
+        G["🛠️ 可用工具<br/>━━━<br/>函数调用<br/>API 集成"]
+    end
+    
+    subgraph plugin ["插件系统"]
+        H["🔍 过滤器<br/>━━━<br/>输入预处理<br/>内容过滤"]
+        
+        I["⚡ 操作<br/>━━━<br/>自定义功能<br/>外部调用"]
+    end
+    
+    subgraph ability ["能力配置"]
+        J["🎯 模型能力<br/>━━━<br/>对话/生成<br/>分析/总结"]
+        
+        K["🌐 默认功能<br/>━━━<br/>联网搜索<br/>图像生成"]
+    end
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style D fill:#F5A623,stroke:#C27D0E,color:#fff
+    style E fill:#7ED321,stroke:#5BA30A,color:#fff
+    style F fill:#B8E986,stroke:#7BA30A,color:#000
+    style G fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style H fill:#50E3C2,stroke:#2EA896,color:#fff
+    style I fill:#E85D75,stroke:#A23E52,color:#fff
+    style J fill:#F5A623,stroke:#C27D0E,color:#fff
+    style K fill:#7ED321,stroke:#5BA30A,color:#fff
+```
+
+---
+
+#### 模型配置工作流
+
+```mermaid
+graph LR
+    subgraph setup ["配置阶段"]
+        A["选择/添加模型"] --> B["设置基础信息"]
+        B --> C["配置权限与标签"]
+        C --> D["定义系统提示词"]
+    end
+    
+    subgraph enhance ["增强阶段"]
+        E["配置接口参数"] --> F["关联知识库"]
+        F --> G["添加可用工具"]
+        G --> H["启用过滤器/操作"]
+    end
+    
+    subgraph ability ["能力阶段"]
+        I["设置提示词建议"] --> J["配置默认功能"]
+        J --> K["定义模型能力"]
+    end
+    
+    subgraph deploy ["部署使用"]
+        L["保存配置"] --> M["分配给用户/团队"]
+        M --> N["开始使用"]
+    end
+    
+    setup --> enhance
+    enhance --> ability
+    ability --> deploy
+    
+    style setup fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style enhance fill:#50E3C2,stroke:#2EA896,color:#fff
+    style ability fill:#F5A623,stroke:#C27D0E,color:#fff
+    style deploy fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+### 二、关键配置项详解
+
+#### 1. 用户权限与模型标签
+
+```mermaid
+graph TB
+    subgraph permission ["👥 用户权限管理"]
+        A["公开模型<br/>所有用户可见"]
+        B["团队模型<br/>特定团队可用"]
+        C["私有模型<br/>仅限管理员"]
+    end
+    
+    subgraph tag ["🏷️ 标签分类"]
+        D["按用途分类<br/>客服/写作/编程"]
+        E["按能力分类<br/>文本/多模态/代码"]
+        F["按场景分类<br/>内部/外部/测试"]
+    end
+    
+    subgraph benefit ["优势"]
+        G["✅ 精准权限控制<br/>✅ 快速查找定位<br/>✅ 有序组织管理"]
+    end
+    
+    A --> G
+    B --> G
+    C --> G
+    D --> G
+    E --> G
+    F --> G
+    
+    style permission fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style tag fill:#50E3C2,stroke:#2EA896,color:#fff
+    style benefit fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+#### 2. 系统提示词与接口参数
+
+```mermaid
+graph LR
+    subgraph prompt ["📝 系统提示词"]
+        A["角色定义<br/>━━━<br/>你是...专家<br/>专注于...领域"]
+        
+        B["行为规范<br/>━━━<br/>回答风格<br/>输出格式"]
+        
+        C["约束条件<br/>━━━<br/>不要...<br/>必须..."]
+    end
+    
+    subgraph params ["⚙️ 接口参数"]
+        D["通用参数<br/>━━━<br/>temperature<br/>top_p<br/>max_tokens"]
+        
+        E["自定义参数<br/>━━━<br/>特殊 headers<br/>请求体结构<br/>认证方式"]
+    end
+    
+    subgraph result ["效果"]
+        F["一致的模型行为"]
+        G["精准的输出控制"]
+    end
+    
+    A --> F
+    B --> F
+    C --> F
+    D --> G
+    E --> G
+    
+    style prompt fill:#E85D75,stroke:#A23E52,color:#fff
+    style params fill:#F5A623,stroke:#C27D0E,color:#fff
+    style result fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+#### 3. 增强功能：知识库、工具与插件
+
+```mermaid
+graph TB
+    subgraph kb ["📚 知识库集成"]
+        A["绑定专业知识库"]
+        B["自动检索相关内容"]
+        C["增强回答准确性"]
+    end
+    
+    subgraph tool ["🛠️ 工具集成"]
+        D["函数调用<br/>Function Calling"]
+        E["API 接口<br/>外部服务"]
+        F["实时数据<br/>动态查询"]
+    end
+    
+    subgraph plugin ["🔌 插件系统"]
+        G["过滤器 Filter<br/>━━━<br/>输入预处理<br/>内容过滤<br/>上下文压缩"]
+        
+        H["操作 Action<br/>━━━<br/>保存到文件<br/>调用 API<br/>自定义功能"]
+    end
+    
+    subgraph flow ["工作流程"]
+        I["用户输入"]
+        J["过滤器处理"]
+        K["知识库检索"]
+        L["工具调用"]
+        M["模型生成"]
+        N["操作执行"]
+        O["返回结果"]
+    end
+    
+    I --> J --> K --> L --> M --> N --> O
+    
+    style kb fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style tool fill:#50E3C2,stroke:#2EA896,color:#fff
+    style plugin fill:#E85D75,stroke:#A23E52,color:#fff
+    style flow fill:#F5A623,stroke:#C27D0E,color:#fff
+```
+
+---
+
+### 三、实战应用场景
+
+#### 场景示例：客服专用模型配置
+
+```mermaid
+graph TB
+    subgraph config ["配置内容"]
+        A["🏷️ 标签<br/>客服/支持/FAQ"]
+        
+        B["👥 权限<br/>客服团队可见"]
+        
+        C["📝 系统提示词<br/>你是专业客服<br/>友好、耐心、专业<br/>总是提供解决方案"]
+        
+        D["📚 知识库<br/>产品手册<br/>常见问题<br/>解决方案库"]
+        
+        E["🛠️ 工具<br/>工单系统<br/>用户数据查询<br/>库存查询"]
+        
+        F["🔍 过滤器<br/>敏感信息过滤<br/>语气优化"]
+        
+        G["⚡ 操作<br/>创建工单<br/>发送邮件"]
+        
+        H["🌐 默认功能<br/>启用联网查询"]
+    end
+    
+    subgraph effect ["使用效果"]
+        I["✅ 专业响应<br/>✅ 知识准确<br/>✅ 自动化操作<br/>✅ 统一服务标准"]
+    end
+    
+    A --> effect
+    B --> effect
+    C --> effect
+    D --> effect
+    E --> effect
+    F --> effect
+    G --> effect
+    H --> effect
+    
+    style config fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style effect fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+#### 场景示例：代码助手模型配置
+
+```mermaid
+graph LR
+    subgraph codemodel ["代码助手配置"]
+        A["系统提示词<br/>━━━<br/>专业程序员<br/>详细注释<br/>最佳实践"]
+        
+        B["知识库<br/>━━━<br/>项目文档<br/>API 文档<br/>编码规范"]
+        
+        C["工具<br/>━━━<br/>代码执行<br/>linter<br/>测试运行器"]
+        
+        D["能力<br/>━━━<br/>代码生成<br/>重构<br/>bug 修复"]
+    end
+    
+    subgraph workflow ["工作流"]
+        E["需求描述"]
+        F["知识库查询"]
+        G["代码生成"]
+        H["自动测试"]
+        I["返回结果"]
+    end
+    
+    E --> F --> G --> H --> I
+    
+    style codemodel fill:#50E3C2,stroke:#2EA896,color:#fff
+    style workflow fill:#F5A623,stroke:#C27D0E,color:#fff
+```
+
+---
+
+### 四、配置最佳实践
+
+```mermaid
+graph TB
+    subgraph practice ["配置建议"]
+        A["🎯 明确定位<br/>━━━<br/>清晰的角色定义<br/>专注特定场景"]
+        
+        B["📝 精炼提示词<br/>━━━<br/>简洁明确<br/>避免冲突指令"]
+        
+        C["📚 合理关联<br/>━━━<br/>知识库按需绑定<br/>避免信息过载"]
+        
+        D["🛠️ 渐进增强<br/>━━━<br/>先基础后高级<br/>逐步添加功能"]
+        
+        E["🔍 持续优化<br/>━━━<br/>根据反馈调整<br/>迭代改进配置"]
+        
+        F["👥 权限合理<br/>━━━<br/>最小权限原则<br/>按需分配"]
+    end
+    
+    subgraph tips ["关键要点"]
+        G["✓ 一个模型一个用途<br/>✓ 提示词避免过于复杂<br/>✓ 工具按需启用<br/>✓ 定期审查配置<br/>✓ 测试后再推广"]
+    end
+    
+    practice --> tips
+    
+    style practice fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style tips fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+### 总结：自定义模型的价值
+
+通过 OpenWebUI 的自定义模型功能，您可以：
+
+- **🎯 精准控制**：细粒度的权限管理和行为定制
+- **📚 知识增强**：无缝集成专业知识库，提升准确性
+- **🛠️ 功能扩展**：通过工具和插件实现复杂业务流程
+- **⚡ 提升效率**：一次配置，多次复用，标准化输出
+- **👥 团队协作**：统一的模型配置，保证服务一致性
+
+自定义模型功能将 OpenWebUI 从简单的对话工具升级为可深度定制的 AI 工作平台，满足从个人使用到企业级部署的各类需求。
