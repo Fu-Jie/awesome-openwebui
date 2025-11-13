@@ -1054,113 +1054,11 @@ graph TB
 
 ---
 
-### 四、三大特性与四大核心功能的完整协同
-
-```mermaid
-graph TB
-    subgraph components ["三大核心特性"]
-        A["📁 文件夹<br/>项目工作室"]
-        B["📚 知识库<br/>专业智库"]
-        C["📋 用户提示词<br/>交互式模板"]
-    end
-    
-    subgraph conversation ["四大对话功能"]
-        D["🔶 多模型并行"]
-        E["🔷 @提及深化"]
-        F["🔹 合并总结"]
-        G["🔸 内容选中追问"]
-    end
-    
-    subgraph workflow ["完整工作流"]
-        H["产品经理<br/>创建文件夹"]
-        I["配置系统提示词"]
-        J["关联知识库"]
-        K["创建 /feature_analysis"]
-        L["工作时输入 /"]
-        M["填表自动生成"]
-        N["并行发送多模型<br/>对比 → 深化 → 优化"]
-        O["高质量方案"]
-    end
-    
-    A --> H
-    B --> J
-    C --> K
-    
-    D --> N
-    E --> N
-    F --> N
-    G --> N
-    
-    H --> I --> J --> K --> L --> M --> N --> O
-    
-    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
-    style B fill:#50E3C2,stroke:#2EA896,color:#fff
-    style C fill:#F5A623,stroke:#C27D0E,color:#fff
-    style D fill:#4A90E2,stroke:#2E5C8A,color:#fff
-    style E fill:#50E3C2,stroke:#2EA896,color:#fff
-    style F fill:#E85D75,stroke:#A23E52,color:#fff
-    style G fill:#7ED321,stroke:#5BA30A,color:#fff
-    style O fill:#B8E986,stroke:#7BA30A,color:#000
-```
-
----
-
-## 总结：OpenWebUI 的独特价值主张
-
-```mermaid
-graph LR
-    subgraph org ["📁 组织管理"]
-        A["文件夹即项目<br/>自动应用配置"]
-    end
-    
-    subgraph know ["📚 知识体系"]
-        B["多源知识库<br/>智能检索注入"]
-    end
-    
-    subgraph eff ["⚡ 工作效率"]
-        C["交互式提示词<br/>复杂需求简化"]
-    end
-    
-    subgraph quality ["🎯 对话品质"]
-        D["四大核心功能<br/>完整协同流程"]
-    end
-    
-    subgraph value ["💎 最终价值"]
-        E["从混乱到秩序<br/>从碎片到系统<br/>从重复到高效<br/>从单一到多元<br/>━━━<br/>构建真正的<br/>AI 智囊团"]
-    end
-    
-    A --> value
-    B --> value
-    C --> value
-    D --> value
-    
-    style org fill:#4A90E2,stroke:#2E5C8A,color:#fff
-    style know fill:#50E3C2,stroke:#2EA896,color:#fff
-    style eff fill:#F5A623,stroke:#C27D0E,color:#fff
-    style quality fill:#E85D75,stroke:#A23E52,color:#fff
-    style value fill:#B8E986,stroke:#7BA30A,color:#000
-```
-
----
-
-### 对比表：OpenWebUI vs 其他工具
-
-| 维度           | OpenWebUI                  | 其他工具         |
-| -------------- | -------------------------- | ---------------- |
-| **项目组织**   | 📁 文件夹即项目 + 自动配置  | 文件夹只用于分类 |
-| **知识来源**   | 📚 笔记 + 文件 + URL + 对话 | 主要是文件上传   |
-| **知识应用**   | 自动检索 + 智能注入        | 需要手动引用     |
-| **提示词管理** | 📋 文件夹级 + 交互式表单    | 通常无模板系统   |
-| **多模型协同** | 🔶🔷🔹🔸 四大核心功能          | 基础的多模型切换 |
-| **开源友好度** | ⭐⭐⭐⭐⭐ 高度可定制           | 部分不开源       |
-
-## 第三部分：精细化模型管理——自定义模型功能
-
-### 一、自定义模型配置：打造专属的 AI 助手
+### 四、自定义模型配置：打造专属的 AI 助手
 
 OpenWebUI 提供了强大的模型自定义功能，允许用户精细化配置每个模型的行为、权限和能力，满足不同场景下的专业需求。
 
-#### 自定义模型的核心配置项
+##### 自定义模型的核心配置项
 
 ```mermaid
 graph TB
@@ -1209,7 +1107,7 @@ graph TB
 
 ---
 
-#### 模型配置工作流
+##### 模型配置工作流
 
 ```mermaid
 graph LR
@@ -1247,9 +1145,9 @@ graph LR
 
 ---
 
-### 二、关键配置项详解
+####关键配置项详解
 
-#### 1. 用户权限与模型标签
+##### 1. 用户权限与模型标签
 
 ```mermaid
 graph TB
@@ -1281,7 +1179,7 @@ graph TB
     style benefit fill:#B8E986,stroke:#7BA30A,color:#000
 ```
 
-#### 2. 系统提示词与接口参数
+##### 2. 系统提示词与接口参数
 
 ```mermaid
 graph LR
@@ -1315,7 +1213,7 @@ graph LR
     style result fill:#B8E986,stroke:#7BA30A,color:#000
 ```
 
-#### 3. 增强功能：知识库、工具与插件
+##### 3. 增强功能：知识库、工具与插件
 
 ```mermaid
 graph TB
@@ -1357,9 +1255,9 @@ graph TB
 
 ---
 
-### 三、实战应用场景
+####实战应用场景
 
-#### 场景示例：客服专用模型配置
+##### 场景示例：客服专用模型配置
 
 ```mermaid
 graph TB
@@ -1398,7 +1296,7 @@ graph TB
     style effect fill:#B8E986,stroke:#7BA30A,color:#000
 ```
 
-#### 场景示例：代码助手模型配置
+##### 场景示例：代码助手模型配置
 
 ```mermaid
 graph LR
@@ -1428,7 +1326,7 @@ graph LR
 
 ---
 
-### 四、配置最佳实践
+####配置最佳实践
 
 ```mermaid
 graph TB
@@ -1470,7 +1368,119 @@ graph TB
 
 自定义模型功能将 OpenWebUI 从简单的对话工具升级为可深度定制的 AI 工作平台，满足从个人使用到企业级部署的各类需求。
 
-## 第四部分：扩展功能——Functions、Tools、OpenAPI Server 和 MCP Server
+### 五、四大特性与四大核心功能的完整协同
+
+```mermaid
+graph TB
+    subgraph components ["四大核心特性"]
+        A["📁 文件夹<br/>项目工作室"]
+        B["📚 知识库<br/>专业智库"]
+        C["📋 用户提示词<br/>交互式模板"]
+    end
+    
+    subgraph conversation ["四大对话功能"]
+        D["🔶 多模型并行"]
+        E["🔷 @提及深化"]
+        F["🔹 合并总结"]
+        G["🔸 内容选中追问"]
+    end
+    
+    subgraph workflow ["完整工作流"]
+        I["产品经理<br/>创建文件夹"]
+        J["配置系统提示词"]
+        K["关联知识库"]
+        L["自定义模型配置"]
+        M["创建 /feature_analysis"]
+        N["工作时输入 /"]
+        O["填表自动生成"]
+        P["并行发送多模型<br/>对比 → 深化 → 优化"]
+        Q["高质量方案"]
+    end
+    
+    A --> I
+    B --> K
+    C --> M
+    D --> L
+    
+    E --> P
+    F --> P
+    G --> P
+    H --> P
+    
+    I --> J --> K --> L --> M --> N --> O --> P --> Q
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#F5A623,stroke:#C27D0E,color:#fff
+    style D fill:#E85D75,stroke:#A23E52,color:#fff
+    style E fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style F fill:#50E3C2,stroke:#2EA896,color:#fff
+    style G fill:#E85D75,stroke:#A23E52,color:#fff
+    style H fill:#7ED321,stroke:#5BA30A,color:#fff
+    style Q fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+## 总结：OpenWebUI 的独特价值主张
+
+```mermaid
+graph LR
+    subgraph org ["📁 组织管理"]
+        A["文件夹即项目<br/>自动应用配置"]
+    end
+    
+    subgraph know ["📚 知识体系"]
+        B["多源知识库<br/>智能检索注入"]
+    end
+    
+    subgraph eff ["⚡ 工作效率"]
+        C["交互式提示词<br/>复杂需求简化"]
+    end
+    
+    subgraph model ["⚙️ 模型定制"]
+        D["精细化配置<br/>权限与能力管理"]
+    end
+    
+    subgraph quality ["🎯 对话品质"]
+        E["四大核心功能<br/>完整协同流程"]
+    end
+    
+    subgraph value ["💎 最终价值"]
+        F["从混乱到秩序<br/>从碎片到系统<br/>从重复到高效<br/>从单一到多元<br/>━━━<br/>构建真正的<br/>AI 智囊团"]
+    end
+    
+    A --> value
+    B --> value
+    C --> value
+    D --> value
+    E --> value
+    
+    style org fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style know fill:#50E3C2,stroke:#2EA896,color:#fff
+    style eff fill:#F5A623,stroke:#C27D0E,color:#fff
+    style model fill:#E85D75,stroke:#A23E52,color:#fff
+    style quality fill:#7ED321,stroke:#5BA30A,color:#fff
+    style value fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+### 对比表：OpenWebUI vs 其他工具
+
+| 维度           | OpenWebUI                  | 其他工具         |
+| -------------- | -------------------------- | ---------------- |
+| **项目组织**   | 📁 文件夹即项目 + 自动配置  | 文件夹只用于分类 |
+| **知识来源**   | 📚 笔记 + 文件 + URL + 对话 | 主要是文件上传   |
+| **知识应用**   | 自动检索 + 智能注入        | 需要手动引用     |
+| **提示词管理** | 📋 文件夹级 + 交互式表单    | 通常无模板系统   |
+| **多模型协同** | 🔶🔷🔹🔸 四大核心功能          | 基础的多模型切换 |
+| **模型定制**   | ⚙️ 精细化配置 + 权限管理    | 基础参数调整     |
+| **开源友好度** | ⭐⭐⭐⭐⭐ 高度可定制           | 部分不开源       |
+
+
+
+## 第三部分：扩展功能——Functions、Tools、OpenAPI Server 和 MCP Server
 
 OpenWebUI 的真正强大之处在于其丰富的扩展能力。通过 Functions、Tools、OpenAPI Server 和 MCP Server，您可以将 OpenWebUI 从一个对话界面扩展成为一个功能完备的 AI 应用平台。
 
@@ -2219,10 +2229,8 @@ OpenWebUI 不仅仅是一个 AI 对话界面，而是一个完整的 AI 应用�
 
 **第一部分**：通过**多模型并行**、**@提及机制**、**智能合并总结**和**内容选中追问**四大核心功能，构建了强大的多模型协同对话体系。
 
-**第二部分**：通过**文件夹管理**、**知识库系统**和**用户提示词**，实现了从混乱到秩序、从碎片到系统的智能工作台转变。
+**第二部分**：通过**文件夹管理**、**知识库系统**、**用户提示词**和**自定义模型配置**，实现了从混乱到秩序、从碎片到系统的智能工作台转变，提供了精细化的模型管理能力，满足从个人到企业的各类需求。
 
-**第三部分**：通过**自定义模型配置**，提供了精细化的模型管理能力，满足从个人到企业的各类需求。
-
-**第四部分**：通过**Functions**、**Tools**、**OpenAPI Server**和**MCP Server**四大扩展机制，构建了完整的应用生态，实现了从简单对话到复杂业务流程的全面支持。
+**第三部分**：通过**Functions**、**Tools**、**OpenAPI Server**和**MCP Server**四大扩展机制，构建了完整的应用生态，实现了从简单对话到复杂业务流程的全面支持。
 
 OpenWebUI 将 AI 对话、知识管理、工作流程和应用开发完美融合，为用户提供了一个真正的 AI 智囊团和工作平台。
