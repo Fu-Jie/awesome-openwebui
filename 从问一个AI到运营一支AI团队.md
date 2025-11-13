@@ -1,6 +1,14 @@
-# 将 AI 模型打造成梦之队：OpenWebUI 协同聊天工作流指南
+# 从"问一个AI"到"运营一支AI团队"
 
-## 第一部分：颠覆传统的强大聊天机制
+## 解读OpenWebUI的协同野心与平台价值
+
+从与一个AI对话，到指挥一支多模型协作的AI团队——这不仅仅是工具的升级，更是工作方式的革命。
+
+OpenWebUI通过**协同、扩展、定制、生态**四大维度，将AI从辅助工具升级为智囊团和工作平台。
+
+---
+
+## 第一部分：构建AI团队的基础——多模型协同对话系统
 
 ### 思想的交响乐：体验多模型并行的力量
 
@@ -1137,14 +1145,14 @@ graph LR
 
 ### 对比表：OpenWebUI vs 其他工具
 
-| 维度 | OpenWebUI | 其他工具 |
-|------|-----------|---------|
-| **项目组织** | 📁 文件夹即项目 + 自动配置 | 文件夹只用于分类 |
-| **知识来源** | 📚 笔记 + 文件 + URL + 对话 | 主要是文件上传 |
-| **知识应用** | 自动检索 + 智能注入 | 需要手动引用 |
-| **提示词管理** | 📋 文件夹级 + 交互式表单 | 通常无模板系统 |
-| **多模型协同** | 🔶🔷🔹🔸 四大核心功能 | 基础的多模型切换 |
-| **开源友好度** | ⭐⭐⭐⭐⭐ 高度可定制 | 部分不开源 |
+| 维度           | OpenWebUI                  | 其他工具         |
+| -------------- | -------------------------- | ---------------- |
+| **项目组织**   | 📁 文件夹即项目 + 自动配置  | 文件夹只用于分类 |
+| **知识来源**   | 📚 笔记 + 文件 + URL + 对话 | 主要是文件上传   |
+| **知识应用**   | 自动检索 + 智能注入        | 需要手动引用     |
+| **提示词管理** | 📋 文件夹级 + 交互式表单    | 通常无模板系统   |
+| **多模型协同** | 🔶🔷🔹🔸 四大核心功能          | 基础的多模型切换 |
+| **开源友好度** | ⭐⭐⭐⭐⭐ 高度可定制           | 部分不开源       |
 
 ## 第三部分：精细化模型管理——自定义模型功能
 
@@ -1464,8 +1472,6 @@ graph TB
 
 ## 第四部分：扩展功能——Functions、Tools、OpenAPI Server 和 MCP Server
 
-> 📘 **参考文档**：本部分内容参考自 [OpenWebUI 官方文档](https://github.com/open-webui/docs/tree/main/docs)
-
 OpenWebUI 的真正强大之处在于其丰富的扩展能力。通过 Functions、Tools、OpenAPI Server 和 MCP Server，您可以将 OpenWebUI 从一个对话界面扩展成为一个功能完备的 AI 应用平台。
 
 ### 一、Functions（函数）：模块化的 Python 插件系统
@@ -1473,6 +1479,7 @@ OpenWebUI 的真正强大之处在于其丰富的扩展能力。通过 Functions
 #### 什么是 Functions？
 
 Functions 是用纯 Python 编写的模块化插件，运行在 OpenWebUI 环境内部，允许您：
+
 - 集成新的 AI 模型提供商（如 Anthropic、Google Vertex AI）
 - 自定义对话处理流程
 - 添加自定义按钮、工作流步骤或 UI 行为
@@ -1481,11 +1488,11 @@ Functions 是用纯 Python 编写的模块化插件，运行在 OpenWebUI 环境
 ```mermaid
 graph TB
     subgraph types ["Functions 的三种类型"]
-        A["🔗 Pipe Functions<br/>━━━<br/>创建自定义代理/模型<br/>在 UI 中显示为可选模型<br/>可链接实现高级工作流"]
-        
         B["🔍 Filter Functions<br/>━━━<br/>预处理输入内容<br/>后处理输出内容<br/>强制执行样式和规范"]
         
         C["⚡ Action Functions<br/>━━━<br/>响应模型/用户事件<br/>执行特定操作<br/>触发外部流程"]
+        
+        A["🔗 Pipe Functions<br/>━━━<br/>创建自定义代理/模型<br/>在 UI 中显示为可选模型<br/>可链接实现高级工作流"]
     end
     
     subgraph features ["核心特性"]
@@ -1495,46 +1502,18 @@ graph TB
         G["✅ 可链式调用"]
     end
     
-    A --> D
-    B --> E
-    C --> F
-    A --> G
+    B --> D
+    C --> E
+    A --> F
+    B --> G
     
-    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
     style B fill:#50E3C2,stroke:#2EA896,color:#fff
     style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
     style D fill:#B8E986,stroke:#7BA30A,color:#000
     style E fill:#B8E986,stroke:#7BA30A,color:#000
     style F fill:#B8E986,stroke:#7BA30A,color:#000
     style G fill:#B8E986,stroke:#7BA30A,color:#000
-```
-
----
-
-#### Pipe Functions：构建自定义 AI 代理
-
-```mermaid
-graph LR
-    subgraph pipe ["Pipe Function 工作流"]
-        A["用户输入"] --> B["Pipe Function 接收"]
-        B --> C["自定义处理逻辑<br/>━━━<br/>API 调用<br/>数据转换<br/>多模型编排"]
-        C --> D["返回结果"]
-        D --> E["UI 显示"]
-    end
-    
-    subgraph examples ["应用示例"]
-        F["Google Search 代理<br/>实时搜索集成"]
-        G["Home Assistant 代理<br/>智能家居控制"]
-        H["多模型路由<br/>智能选择最佳模型"]
-        I["自定义 API 集成<br/>企业内部系统"]
-    end
-    
-    style pipe fill:#4A90E2,stroke:#2E5C8A,color:#fff
-    style examples fill:#50E3C2,stroke:#2EA896,color:#fff
-    style F fill:#7ED321,stroke:#5BA30A,color:#fff
-    style G fill:#7ED321,stroke:#5BA30A,color:#fff
-    style H fill:#7ED321,stroke:#5BA30A,color:#fff
-    style I fill:#7ED321,stroke:#5BA30A,color:#fff
 ```
 
 ---
@@ -1617,12 +1596,41 @@ graph LR
 
 ---
 
+#### Pipe Functions：构建自定义 AI 代理
+
+```mermaid
+graph LR
+    subgraph pipe ["Pipe Function 工作流"]
+        A["用户输入"] --> B["Pipe Function 接收"]
+        B --> C["自定义处理逻辑<br/>━━━<br/>API 调用<br/>数据转换<br/>多模型编排"]
+        C --> D["返回结果"]
+        D --> E["UI 显示"]
+    end
+    
+    subgraph examples ["应用示例"]
+        F["Google Search 代理<br/>实时搜索集成"]
+        G["Home Assistant 代理<br/>智能家居控制"]
+        H["多模型路由<br/>智能选择最佳模型"]
+        I["自定义 API 集成<br/>企业内部系统"]
+    end
+    
+    style pipe fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style examples fill:#50E3C2,stroke:#2EA896,color:#fff
+    style F fill:#7ED321,stroke:#5BA30A,color:#fff
+    style G fill:#7ED321,stroke:#5BA30A,color:#fff
+    style H fill:#7ED321,stroke:#5BA30A,color:#fff
+    style I fill:#7ED321,stroke:#5BA30A,color:#fff
+```
+
+---
+
 ### 二、Tools（工具）：为 AI 赋予超能力
 
 #### 什么是 Tools？
 
 Tools 是 Python 脚本，为您的 AI 助手添加执行实际任务的能力：
-- 实时网络搜索（股票、天气、新闻）
+
+- 实时网络搜索（天气、新闻）
 - 图像生成与处理
 - 语音合成（如 ElevenLabs 集成）
 - 文档分析（PDF、Excel 等）
@@ -1802,45 +1810,6 @@ graph TB
     style use_cases fill:#E85D75,stroke:#A23E52,color:#fff
 ```
 
----
-
-#### 快速开始：搭建自己的工具服务器
-
-```mermaid
-graph LR
-    subgraph setup ["设置步骤"]
-        A["1. 克隆示例项目<br/>git clone<br/>openapi-servers"]
-        
-        B["2. 选择示例<br/>时间/文件/天气<br/>等工具模板"]
-        
-        C["3. 安装依赖<br/>pip install<br/>-r requirements.txt"]
-        
-        D["4. 启动服务<br/>uvicorn main:app<br/>--reload"]
-    end
-    
-    subgraph connect ["连接到 OpenWebUI"]
-        E["打开设置"]
-        F["工具 > 添加服务器"]
-        G["输入 URL<br/>http://localhost:8000"]
-        H["保存并测试"]
-    end
-    
-    subgraph use ["开始使用"]
-        I["在对话中<br/>工具自动可用"]
-        J["AI 按需调用<br/>工具功能"]
-    end
-    
-    A --> B --> C --> D
-    D --> E --> F --> G --> H
-    H --> I --> J
-    
-    style setup fill:#4A90E2,stroke:#2E5C8A,color:#fff
-    style connect fill:#50E3C2,stroke:#2EA896,color:#fff
-    style use fill:#B8E986,stroke:#7BA30A,color:#000
-```
-
----
-
 #### 开发自定义工具服务器
 
 ```mermaid
@@ -1954,44 +1923,6 @@ graph TB
     style C fill:#E85D75,stroke:#A23E52,color:#fff
     style D fill:#F5A623,stroke:#C27D0E,color:#fff
 ```
-
----
-
-#### 快速开始：使用 MCP Server
-
-```mermaid
-graph LR
-    subgraph install ["安装 mcpo"]
-        A["通过 pip<br/>pip install mcpo"]
-        B["通过 Docker<br/>docker pull mcpo"]
-        C["通过 uv<br/>uv tool install mcpo"]
-    end
-    
-    subgraph run ["运行 MCP 代理"]
-        D["启动 mcpo<br/>━━━<br/>mcpo --port 8000<br/>-- your_mcp_server"]
-    end
-    
-    subgraph config ["配置 OpenWebUI"]
-        E["添加工具服务器<br/>━━━<br/>URL: http://localhost:8000<br/>类型: OpenAPI"]
-    end
-    
-    subgraph use ["使用工具"]
-        F["在对话中<br/>MCP 工具自动可用"]
-    end
-    
-    A --> D
-    B --> D
-    C --> D
-    
-    D --> E --> F
-    
-    style install fill:#4A90E2,stroke:#2E5C8A,color:#fff
-    style run fill:#50E3C2,stroke:#2EA896,color:#fff
-    style config fill:#F5A623,stroke:#C27D0E,color:#fff
-    style use fill:#B8E986,stroke:#7BA30A,color:#000
-```
-
----
 
 #### MCP 应用场景
 
