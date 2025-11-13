@@ -23,41 +23,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_MINDMAP_ASSISTANT = """
-你是一个专业的思维导图生成助手,能够高效地分析用户提供的长篇文本,并将其核心主题、关键概念、分支和子分支结构化为标准的Markdown列表语法,以便Markmap.js进行渲染。
+You are a professional mind map generation assistant, capable of efficiently analyzing long-form text provided by users and structuring its core themes, key concepts, branches, and sub-branches into standard Markdown list syntax for rendering by Markmap.js.
 
-请严格遵循以下指导原则:
--   **语言**: 所有输出必须使用用户指定的语言。
--   **格式**: 你的输出必须严格为Markdown列表格式,并用```markdown 和 ``` 包裹。
-    -   使用 `#` 定义中心主题(根节点)。
-    -   使用 `-` 和两个空格的缩进表示分支和子分支。
--   **内容**:
-    -   识别文本的中心主题作为 `#` 标题。
-    -   识别主要概念作为一级列表项。
-    -   识别支持性细节或子概念作为嵌套的列表项。
-    -   节点内容应简洁明了,避免冗长。
--   **只输出Markdown语法**: 不要包含任何额外的寒暄、解释或引导性文字。
--   **如果文本过短或无法生成有效导图**: 请输出一个简单的Markdown列表,表示无法生成,例如:
+Please strictly follow these guidelines:
+-   **Language**: All output must be in the language specified by the user.
+-   **Format**: Your output must strictly be in Markdown list format, wrapped with ```markdown and ```.
+    -   Use `#` to define the central theme (root node).
+    -   Use `-` with two-space indentation to represent branches and sub-branches.
+-   **Content**:
+    -   Identify the central theme of the text as the `#` heading.
+    -   Identify main concepts as first-level list items.
+    -   Identify supporting details or sub-concepts as nested list items.
+    -   Node content should be concise and clear, avoiding verbosity.
+-   **Output Markdown syntax only**: Do not include any additional greetings, explanations, or guiding text.
+-   **If text is too short or cannot generate a valid mind map**: Output a simple Markdown list indicating inability to generate, for example:
     ```markdown
-    # 无法生成思维导图
-    - 原因: 文本内容不足或不明确
+    # Unable to Generate Mind Map
+    - Reason: Insufficient or unclear text content
     ```
 """
 
 USER_PROMPT_GENERATE_MINDMAP = """
-请分析以下长篇文本,并将其核心主题、关键概念、分支和子分支结构化为标准的Markdown列表语法,以供Markmap.js渲染。
+Please analyze the following long-form text and structure its core themes, key concepts, branches, and sub-branches into standard Markdown list syntax for Markmap.js rendering.
 
 ---
-**用户上下文信息:**
-用户姓名: {user_name}
-当前日期时间: {current_date_time_str}
-当前星期: {current_weekday}
-当前时区: {current_timezone_str}
-用户语言: {user_language}
+**User Context Information:**
+User Name: {user_name}
+Current Date & Time: {current_date_time_str}
+Current Weekday: {current_weekday}
+Current Timezone: {current_timezone_str}
+User Language: {user_language}
 ---
 
-**长篇文本内容:**
-Use code with caution.
-Python
+**Long-form Text Content:**
 {long_text_content}
 """
 
@@ -67,7 +65,7 @@ HTML_TEMPLATE_MINDMAP = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智绘心图: 思维导图</title>
+    <title>Smart Mind Map: Mind Map Visualization</title>
     <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
     <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.17"></script>
     <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.17"></script>
@@ -203,28 +201,28 @@ HTML_TEMPLATE_MINDMAP = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>🧠 智绘心图</h1>
+            <h1>🧠 Smart Mind Map</h1>
         </div>
         <div class="user-context">
-            <span><strong>用户:</strong> {user_name}</span>
-            <span><strong>分析时间:</strong> {current_date_time_str}</span>
-            <span><strong>星期:</strong> {current_weekday_zh}</span>
+            <span><strong>User:</strong> {user_name}</span>
+            <span><strong>Analysis Time:</strong> {current_date_time_str}</span>
+            <span><strong>Weekday:</strong> {current_weekday_zh}</span>
         </div>
         <div class="content-area">
             <div class="markmap-container" id="markmap-container-{unique_id}"></div>
             <div class="download-area">
                 <button id="download-svg-btn-{unique_id}" class="download-btn">
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    <span class="btn-text">复制 SVG 代码</span>
+                    <span class="btn-text">Copy SVG Code</span>
                 </button>
                 <button id="download-md-btn-{unique_id}" class="download-btn secondary">
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                    <span class="btn-text">复制 Markdown</span>
+                    <span class="btn-text">Copy Markdown</span>
                 </button>
             </div>
         </div>
         <div class="footer">
-            <p>© {current_year} 智绘心图 • 渲染引擎由 <a href="https://markmap.js.org/" target="_blank">Markmap</a> 提供</p>
+            <p>© {current_year} Smart Mind Map • Rendering engine powered by <a href="https://markmap.js.org/" target="_blank">Markmap</a></p>
         </div>
     </div>
     
@@ -242,7 +240,7 @@ HTML_TEMPLATE_MINDMAP = """
 
             const markdownContent = sourceEl.textContent.trim();
             if (!markdownContent) {
-                containerEl.innerHTML = '<div class="error-message">⚠️ 无法加载思维导图: 缺少有效内容。</div>';
+                containerEl.innerHTML = '<div class="error-message">⚠️ Unable to load mind map: Missing valid content.</div>';
                 return;
             }
 
@@ -271,7 +269,7 @@ HTML_TEMPLATE_MINDMAP = """
 
             } catch (error) {
                 console.error('Markmap rendering error:', error);
-                containerEl.innerHTML = '<div class="error-message">⚠️ 思维导图渲染失败!<br>原因: ' + error.message + '</div>';
+                containerEl.innerHTML = '<div class="error-message">⚠️ Mind map rendering failed!<br>Reason: ' + error.message + '</div>';
             }
         };
 
@@ -286,10 +284,10 @@ HTML_TEMPLATE_MINDMAP = """
                 
                 button.disabled = true;
                 if (isSuccess) {
-                    buttonText.textContent = '✅ 已复制!';
+                    buttonText.textContent = '✅ Copied!';
                     button.classList.add('copied');
                 } else {
-                    buttonText.textContent = '❌ 复制失败';
+                    buttonText.textContent = '❌ Copy Failed';
                 }
 
                 setTimeout(() => {
@@ -360,26 +358,28 @@ HTML_TEMPLATE_MINDMAP = """
 class Action:
     class Valves(BaseModel):
         show_status: bool = Field(
-            default=True, description="是否在聊天界面显示操作状态更新。"
+            default=True,
+            description="Whether to show action status updates in the chat interface.",
         )
         LLM_MODEL_ID: str = Field(
             default="gemini-2.5-flash",
-            description="用于文本分析的内置LLM模型ID。",
+            description="Built-in LLM model ID for text analysis.",
         )
         MIN_TEXT_LENGTH: int = Field(
-            default=100, description="进行思维导图分析所需的最小文本长度(字符数)。"
+            default=100,
+            description="Minimum text length (character count) required for mind map analysis.",
         )
 
     def __init__(self):
         self.valves = self.Valves()
         self.weekday_map = {
-            "Monday": "星期一",
-            "Tuesday": "星期二",
-            "Wednesday": "星期三",
-            "Thursday": "星期四",
-            "Friday": "星期五",
-            "Saturday": "星期六",
-            "Sunday": "星期日",
+            "Monday": "Monday",
+            "Tuesday": "Tuesday",
+            "Wednesday": "Wednesday",
+            "Thursday": "Thursday",
+            "Friday": "Friday",
+            "Saturday": "Saturday",
+            "Sunday": "Sunday",
         }
 
     def _extract_markdown_syntax(self, llm_output: str) -> str:
@@ -388,7 +388,7 @@ class Action:
             extracted_content = match.group(1).strip()
         else:
             logger.warning(
-                "LLM输出未严格遵循预期Markdown格式，将整个输出作为摘要处理。"
+                "LLM output did not strictly follow the expected Markdown format, treating the entire output as summary."
             )
             extracted_content = llm_output.strip()
         return extracted_content.replace("</script>", "<\\/script>")
@@ -400,21 +400,21 @@ class Action:
         __event_emitter__: Optional[Any] = None,
         __request__: Optional[Request] = None,
     ) -> Optional[dict]:
-        logger.info("Action: 智绘心图 (v12 - Final Feedback Fix) started")
+        logger.info("Action: Smart Mind Map (v0.7.2) started")
 
         if isinstance(__user__, (list, tuple)):
             user_language = (
-                __user__[0].get("language", "zh-CN") if __user__ else "zh-CN"
+                __user__[0].get("language", "en-US") if __user__ else "en-US"
             )
-            user_name = __user__[0].get("name", "用户") if __user__[0] else "用户"
+            user_name = __user__[0].get("name", "User") if __user__[0] else "User"
             user_id = (
                 __user__[0]["id"]
                 if __user__ and "id" in __user__[0]
                 else "unknown_user"
             )
         elif isinstance(__user__, dict):
-            user_language = __user__.get("language", "zh-CN")
-            user_name = __user__.get("name", "用户")
+            user_language = __user__.get("language", "en-US")
+            user_name = __user__.get("name", "User")
             user_id = __user__.get("id", "unknown_user")
 
         try:
@@ -424,16 +424,16 @@ class Action:
                 "%Y-%m-%d %H:%M:%S"
             )
             current_weekday_en = current_datetime_shanghai.strftime("%A")
-            current_weekday_zh = self.weekday_map.get(current_weekday_en, "未知星期")
+            current_weekday_zh = self.weekday_map.get(current_weekday_en, "Unknown")
             current_year = current_datetime_shanghai.strftime("%Y")
             current_timezone_str = "Asia/Shanghai"
         except Exception as e:
-            logger.warning(f"获取时区信息失败: {e}，使用默认值。")
+            logger.warning(f"Failed to get timezone info: {e}, using default values.")
             now = datetime.now()
             current_date_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-            current_weekday_zh = "未知星期"
+            current_weekday_zh = "Unknown"
             current_year = now.strftime("%Y")
-            current_timezone_str = "未知时区"
+            current_timezone_str = "Unknown"
 
         if __event_emitter__:
             await __event_emitter__(
@@ -441,7 +441,7 @@ class Action:
                     "type": "notification",
                     "data": {
                         "type": "info",
-                        "content": "智绘心图已启动，正在为您生成思维导图...",
+                        "content": "Smart Mind Map is starting, generating mind map for you...",
                     },
                 }
             )
@@ -452,7 +452,7 @@ class Action:
             or not isinstance(messages, list)
             or not messages[-1].get("content")
         ):
-            error_message = "无法获取有效的用户消息内容。"
+            error_message = "Unable to retrieve valid user message content."
             if __event_emitter__:
                 await __event_emitter__(
                     {
@@ -476,7 +476,7 @@ class Action:
             long_text_content = messages[-1]["content"].strip()
 
         if len(long_text_content) < self.valves.MIN_TEXT_LENGTH:
-            short_text_message = f"文本内容过短({len(long_text_content)}字符)，无法进行有效分析。请提供至少{self.valves.MIN_TEXT_LENGTH}字符的文本。"
+            short_text_message = f"Text content is too short ({len(long_text_content)} characters), unable to perform effective analysis. Please provide at least {self.valves.MIN_TEXT_LENGTH} characters of text."
             if __event_emitter__:
                 await __event_emitter__(
                     {
@@ -495,7 +495,7 @@ class Action:
                 {
                     "type": "status",
                     "data": {
-                        "description": "智绘心图: 深入分析文本结构...",
+                        "description": "Smart Mind Map: Analyzing text structure in depth...",
                         "done": False,
                         "hidden": False,
                     },
@@ -525,7 +525,7 @@ class Action:
             }
             user_obj = Users.get_user_by_id(user_id)
             if not user_obj:
-                raise ValueError(f"无法获取用户对象，用户ID: {user_id}")
+                raise ValueError(f"Unable to get user object, user ID: {user_id}")
 
             llm_response = await generate_chat_completion(
                 __request__, llm_payload, user_obj
@@ -536,7 +536,7 @@ class Action:
                 or "choices" not in llm_response
                 or not llm_response["choices"]
             ):
-                raise ValueError("LLM响应格式不正确或为空。")
+                raise ValueError("LLM response format is incorrect or empty.")
 
             assistant_response_content = llm_response["choices"][0]["message"][
                 "content"
@@ -561,7 +561,7 @@ class Action:
                     {
                         "type": "status",
                         "data": {
-                            "description": "智绘心图: 绘制完成！",
+                            "description": "Smart Mind Map: Drawing completed!",
                             "done": True,
                             "hidden": False,
                         },
@@ -572,19 +572,19 @@ class Action:
                         "type": "notification",
                         "data": {
                             "type": "success",
-                            "content": f"思维导图已生成，{user_name}！",
+                            "content": f"Mind map has been generated, {user_name}!",
                         },
                     }
                 )
-            logger.info("Action: 智绘心图 (v12) completed successfully")
+            logger.info("Action: Smart Mind Map (v0.7.2) completed successfully")
 
         except Exception as e:
-            error_message = f"智绘心图处理失败: {str(e)}"
-            logger.error(f"智绘心图错误: {error_message}", exc_info=True)
-            user_facing_error = f"抱歉，智绘心图在处理时遇到错误: {str(e)}。\n请检查Open WebUI后端日志获取更多详情。"
+            error_message = f"Smart Mind Map processing failed: {str(e)}"
+            logger.error(f"Smart Mind Map error: {error_message}", exc_info=True)
+            user_facing_error = f"Sorry, Smart Mind Map encountered an error during processing: {str(e)}.\nPlease check the Open WebUI backend logs for more details."
             body["messages"][-1][
                 "content"
-            ] = f"{long_text_content}\n\n❌ **错误:** {user_facing_error}"
+            ] = f"{long_text_content}\n\n❌ **Error:** {user_facing_error}"
 
             if __event_emitter__:
                 if self.valves.show_status:
@@ -592,7 +592,7 @@ class Action:
                         {
                             "type": "status",
                             "data": {
-                                "description": "智绘心图: 处理失败。",
+                                "description": "Smart Mind Map: Processing failed.",
                                 "done": True,
                                 "hidden": False,
                             },
@@ -603,7 +603,7 @@ class Action:
                         "type": "notification",
                         "data": {
                             "type": "error",
-                            "content": f"智绘心图生成失败, {user_name}！",
+                            "content": f"Smart Mind Map generation failed, {user_name}!",
                         },
                     }
                 )
