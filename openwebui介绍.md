@@ -1461,3 +1461,837 @@ graph TB
 - **👥 团队协作**：统一的模型配置，保证服务一致性
 
 自定义模型功能将 OpenWebUI 从简单的对话工具升级为可深度定制的 AI 工作平台，满足从个人使用到企业级部署的各类需求。
+
+## 第四部分：扩展功能——Functions、Tools、OpenAPI Server 和 MCP Server
+
+> 📘 **参考文档**：本部分内容参考自 [OpenWebUI 官方文档](https://github.com/open-webui/docs/tree/main/docs)
+
+OpenWebUI 的真正强大之处在于其丰富的扩展能力。通过 Functions、Tools、OpenAPI Server 和 MCP Server，您可以将 OpenWebUI 从一个对话界面扩展成为一个功能完备的 AI 应用平台。
+
+### 一、Functions（函数）：模块化的 Python 插件系统
+
+#### 什么是 Functions？
+
+Functions 是用纯 Python 编写的模块化插件，运行在 OpenWebUI 环境内部，允许您：
+- 集成新的 AI 模型提供商（如 Anthropic、Google Vertex AI）
+- 自定义对话处理流程
+- 添加自定义按钮、工作流步骤或 UI 行为
+- 实现复杂的业务逻辑
+
+```mermaid
+graph TB
+    subgraph types ["Functions 的三种类型"]
+        A["🔗 Pipe Functions<br/>━━━<br/>创建自定义代理/模型<br/>在 UI 中显示为可选模型<br/>可链接实现高级工作流"]
+        
+        B["🔍 Filter Functions<br/>━━━<br/>预处理输入内容<br/>后处理输出内容<br/>强制执行样式和规范"]
+        
+        C["⚡ Action Functions<br/>━━━<br/>响应模型/用户事件<br/>执行特定操作<br/>触发外部流程"]
+    end
+    
+    subgraph features ["核心特性"]
+        D["✅ 纯 Python 实现"]
+        E["✅ 模块化设计"]
+        F["✅ 环境隔离"]
+        G["✅ 可链式调用"]
+    end
+    
+    A --> D
+    B --> E
+    C --> F
+    A --> G
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style D fill:#B8E986,stroke:#7BA30A,color:#000
+    style E fill:#B8E986,stroke:#7BA30A,color:#000
+    style F fill:#B8E986,stroke:#7BA30A,color:#000
+    style G fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+#### Pipe Functions：构建自定义 AI 代理
+
+```mermaid
+graph LR
+    subgraph pipe ["Pipe Function 工作流"]
+        A["用户输入"] --> B["Pipe Function 接收"]
+        B --> C["自定义处理逻辑<br/>━━━<br/>API 调用<br/>数据转换<br/>多模型编排"]
+        C --> D["返回结果"]
+        D --> E["UI 显示"]
+    end
+    
+    subgraph examples ["应用示例"]
+        F["Google Search 代理<br/>实时搜索集成"]
+        G["Home Assistant 代理<br/>智能家居控制"]
+        H["多模型路由<br/>智能选择最佳模型"]
+        I["自定义 API 集成<br/>企业内部系统"]
+    end
+    
+    style pipe fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style examples fill:#50E3C2,stroke:#2EA896,color:#fff
+    style F fill:#7ED321,stroke:#5BA30A,color:#fff
+    style G fill:#7ED321,stroke:#5BA30A,color:#fff
+    style H fill:#7ED321,stroke:#5BA30A,color:#fff
+    style I fill:#7ED321,stroke:#5BA30A,color:#fff
+```
+
+---
+
+#### Filter Functions：智能内容处理
+
+```mermaid
+graph TB
+    subgraph input_filter ["输入过滤器"]
+        A["用户原始输入"]
+        B["格式化处理"]
+        C["敏感信息过滤"]
+        D["上下文增强"]
+        E["发送给模型"]
+    end
+    
+    subgraph output_filter ["输出过滤器"]
+        F["模型原始输出"]
+        G["语气调整"]
+        H["内容清理"]
+        I["格式优化"]
+        J["返回给用户"]
+    end
+    
+    A --> B --> C --> D --> E
+    F --> G --> H --> I --> J
+    
+    subgraph benefits ["应用价值"]
+        K["✅ 统一输入格式"]
+        L["✅ 保护隐私安全"]
+        M["✅ 优化输出质量"]
+        N["✅ 强制执行规范"]
+    end
+    
+    E --> K
+    J --> M
+    
+    style input_filter fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style output_filter fill:#50E3C2,stroke:#2EA896,color:#fff
+    style benefits fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+#### Action Functions：事件驱动的自动化
+
+```mermaid
+graph LR
+    subgraph trigger ["触发器"]
+        A["对话完成"]
+        B["用户点击"]
+        C["特定关键词"]
+        D["定时任务"]
+    end
+    
+    subgraph action ["Action 执行"]
+        E["保存到数据库"]
+        F["发送通知"]
+        G["调用外部 API"]
+        H["生成报告"]
+        I["触发工作流"]
+    end
+    
+    A --> E
+    B --> F
+    C --> G
+    D --> H
+    E --> I
+    
+    subgraph scenarios ["典型场景"]
+        J["对话归档<br/>自动保存重要对话"]
+        K["任务创建<br/>从对话生成待办事项"]
+        L["数据同步<br/>更新外部系统"]
+    end
+    
+    style trigger fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style action fill:#50E3C2,stroke:#2EA896,color:#fff
+    style scenarios fill:#E85D75,stroke:#A23E52,color:#fff
+```
+
+---
+
+### 二、Tools（工具）：为 AI 赋予超能力
+
+#### 什么是 Tools？
+
+Tools 是 Python 脚本，为您的 AI 助手添加执行实际任务的能力：
+- 实时网络搜索（股票、天气、新闻）
+- 图像生成与处理
+- 语音合成（如 ElevenLabs 集成）
+- 文档分析（PDF、Excel 等）
+- 代码解释和执行
+
+```mermaid
+graph TB
+    subgraph tool_types ["工具类型"]
+        A["🌐 网络工具<br/>━━━<br/>搜索引擎<br/>API 查询<br/>数据抓取"]
+        
+        B["🎨 媒体工具<br/>━━━<br/>图像生成<br/>语音合成<br/>视频处理"]
+        
+        C["📄 文档工具<br/>━━━<br/>PDF 解析<br/>表格分析<br/>内容提取"]
+        
+        D["💻 代码工具<br/>━━━<br/>代码执行<br/>调试分析<br/>测试运行"]
+    end
+    
+    subgraph modes ["调用模式"]
+        E["Default Mode<br/>━━━<br/>通过提示词工程<br/>LLM 决定何时调用"]
+        
+        F["Native Mode<br/>━━━<br/>函数调用原生支持<br/>直接工具执行"]
+    end
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style D fill:#F5A623,stroke:#C27D0E,color:#fff
+    style E fill:#7ED321,stroke:#5BA30A,color:#fff
+    style F fill:#7ED321,stroke:#5BA30A,color:#fff
+```
+
+---
+
+#### Tools 工作流程
+
+```mermaid
+graph LR
+    subgraph install ["安装阶段"]
+        A["从社区库选择"]
+        B["手动上传脚本"]
+        C["配置参数"]
+    end
+    
+    subgraph enable ["启用阶段"]
+        D["会话级启用"]
+        E["模型默认工具"]
+        F["全局工具配置"]
+    end
+    
+    subgraph execute ["执行阶段"]
+        G["用户提问"]
+        H["LLM 分析需求"]
+        I["选择合适工具"]
+        J["工具执行"]
+        K["结果整合"]
+        L["生成回答"]
+    end
+    
+    A --> D
+    B --> E
+    C --> F
+    
+    D --> G
+    E --> G
+    F --> G
+    
+    G --> H --> I --> J --> K --> L
+    
+    style install fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style enable fill:#50E3C2,stroke:#2EA896,color:#fff
+    style execute fill:#F5A623,stroke:#C27D0E,color:#fff
+```
+
+---
+
+#### 实战示例：网络搜索工具
+
+```mermaid
+graph TB
+    subgraph scenario ["使用场景"]
+        A["用户提问：<br/>今天特斯拉股价是多少？"]
+    end
+    
+    subgraph process ["处理流程"]
+        B["LLM 分析<br/>需要实时数据"]
+        C["调用搜索工具"]
+        D["获取最新股价"]
+        E["整合到回答中"]
+    end
+    
+    subgraph result ["结果展示"]
+        F["截至今日收盘，<br/>特斯拉股价为 $XXX.XX，<br/>较昨日上涨 X.X%<br/>━━━<br/>🔗 数据来源：Yahoo Finance"]
+    end
+    
+    A --> B --> C --> D --> E --> F
+    
+    style scenario fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style process fill:#50E3C2,stroke:#2EA896,color:#fff
+    style result fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+### 三、OpenAPI Server：标准化的服务集成
+
+#### 什么是 OpenAPI Server 集成？
+
+OpenWebUI（v0.6+）支持通过符合 OpenAPI 标准的服务器扩展功能。这使得您可以连接任何暴露 OpenAPI (Swagger) 接口的服务——无论是自己的 Python 脚本、云 API，还是第三方服务。
+
+```mermaid
+graph LR
+    subgraph architecture ["架构设计"]
+        A["OpenWebUI 前端"]
+        B["OpenWebUI 后端"]
+        C["OpenAPI Server<br/>━━━<br/>自定义服务<br/>FastAPI/Flask<br/>任何 HTTP 服务"]
+    end
+    
+    subgraph benefits ["核心优势"]
+        D["🔌 标准化接口<br/>遵循 OpenAPI 规范"]
+        E["🔐 安全可控<br/>认证与授权"]
+        F["📚 自动文档<br/>Swagger UI"]
+        G["🔄 易于集成<br/>RESTful API"]
+    end
+    
+    A --> B
+    B --> C
+    
+    C --> D
+    C --> E
+    C --> F
+    C --> G
+    
+    style architecture fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style benefits fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+#### 两种服务器模式
+
+```mermaid
+graph TB
+    subgraph user_server ["👤 用户工具服务器"]
+        A["User Tool Server"]
+        A1["请求来自浏览器"]
+        A2["localhost = 用户计算机"]
+        A3["个人隐私工具"]
+        A4["本地资源访问"]
+    end
+    
+    subgraph global_server ["🌐 全局工具服务器"]
+        B["Global Tool Server"]
+        B1["请求来自后端"]
+        B2["localhost = OpenWebUI 服务器"]
+        B3["团队共享工具"]
+        B4["中心化管理"]
+    end
+    
+    A --> A1 --> A2
+    A2 --> A3
+    A2 --> A4
+    
+    B --> B1 --> B2
+    B2 --> B3
+    B2 --> B4
+    
+    subgraph use_cases ["使用场景"]
+        C["个人工具：<br/>本地文件访问<br/>私有 API 调用"]
+        D["团队工具：<br/>企业服务集成<br/>共享数据源"]
+    end
+    
+    A4 --> C
+    B4 --> D
+    
+    style user_server fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style global_server fill:#50E3C2,stroke:#2EA896,color:#fff
+    style use_cases fill:#E85D75,stroke:#A23E52,color:#fff
+```
+
+---
+
+#### 快速开始：搭建自己的工具服务器
+
+```mermaid
+graph LR
+    subgraph setup ["设置步骤"]
+        A["1. 克隆示例项目<br/>git clone<br/>openapi-servers"]
+        
+        B["2. 选择示例<br/>时间/文件/天气<br/>等工具模板"]
+        
+        C["3. 安装依赖<br/>pip install<br/>-r requirements.txt"]
+        
+        D["4. 启动服务<br/>uvicorn main:app<br/>--reload"]
+    end
+    
+    subgraph connect ["连接到 OpenWebUI"]
+        E["打开设置"]
+        F["工具 > 添加服务器"]
+        G["输入 URL<br/>http://localhost:8000"]
+        H["保存并测试"]
+    end
+    
+    subgraph use ["开始使用"]
+        I["在对话中<br/>工具自动可用"]
+        J["AI 按需调用<br/>工具功能"]
+    end
+    
+    A --> B --> C --> D
+    D --> E --> F --> G --> H
+    H --> I --> J
+    
+    style setup fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style connect fill:#50E3C2,stroke:#2EA896,color:#fff
+    style use fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+#### 开发自定义工具服务器
+
+```mermaid
+graph TB
+    subgraph develop ["开发指南"]
+        A["选择框架<br/>━━━<br/>FastAPI（推荐）<br/>Flask<br/>其他 HTTP 框架"]
+        
+        B["实现端点<br/>━━━<br/>定义 API 路由<br/>处理请求<br/>返回 JSON"]
+        
+        C["生成 OpenAPI<br/>━━━<br/>自动生成文档<br/>暴露 /openapi.json<br/>Swagger UI"]
+        
+        D["添加安全<br/>━━━<br/>认证机制<br/>CORS 配置<br/>访问控制"]
+    end
+    
+    subgraph example ["示例场景"]
+        E["文件系统工具<br/>读写本地文件"]
+        F["数据库查询<br/>执行 SQL 查询"]
+        G["外部 API<br/>调用第三方服务"]
+        H["自定义业务<br/>企业内部逻辑"]
+    end
+    
+    A --> B --> C --> D
+    
+    D --> E
+    D --> F
+    D --> G
+    D --> H
+    
+    style develop fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style example fill:#50E3C2,stroke:#2EA896,color:#fff
+```
+
+---
+
+### 四、MCP Server：下一代工具协议
+
+#### 什么是 MCP（Model Context Protocol）？
+
+MCP 是一个为 AI 代理设计的开放标准协议，使得 AI 能够以安全、统一、上下文驱动的方式发现和交互外部工具（如代码操作、文件访问、数据库查询、自定义 API）。
+
+```mermaid
+graph TB
+    subgraph mcp_concept ["MCP 核心概念"]
+        A["🎯 标准化协议<br/>━━━<br/>统一的工具发现<br/>结构化的操作模式<br/>安全的执行机制"]
+        
+        B["🧠 上下文感知<br/>━━━<br/>保持状态信息<br/>理解使用场景<br/>智能决策支持"]
+        
+        C["🔐 安全设计<br/>━━━<br/>权限控制<br/>沙箱隔离<br/>审计日志"]
+    end
+    
+    subgraph why_mcp ["为什么需要 MCP？"]
+        D["❌ 传统问题<br/>━━━<br/>每个工具独立集成<br/>缺乏统一标准<br/>重复开发工作"]
+        
+        E["✅ MCP 解决<br/>━━━<br/>一次集成多个工具<br/>标准化接口<br/>自动工具发现"]
+    end
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style D fill:#F5A623,stroke:#C27D0E,color:#fff
+    style E fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+#### OpenWebUI 中的 MCP 集成架构
+
+```mermaid
+graph LR
+    subgraph architecture ["三层架构"]
+        A["OpenWebUI<br/>前端界面"]
+        
+        B["mcpo<br/>代理服务器<br/>━━━<br/>MCP → OpenAPI<br/>协议转换"]
+        
+        C["MCP Server<br/>工具服务器<br/>━━━<br/>实际功能实现<br/>stdio/HTTP"]
+    end
+    
+    subgraph flow ["工作流程"]
+        D["1. 用户请求"]
+        E["2. OpenWebUI<br/>调用 REST API"]
+        F["3. mcpo<br/>转换为 MCP 协议"]
+        G["4. MCP Server<br/>执行任务"]
+        H["5. 结果返回"]
+    end
+    
+    A --> B
+    B --> C
+    
+    D --> E --> F --> G --> H
+    
+    style architecture fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style flow fill:#50E3C2,stroke:#2EA896,color:#fff
+```
+
+**为什么使用代理模式？**
+
+```mermaid
+graph TB
+    subgraph reasons ["代理服务器的价值"]
+        A["🔒 安全性<br/>━━━<br/>沙箱后端行为<br/>认证与授权<br/>减小攻击面"]
+        
+        B["🔄 互操作性<br/>━━━<br/>统一为 OpenAPI<br/>无需自定义连接器<br/>标准 REST API"]
+        
+        C["📈 可扩展性<br/>━━━<br/>独立演进<br/>模块化设计<br/>易于维护"]
+        
+        D["📚 自动文档<br/>━━━<br/>Swagger UI<br/>交互式测试<br/>API 探索"]
+    end
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style D fill:#F5A623,stroke:#C27D0E,color:#fff
+```
+
+---
+
+#### 快速开始：使用 MCP Server
+
+```mermaid
+graph LR
+    subgraph install ["安装 mcpo"]
+        A["通过 pip<br/>pip install mcpo"]
+        B["通过 Docker<br/>docker pull mcpo"]
+        C["通过 uv<br/>uv tool install mcpo"]
+    end
+    
+    subgraph run ["运行 MCP 代理"]
+        D["启动 mcpo<br/>━━━<br/>mcpo --port 8000<br/>-- your_mcp_server"]
+    end
+    
+    subgraph config ["配置 OpenWebUI"]
+        E["添加工具服务器<br/>━━━<br/>URL: http://localhost:8000<br/>类型: OpenAPI"]
+    end
+    
+    subgraph use ["使用工具"]
+        F["在对话中<br/>MCP 工具自动可用"]
+    end
+    
+    A --> D
+    B --> D
+    C --> D
+    
+    D --> E --> F
+    
+    style install fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style run fill:#50E3C2,stroke:#2EA896,color:#fff
+    style config fill:#F5A623,stroke:#C27D0E,color:#fff
+    style use fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+#### MCP 应用场景
+
+```mermaid
+graph TB
+    subgraph scenarios ["典型应用"]
+        A["📖 知识库检索<br/>━━━<br/>RAG 文档搜索<br/>向量数据库查询<br/>智能知识管理"]
+        
+        B["📁 文件操作<br/>━━━<br/>读写本地文件<br/>目录管理<br/>文件搜索"]
+        
+        C["🗄️ 数据访问<br/>━━━<br/>数据库查询<br/>API 调用<br/>数据处理"]
+        
+        D["🎯 领域工具<br/>━━━<br/>特定行业工具<br/>企业内部系统<br/>自定义功能"]
+    end
+    
+    subgraph enterprise ["企业级部署"]
+        E["多服务器集成<br/>━━━<br/>统一代理管理<br/>多个 MCP 服务器<br/>工具编排"]
+        
+        F["安全合规<br/>━━━<br/>访问控制<br/>审计日志<br/>数据隔离"]
+    end
+    
+    A --> E
+    B --> E
+    C --> E
+    D --> E
+    
+    E --> F
+    
+    style scenarios fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style enterprise fill:#50E3C2,stroke:#2EA896,color:#fff
+```
+
+---
+
+### 五、扩展功能对比与选择指南
+
+#### 四种扩展方式对比
+
+```mermaid
+graph TB
+    subgraph comparison ["功能对比"]
+        A["📊 对比维度"]
+    end
+    
+    subgraph functions ["Functions"]
+        B["运行位置<br/>OpenWebUI 内部"]
+        C["开发语言<br/>纯 Python"]
+        D["适用场景<br/>轻量级集成<br/>UI 定制<br/>流程控制"]
+        E["优势<br/>简单快速<br/>深度集成"]
+    end
+    
+    subgraph tools ["Tools"]
+        F["运行位置<br/>OpenWebUI 内部"]
+        G["开发语言<br/>Python 脚本"]
+        H["适用场景<br/>AI 能力扩展<br/>实时查询<br/>媒体处理"]
+        I["优势<br/>易于管理<br/>丰富社区"]
+    end
+    
+    subgraph openapi ["OpenAPI Server"]
+        J["运行位置<br/>独立服务器"]
+        K["开发语言<br/>任意语言"]
+        L["适用场景<br/>复杂服务<br/>企业集成<br/>已有系统"]
+        M["优势<br/>标准化<br/>可扩展"]
+    end
+    
+    subgraph mcp ["MCP Server"]
+        N["运行位置<br/>独立服务器"]
+        O["开发语言<br/>任意语言"]
+        P["适用场景<br/>下一代集成<br/>多工具编排<br/>智能代理"]
+        Q["优势<br/>未来标准<br/>上下文感知"]
+    end
+    
+    style comparison fill:#F5A623,stroke:#C27D0E,color:#fff
+    style functions fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style tools fill:#50E3C2,stroke:#2EA896,color:#fff
+    style openapi fill:#E85D75,stroke:#A23E52,color:#fff
+    style mcp fill:#7ED321,stroke:#5BA30A,color:#fff
+```
+
+---
+
+#### 选择决策树
+
+```mermaid
+graph TB
+    start["我需要扩展 OpenWebUI"]
+    
+    q1{"需求类型？"}
+    q2{"现有系统？"}
+    q3{"团队技术栈？"}
+    q4{"未来规划？"}
+    
+    a1["Functions<br/>━━━<br/>简单快速<br/>UI 集成"]
+    a2["Tools<br/>━━━<br/>AI 能力<br/>社区资源"]
+    a3["OpenAPI Server<br/>━━━<br/>标准集成<br/>现有系统"]
+    a4["MCP Server<br/>━━━<br/>未来标准<br/>智能编排"]
+    
+    start --> q1
+    
+    q1 -->|UI 定制<br/>流程控制| a1
+    q1 -->|AI 能力扩展| a2
+    q1 -->|服务集成| q2
+    
+    q2 -->|有现成 API| a3
+    q2 -->|需要新开发| q3
+    
+    q3 -->|Python 为主| a2
+    q3 -->|多语言| q4
+    
+    q4 -->|传统架构| a3
+    q4 -->|现代化<br/>AI 原生| a4
+    
+    style start fill:#F5A623,stroke:#C27D0E,color:#fff
+    style q1 fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style q2 fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style q3 fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style q4 fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style a1 fill:#B8E986,stroke:#7BA30A,color:#000
+    style a2 fill:#B8E986,stroke:#7BA30A,color:#000
+    style a3 fill:#B8E986,stroke:#7BA30A,color:#000
+    style a4 fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+### 六、扩展功能最佳实践
+
+#### 开发建议
+
+```mermaid
+graph LR
+    subgraph principles ["核心原则"]
+        A["🎯 单一职责<br/>━━━<br/>一个扩展<br/>一个功能"]
+        
+        B["📝 清晰文档<br/>━━━<br/>使用说明<br/>参数描述<br/>示例代码"]
+        
+        C["🔒 安全第一<br/>━━━<br/>输入验证<br/>错误处理<br/>权限控制"]
+        
+        D["🧪 充分测试<br/>━━━<br/>单元测试<br/>集成测试<br/>边界测试"]
+    end
+    
+    subgraph deployment ["部署策略"]
+        E["开发环境<br/>本地测试<br/>快速迭代"]
+        
+        F["测试环境<br/>团队验证<br/>性能测试"]
+        
+        G["生产环境<br/>稳定发布<br/>监控告警"]
+    end
+    
+    A --> E
+    B --> E
+    C --> F
+    D --> F
+    
+    E --> F --> G
+    
+    style principles fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style deployment fill:#50E3C2,stroke:#2EA896,color:#fff
+```
+
+---
+
+#### 性能优化
+
+```mermaid
+graph TB
+    subgraph optimize ["优化要点"]
+        A["⚡ 响应速度<br/>━━━<br/>异步处理<br/>缓存策略<br/>连接池"]
+        
+        B["📊 资源管理<br/>━━━<br/>内存控制<br/>并发限制<br/>超时设置"]
+        
+        C["🔄 错误恢复<br/>━━━<br/>重试机制<br/>降级方案<br/>友好提示"]
+        
+        D["📈 可观测性<br/>━━━<br/>日志记录<br/>性能指标<br/>错误追踪"]
+    end
+    
+    subgraph monitoring ["监控指标"]
+        E["响应时间"]
+        F["成功率"]
+        G["错误率"]
+        H["资源使用"]
+    end
+    
+    A --> E
+    B --> F
+    C --> G
+    D --> H
+    
+    style optimize fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style monitoring fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+---
+
+### 七、社区资源与学习路径
+
+```mermaid
+graph LR
+    subgraph resources ["官方资源"]
+        A["📚 官方文档<br/>docs.openwebui.com"]
+        B["💻 GitHub 仓库<br/>源码与示例"]
+        C["💬 社区讨论<br/>问题与解答"]
+    end
+    
+    subgraph libraries ["社区库"]
+        D["Functions 库<br/>github.com/open-webui/functions"]
+        E["Tools 库<br/>社区贡献工具"]
+        F["OpenAPI 服务器示例<br/>参考实现"]
+    end
+    
+    subgraph learning ["学习路径"]
+        G["1. 基础<br/>了解概念<br/>阅读文档"]
+        H["2. 实践<br/>运行示例<br/>简单修改"]
+        I["3. 开发<br/>创建扩展<br/>解决问题"]
+        J["4. 分享<br/>贡献社区<br/>帮助他人"]
+    end
+    
+    A --> G
+    B --> H
+    C --> I
+    D --> H
+    E --> H
+    F --> H
+    
+    G --> H --> I --> J
+    
+    style resources fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style libraries fill:#50E3C2,stroke:#2EA896,color:#fff
+    style learning fill:#F5A623,stroke:#C27D0E,color:#fff
+```
+
+---
+
+### 总结：构建完整的 AI 应用生态
+
+通过 Functions、Tools、OpenAPI Server 和 MCP Server 四大扩展机制，OpenWebUI 提供了从简单到复杂、从内部到外部的完整扩展能力：
+
+```mermaid
+graph TB
+    subgraph ecosystem ["OpenWebUI 扩展生态"]
+        A["核心对话平台"]
+        
+        B["Functions<br/>内部扩展<br/>━━━<br/>流程控制<br/>UI 定制"]
+        
+        C["Tools<br/>能力增强<br/>━━━<br/>实时查询<br/>媒体处理"]
+        
+        D["OpenAPI Server<br/>服务集成<br/>━━━<br/>企业系统<br/>标准接口"]
+        
+        E["MCP Server<br/>智能编排<br/>━━━<br/>下一代标准<br/>上下文感知"]
+    end
+    
+    subgraph value ["核心价值"]
+        F["🎯 灵活扩展<br/>满足各种需求"]
+        G["🔌 标准化<br/>易于集成"]
+        H["🚀 快速开发<br/>丰富生态"]
+        I["🔐 安全可控<br/>企业级"]
+    end
+    
+    A --> B
+    A --> C
+    A --> D
+    A --> E
+    
+    B --> F
+    C --> G
+    D --> H
+    E --> I
+    
+    style A fill:#F5A623,stroke:#C27D0E,color:#fff
+    style B fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style C fill:#50E3C2,stroke:#2EA896,color:#fff
+    style D fill:#E85D75,stroke:#A23E52,color:#fff
+    style E fill:#7ED321,stroke:#5BA30A,color:#fff
+    style F fill:#B8E986,stroke:#7BA30A,color:#000
+    style G fill:#B8E986,stroke:#7BA30A,color:#000
+    style H fill:#B8E986,stroke:#7BA30A,color:#000
+    style I fill:#B8E986,stroke:#7BA30A,color:#000
+```
+
+**关键要点：**
+
+- **🔧 Functions**：适合轻量级、深度集成的内部扩展
+- **🛠️ Tools**：为 AI 提供执行实际任务的能力
+- **🌐 OpenAPI Server**：连接现有系统和服务的标准方式
+- **🚀 MCP Server**：面向未来的智能工具协议
+
+无论您是个人开发者还是企业团队，OpenWebUI 的扩展能力都能帮助您构建符合需求的定制化 AI 应用平台。从简单的对话界面，到复杂的智能工作流，OpenWebUI 提供了完整的工具链和生态支持。
+
+---
+
+## 全文总结
+
+OpenWebUI 不仅仅是一个 AI 对话界面，而是一个完整的 AI 应用开发平台：
+
+**第一部分**：通过**多模型并行**、**@提及机制**、**智能合并总结**和**内容选中追问**四大核心功能，构建了强大的多模型协同对话体系。
+
+**第二部分**：通过**文件夹管理**、**知识库系统**和**用户提示词**，实现了从混乱到秩序、从碎片到系统的智能工作台转变。
+
+**第三部分**：通过**自定义模型配置**，提供了精细化的模型管理能力，满足从个人到企业的各类需求。
+
+**第四部分**：通过**Functions**、**Tools**、**OpenAPI Server**和**MCP Server**四大扩展机制，构建了完整的应用生态，实现了从简单对话到复杂业务流程的全面支持。
+
+OpenWebUI 将 AI 对话、知识管理、工作流程和应用开发完美融合，为用户提供了一个真正的 AI 智囊团和工作平台。
