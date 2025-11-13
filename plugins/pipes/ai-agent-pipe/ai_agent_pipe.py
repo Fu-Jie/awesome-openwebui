@@ -2,7 +2,7 @@
 title: AI Agent Pipe
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMyIvPgogIDxwYXRoIGQ9Im0xMiA5IDAgNSIvPgogIDxwYXRoIGQ9Im0xMiAxNSAwIDUiLz4KICA8cGF0aCBkPSJtOSA5IDMgMyIvPgogIDxwYXRoIGQ9Im0xNSA5LTMgMyIvPgogIDxwYXRoIGQ9Im05IDE1IDMgMyIvPgogIDxwYXRoIGQ9Im0xNSAxNUwzIDMiLz4KPC9zdmc+
 version: 1.0.0
-description: AI代理管道插件，让AI响应以代理模式进行多步骤分析和工具使用。
+description: AI代理管道插件，让AI响应展示完整的代理工作流程，包括多轮思考、工具调用和迭代分析。
 """
 
 from pydantic import BaseModel, Field
@@ -17,6 +17,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
 
 class Pipe:
     class Valves(BaseModel):
@@ -67,31 +68,73 @@ class Pipe:
         if not user_message or not ai_response:
             return body
 
-        # 系统提示：让AI重新分析并以代理模式格式化响应
+        # 系统提示：让AI模拟完整的代理工作流程
         system_prompt = """
-你是一个AI代理分析器。你的任务是将普通的AI响应转换为结构化的代理式分析格式。
+你是一个高级AI代理，能够进行多轮思考、工具调用和迭代分析。请模拟一个完整的代理工作流程，包括：
 
-请分析用户的问题和AI的原始响应，然后以JSON格式重新组织：
+1. **初始分析**：理解用户问题
+2. **多轮思考**：进行深入分析和推理
+3. **工具调用**：选择并使用适当的工具
+4. **结果处理**：分析工具返回的结果
+5. **最终总结**：提供完整的解决方案
+
+请以JSON格式返回完整的代理工作流程：
 
 {
-  "original_response": "原始AI响应",
-  "agent_analysis": {
-    "problem_identification": "问题识别",
-    "step_by_step_reasoning": ["步骤1", "步骤2", "步骤3"],
-    "tool_recommendations": ["工具1", "工具2"],
-    "solution_summary": "解决方案总结"
-  }
+  "agent_workflow": [
+    {
+      "step": 1,
+      "type": "thinking",
+      "content": "初始思考内容"
+    },
+    {
+      "step": 2,
+      "type": "tool_call",
+      "tool_name": "工具名称",
+      "tool_input": "工具输入参数",
+      "reasoning": "为什么使用这个工具"
+    },
+    {
+      "step": 3,
+      "type": "tool_result",
+      "tool_output": "工具返回的结果",
+      "analysis": "对结果的分析"
+    },
+    {
+      "step": 4,
+      "type": "thinking",
+      "content": "基于工具结果的进一步思考"
+    },
+    {
+      "step": 5,
+      "type": "tool_call",
+      "tool_name": "另一个工具",
+      "tool_input": "新的工具输入",
+      "reasoning": "继续深入分析"
+    }
+  ],
+  "final_answer": "最终的完整答案",
+  "tools_used": ["使用的工具列表"],
+  "confidence_level": "置信度评估"
 }
 
-如果原始响应已经是结构化的，保持其结构但添加代理分析层。
+至少包含3-5个步骤的完整工作流程，展示出代理的思考过程和工具使用。
         """
 
         analysis_prompt = f"""
 用户问题：{user_message}
 
-AI原始响应：{ai_response}
+请作为AI代理完整解决这个问题。展示你的思考过程、工具使用和最终答案。
 
-请将上述内容转换为代理式分析格式。
+模拟可用的工具：
+- web_search: 网络搜索工具
+- code_analyzer: 代码分析工具
+- data_processor: 数据处理工具
+- knowledge_base: 知识库查询工具
+- calculator: 计算工具
+- file_reader: 文件读取工具
+
+请进行多轮思考和工具调用来彻底解决这个问题。
         """
 
         try:
@@ -100,37 +143,62 @@ AI原始响应：{ai_response}
                 model=__model__,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": analysis_prompt}
+                    {"role": "user", "content": analysis_prompt},
                 ],
                 user=__user__,
             )
 
             # 解析分析结果
-            analysis_content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            analysis_content = (
+                response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            )
 
             try:
                 analysis_result = json.loads(analysis_content)
 
-                # 构建增强的响应
+                # 构建增强的响应，展示完整的代理工作流程
+                workflow_steps = analysis_result.get("agent_workflow", [])
+
+                workflow_display = ""
+                for step in workflow_steps:
+                    step_num = step.get("step", 0)
+                    step_type = step.get("type", "unknown")
+
+                    if step_type == "thinking":
+                        workflow_display += f"""
+### 🤔 思考步骤 {step_num}
+{step.get('content', '')}
+"""
+                    elif step_type == "tool_call":
+                        workflow_display += f"""
+### 🛠️ 工具调用 {step_num}
+**工具：** {step.get('tool_name', '')}
+**输入：** {step.get('tool_input', '')}
+**原因：** {step.get('reasoning', '')}
+"""
+                    elif step_type == "tool_result":
+                        workflow_display += f"""
+### 📊 工具结果 {step_num}
+**输出：** {step.get('tool_output', '')}
+**分析：** {step.get('analysis', '')}
+"""
+
                 enhanced_response = f"""
-## 🤖 AI代理分析结果
+## 🤖 AI代理完整工作流程
 
-### 📝 原始响应
-{analysis_result.get('original_response', ai_response)}
+### 🎯 问题
+{user_message}
 
-### 🔍 代理分析
+{workflow_display}
 
-**问题识别：**
-{analysis_result.get('agent_analysis', {}).get('problem_identification', '无法解析')}
+### 🎉 最终答案
+{analysis_result.get('final_answer', '无法获取最终答案')}
 
-**逐步推理：**
-{chr(10).join(f"{i+1}. {step}" for i, step in enumerate(analysis_result.get('agent_analysis', {}).get('step_by_step_reasoning', [])))}
+### 📋 使用工具
+{chr(10).join(f"• {tool}" for tool in analysis_result.get('tools_used', []))}
 
-**推荐工具：**
-{chr(10).join(f"• {tool}" for tool in analysis_result.get('agent_analysis', {}).get('tool_recommendations', []))}
-
-**解决方案总结：**
-{analysis_result.get('agent_analysis', {}).get('solution_summary', '无法解析')}
+### 📊 置信度
+{analysis_result.get('confidence_level', '未评估')}
                 """
 
                 # 更新消息中的AI响应
@@ -150,7 +218,7 @@ AI原始响应：{ai_response}
 {ai_response}
 
 ### 代理分析
-此响应已通过AI代理管道处理，提供多角度分析和工具建议。
+此响应已通过AI代理管道处理，包含多轮思考和工具调用模拟。
                 """
 
                 for msg in messages:
