@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "jsdom": "^27.2.0",
+    "marked": "^17.0.0",
+    "mermaid": "^10.9.1",
+    "playwright": "^1.56.1"
+  }
+}
