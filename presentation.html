@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>从"问一个AI"到"运营一支AI团队" - OpenWebUI 深度解析</title>
+    
+    <!-- Reveal.js CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/theme/black.css">
+    
+    <!-- Mermaid -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    
+    <style>
+        :root {
+            --r-background-color: #0a0e27;
+            --r-main-font: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+            --r-heading-font: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+            --r-main-font-size: 32px;
+            --r-heading-color: #42b883;
+            --r-link-color: #42b883;
+            --r-link-color-hover: #35495e;
+        }
+        
+        .reveal {
+            font-family: var(--r-main-font);
+        }
+        
+        .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+            text-transform: none;
+            font-weight: 600;
+        }
+        
+        .reveal h1 {
+            font-size: 2.5em;
+            color: #42b883;
+            text-shadow: 0 0 20px rgba(66, 184, 131, 0.5);
+        }
+        
+        .reveal h2 {
+            font-size: 1.8em;
+            color: #42b883;
+            margin-bottom: 0.5em;
+        }
+        
+        .reveal h3 {
+            font-size: 1.4em;
+            color: #64b5f6;
+        }
+        
+        .reveal h4 {
+            font-size: 1.2em;
+            color: #81c784;
+        }
+        
+        .reveal p, .reveal li {
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+        
+        .reveal code {
+            background: rgba(66, 184, 131, 0.1);
+            padding: 2px 8px;
+            border-radius: 4px;
+            color: #42b883;
+        }
+        
+        .reveal pre {
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+        }
+        
+        .reveal .mermaid {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px auto;
+            box-shadow: 0 4px 20px rgba(66, 184, 131, 0.2);
+        }
+        
+        .reveal section {
+            text-align: left;
+            padding: 20px;
+        }
+        
+        .reveal .title-slide {
+            text-align: center;
+        }
+        
+        .reveal .centered {
+            text-align: center;
+        }
+        
+        .reveal ul, .reveal ol {
+            display: block;
+            margin-left: 2em;
+        }
+        
+        .reveal li {
+            margin-bottom: 0.3em;
+        }
+        
+        .reveal table {
+            font-size: 0.75em;
+            border-collapse: collapse;
+            width: 100%;
+            margin: 20px 0;
+        }
+        
+        .reveal th {
+            background: rgba(66, 184, 131, 0.2);
+            color: #42b883;
+            font-weight: 600;
+            padding: 12px;
+            border: 1px solid rgba(66, 184, 131, 0.3);
+        }
+        
+        .reveal td {
+            padding: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .reveal tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        
+        .reveal blockquote {
+            background: rgba(66, 184, 131, 0.1);
+            border-left: 4px solid #42b883;
+            padding: 20px;
+            margin: 20px 0;
+            font-style: italic;
+        }
+        
+        .reveal .emoji {
+            font-size: 1.2em;
+            vertical-align: middle;
+        }
+        
+        .reveal .controls {
+            color: #42b883;
+        }
+        
+        .reveal .progress {
+            background: rgba(0, 0, 0, 0.2);
+            color: #42b883;
+        }
+        
+        /* Custom animations */
+        .reveal .slides section.future {
+            opacity: 0;
+        }
+        
+        /* Mermaid diagram enhancements */
+        .mermaid svg {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="reveal">
+        <div class="slides" id="slides-container">
+            <!-- Slides will be generated here -->
+        </div>
+    </div>
+
+    <!-- Reveal.js -->
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/notes/notes.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/markdown/markdown.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/highlight/highlight.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/zoom/zoom.js"></script>
+
+    <script>
+        // Initialize Mermaid
+        mermaid.initialize({ 
+            startOnLoad: false,
+            theme: 'dark',
+            themeVariables: {
+                primaryColor: '#4A90E2',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#2E5C8A',
+                lineColor: '#42b883',
+                secondaryColor: '#50E3C2',
+                tertiaryColor: '#E85D75'
+            }
+        });
+
+        // Markdown content from the article
+        const markdownContent = `# 从"问一个AI"到"运营一支AI团队"
+
+---
+
+## 解读OpenWebUI的协同野心与平台价值
+
+从与一个AI对话，到指挥一支多模型协作的AI团队——这不仅仅是工具的升级，更是工作方式的革命。
+
+OpenWebUI通过**协同、扩展、定制、生态**四大维度，将AI从辅助工具升级为智囊团和工作平台。
+
+---
+
+## 第一部分：构建AI团队的基础
+### 多模型协同对话系统
+
+---
+
+### 思想的交响乐：体验多模型并行的力量
+
+#### 告别选择困难：让多个 AI 同时为您服务
+
+\`\`\`mermaid
+graph TB
+    subgraph "OpenWebUI 四大核心功能"
+        A["🔶 多模型独立并行<br/>同一问题同时发送至多个模型<br/>各模型维护独立上下文<br/>同步生成独立回答"]
+        
+        B["🔷 @提及特定模型<br/>随时指定任一模型单独回答<br/>被@模型的回答进入共享上下文<br/>后续并行模型可参考此内容"]
+        
+        C["🔹 智能合并总结<br/>分析多个回答的核心观点<br/>提炼共识、差异、独特洞察<br/>生成综合分析报告"]
+        
+        D["🔸 内容选中与深度追问<br/>选中任意AI回复的内容<br/>浮动窗格展示精准对话<br/>支持选择性的上下文注入"]
+    end
+    
+    subgraph "功能特性"
+        E["独立性<br/>完全隔离的思考空间"]
+        F["协同性<br/>通过上下文共享实现协作"]
+        G["智能性<br/>自动化的内容分析与整合"]
+        H["精准性<br/>微观层面的内容优化"]
+    end
+    
+    A --> E
+    B --> F
+    C --> G
+    D --> H
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#F5A623,stroke:#C27D0E,color:#fff
+    style D fill:#E85D75,stroke:#A23E52,color:#fff
+    style E fill:#7ED321,stroke:#5BA30A,color:#fff
+    style F fill:#7ED321,stroke:#5BA30A,color:#fff
+    style G fill:#7ED321,stroke:#5BA30A,color:#fff
+    style H fill:#7ED321,stroke:#5BA30A,color:#fff
+\`\`\`
+
+---
+
+### 独立思考，同步输出：并行工作流揭秘
+
+\`\`\`mermaid
+graph TD
+    subgraph "多模型独立并行工作流"
+        A["👤 用户提出统一问题"]
+        
+        B["📤 问题同时分发至所选模型"]
+        
+        C["模型A<br/>独立处理"]
+        D["模型B<br/>独立处理"]
+        E["模型C<br/>独立处理"]
+        
+        F["完全隔离的上下文A"]
+        G["完全隔离的上下文B"]
+        H["完全隔离的上下文C"]
+        
+        I["模型A 独立回答"]
+        J["模型B 独立回答"]
+        K["模型C 独立回答"]
+        
+        L["📥 同步展示于统一界面"]
+    end
+    
+    A --> B
+    B --> C
+    B --> D
+    B --> E
+    
+    C --> F --> I
+    D --> G --> J
+    E --> H --> K
+    
+    I --> L
+    J --> L
+    K --> L
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style C fill:#7ED321,stroke:#5BA30A,color:#fff
+    style D fill:#7ED321,stroke:#5BA30A,color:#fff
+    style E fill:#7ED321,stroke:#5BA30A,color:#fff
+    style F fill:#50E3C2,stroke:#2EA896,color:#fff
+    style G fill:#50E3C2,stroke:#2EA896,color:#fff
+    style H fill:#50E3C2,stroke:#2EA896,color:#fff
+    style I fill:#F5A623,stroke:#C27D0E,color:#fff
+    style J fill:#F5A623,stroke:#C27D0E,color:#fff
+    style K fill:#F5A623,stroke:#C27D0E,color:#fff
+    style L fill:#B8E986,stroke:#7BA30A,color:#000
+\`\`\`
+
+---
+
+## 第二部分：超越聊天的智能工作台
+### 组织、知识与自动化
+
+---
+
+### 文件夹即项目：将对话空间转化为专业工作室
+
+#### 从混乱到秩序：文件夹的三重身份
+
+\`\`\`mermaid
+graph LR
+    subgraph "文件夹的三重身份"
+        direction TB
+        A["📁 分类容器<br/>organize<br/>━━━━━<br/>按项目类型<br/>条理化管理"]
+        
+        B["⚙️ 项目配置器<br/>automate<br/>━━━━━<br/>系统提示词<br/>知识库绑定"]
+        
+        C["🎯 上下文作用域<br/>contextualize<br/>━━━━━<br/>一致的对话<br/>风格与规范"]
+    end
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff,width:200px
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff,width:200px
+    style C fill:#E85D75,stroke:#A23E52,color:#fff,width:200px
+\`\`\`
+
+---
+
+### 一切皆知识库：构建专业智库系统
+
+#### 知识库的多源生态
+
+\`\`\`mermaid
+graph LR
+    A["📝 OpenWebUI<br/>笔记<br/>━━━<br/>在聊天中记录<br/>重要洞察与总结"]
+    
+    B["📚 OpenWebUI<br/>知识库<br/>━━━<br/>上传各类文件<br/>PDF/Word/MD<br/>代码/图片"]
+    
+    C["🌐 URL 链接<br/>━━━<br/>直接引用网页<br/>博客/新闻<br/>文档/API"]
+    
+    D["💬 对话记录<br/>━━━<br/>将聊天转化为<br/>知识源<br/>专家讨论"]
+    
+    E["📄 上传文件<br/>━━━<br/>批量导入<br/>内部文档<br/>论文/数据表"]
+    
+    F["🧠 统一知识库<br/>━━━<br/>多源融合<br/>智能检索<br/>上下文注入"]
+    
+    A --> F
+    B --> F
+    C --> F
+    D --> F
+    E --> F
+    
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style D fill:#F5A623,stroke:#C27D0E,color:#fff
+    style E fill:#7ED321,stroke:#5BA30A,color:#fff
+    style F fill:#B8E986,stroke:#7BA30A,color:#000
+\`\`\`
+
+---
+
+## 第三部分：扩展功能
+### Functions、Tools、OpenAPI Server 和 MCP Server
+
+---
+
+### Functions（函数）：模块化的 Python 插件系统
+
+\`\`\`mermaid
+graph TB
+    subgraph types ["Functions 的三种类型"]
+        B["🔍 Filter Functions<br/>━━━<br/>预处理输入内容<br/>后处理输出内容<br/>强制执行样式和规范"]
+        
+        C["⚡ Action Functions<br/>━━━<br/>响应模型/用户事件<br/>执行特定操作<br/>触发外部流程"]
+        
+        A["🔗 Pipe Functions<br/>━━━<br/>创建自定义代理/模型<br/>在 UI 中显示为可选模型<br/>可链接实现高级工作流"]
+    end
+    
+    subgraph features ["核心特性"]
+        D["✅ 纯 Python 实现"]
+        E["✅ 模块化设计"]
+        F["✅ 环境隔离"]
+        G["✅ 可链式调用"]
+    end
+    
+    B --> D
+    C --> E
+    A --> F
+    B --> G
+    
+    style B fill:#50E3C2,stroke:#2EA896,color:#fff
+    style C fill:#E85D75,stroke:#A23E52,color:#fff
+    style A fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style D fill:#B8E986,stroke:#7BA30A,color:#000
+    style E fill:#B8E986,stroke:#7BA30A,color:#000
+    style F fill:#B8E986,stroke:#7BA30A,color:#000
+    style G fill:#B8E986,stroke:#7BA30A,color:#000
+\`\`\`
+
+---
+
+### MCP Server：下一代工具协议
+
+#### OpenWebUI 中的 MCP 集成架构
+
+\`\`\`mermaid
+graph LR
+    subgraph architecture ["三层架构"]
+        A["OpenWebUI<br/>前端界面"]
+        
+        B["mcpo<br/>代理服务器<br/>━━━<br/>MCP → OpenAPI<br/>协议转换"]
+        
+        C["MCP Server<br/>工具服务器<br/>━━━<br/>实际功能实现<br/>stdio/HTTP"]
+    end
+    
+    subgraph flow ["工作流程"]
+        D["1. 用户请求"]
+        E["2. OpenWebUI<br/>调用 REST API"]
+        F["3. mcpo<br/>转换为 MCP 协议"]
+        G["4. MCP Server<br/>执行任务"]
+        H["5. 结果返回"]
+    end
+    
+    A --> B
+    B --> C
+    
+    D --> E --> F --> G --> H
+    
+    style architecture fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style flow fill:#50E3C2,stroke:#2EA896,color:#fff
+\`\`\`
+
+---
+
+## 总结：OpenWebUI 的独特价值主张
+
+\`\`\`mermaid
+graph LR
+    subgraph org ["📁 组织管理"]
+        A["文件夹即项目<br/>自动应用配置"]
+    end
+    
+    subgraph know ["📚 知识体系"]
+        B["多源知识库<br/>智能检索注入"]
+    end
+    
+    subgraph eff ["⚡ 工作效率"]
+        C["交互式提示词<br/>复杂需求简化"]
+    end
+    
+    subgraph model ["⚙️ 模型定制"]
+        D["精细化配置<br/>权限与能力管理"]
+    end
+    
+    subgraph quality ["🎯 对话品质"]
+        E["四大核心功能<br/>完整协同流程"]
+    end
+    
+    subgraph value ["💎 最终价值"]
+        F["从混乱到秩序<br/>从碎片到系统<br/>从重复到高效<br/>从单一到多元<br/>━━━<br/>构建真正的<br/>AI 智囊团"]
+    end
+    
+    A --> value
+    B --> value
+    C --> value
+    D --> value
+    E --> value
+    
+    style org fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style know fill:#50E3C2,stroke:#2EA896,color:#fff
+    style eff fill:#F5A623,stroke:#C27D0E,color:#fff
+    style model fill:#E85D75,stroke:#A23E52,color:#fff
+    style quality fill:#7ED321,stroke:#5BA30A,color:#fff
+    style value fill:#B8E986,stroke:#7BA30A,color:#000
+\`\`\`
+
+---
+
+## OpenWebUI vs 其他工具
+
+| 维度 | OpenWebUI | 其他工具 |
+|------|-----------|----------|
+| **项目组织** | 📁 文件夹即项目 + 自动配置 | 文件夹只用于分类 |
+| **知识来源** | 📚 笔记 + 文件 + URL + 对话 | 主要是文件上传 |
+| **知识应用** | 自动检索 + 智能注入 | 需要手动引用 |
+| **提示词管理** | 📋 文件夹级 + 交互式表单 | 通常无模板系统 |
+| **多模型协同** | 🔶🔷🔹🔸 四大核心功能 | 基础的多模型切换 |
+| **模型定制** | ⚙️ 精细化配置 + 权限管理 | 基础参数调整 |
+| **开源友好度** | ⭐⭐⭐⭐⭐ 高度可定制 | 部分不开源 |
+
+---
+
+## 扩展生态：构建完整的 AI 应用平台
+
+\`\`\`mermaid
+graph TB
+    subgraph ecosystem ["OpenWebUI 扩展生态"]
+        A["核心对话平台"]
+        
+        B["Functions<br/>内部扩展<br/>━━━<br/>流程控制<br/>UI 定制"]
+        
+        C["Tools<br/>能力增强<br/>━━━<br/>实时查询<br/>媒体处理"]
+        
+        D["OpenAPI Server<br/>服务集成<br/>━━━<br/>企业系统<br/>标准接口"]
+        
+        E["MCP Server<br/>智能编排<br/>━━━<br/>下一代标准<br/>上下文感知"]
+    end
+    
+    subgraph value ["核心价值"]
+        F["🎯 灵活扩展<br/>满足各种需求"]
+        G["🔌 标准化<br/>易于集成"]
+        H["🚀 快速开发<br/>丰富生态"]
+        I["🔐 安全可控<br/>企业级"]
+    end
+    
+    A --> B
+    A --> C
+    A --> D
+    A --> E
+    
+    B --> F
+    C --> G
+    D --> H
+    E --> I
+    
+    style A fill:#F5A623,stroke:#C27D0E,color:#fff
+    style B fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    style C fill:#50E3C2,stroke:#2EA896,color:#fff
+    style D fill:#E85D75,stroke:#A23E52,color:#fff
+    style E fill:#7ED321,stroke:#5BA30A,color:#fff
+    style F fill:#B8E986,stroke:#7BA30A,color:#000
+    style G fill:#B8E986,stroke:#7BA30A,color:#000
+    style H fill:#B8E986,stroke:#7BA30A,color:#000
+    style I fill:#B8E986,stroke:#7BA30A,color:#000
+\`\`\`
+
+---
+
+## 全文总结
+
+OpenWebUI 不仅仅是一个 AI 对话界面，而是一个完整的 AI 应用开发平台：
+
+**第一部分**：通过**多模型并行**、**@提及机制**、**智能合并总结**和**内容选中追问**四大核心功能，构建了强大的多模型协同对话体系。
+
+**第二部分**：通过**文件夹管理**、**知识库系统**、**用户提示词**和**自定义模型配置**，实现了从混乱到秩序、从碎片到系统的智能工作台转变。
+
+**第三部分**：通过**Functions**、**Tools**、**OpenAPI Server**和**MCP Server**四大扩展机制，构建了完整的应用生态。
+
+OpenWebUI 将 AI 对话、知识管理、工作流程和应用开发完美融合，为用户提供了一个真正的 **AI 智囊团和工作平台**。
+
+---
+
+## 谢谢观看！
+
+### 🔗 相关链接
+
+- OpenWebUI GitHub: https://github.com/open-webui/open-webui
+- 官方文档: https://docs.openwebui.com
+- 社区论坛: https://github.com/open-webui/open-webui/discussions
+
+`;
+
+        // Parse markdown and create slides
+        function parseMarkdownToSlides(markdown) {
+            const slides = markdown.split(/\n---\n/).map(slideContent => {
+                // Check if slide contains mermaid diagram
+                const hasMermaid = slideContent.includes('```mermaid');
+                
+                if (hasMermaid) {
+                    // Extract mermaid content
+                    const mermaidRegex = /```mermaid\n([\s\S]*?)```/g;
+                    let processedContent = slideContent;
+                    let match;
+                    let mermaidIndex = 0;
+                    
+                    while ((match = mermaidRegex.exec(slideContent)) !== null) {
+                        const mermaidCode = match[1];
+                        const mermaidId = `mermaid-${Date.now()}-${mermaidIndex++}`;
+                        processedContent = processedContent.replace(match[0], 
+                            `<div class="mermaid" id="${mermaidId}">${mermaidCode}</div>`);
+                    }
+                    
+                    // Convert remaining markdown
+                    processedContent = convertMarkdownToHTML(processedContent);
+                    return processedContent;
+                } else {
+                    return convertMarkdownToHTML(slideContent);
+                }
+            });
+            
+            return slides;
+        }
+
+        // Simple markdown to HTML converter
+        function convertMarkdownToHTML(markdown) {
+            let html = markdown;
+            
+            // Headers
+            html = html.replace(/^#### (.*$)/gim, '<h4>$1</h4>');
+            html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+            html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+            html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+            
+            // Bold
+            html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            
+            // Code
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            
+            // Lists
+            html = html.replace(/^\- (.*$)/gim, '<li>$1</li>');
+            html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+            
+            // Links
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+            
+            // Tables
+            html = html.replace(/\|(.*)\|/g, (match) => {
+                const cells = match.split('|').filter(cell => cell.trim());
+                const cellTags = cells.map(cell => `<td>${cell.trim()}</td>`).join('');
+                return `<tr>${cellTags}</tr>`;
+            });
+            
+            // Paragraphs
+            html = html.replace(/\n\n/g, '</p><p>');
+            html = '<p>' + html + '</p>';
+            
+            // Clean up extra p tags
+            html = html.replace(/<p><h/g, '<h');
+            html = html.replace(/<\/h([1-6])><\/p>/g, '</h$1>');
+            html = html.replace(/<p><ul>/g, '<ul>');
+            html = html.replace(/<\/ul><\/p>/g, '</ul>');
+            html = html.replace(/<p><table>/g, '<table>');
+            html = html.replace(/<\/table><\/p>/g, '</table>');
+            html = html.replace(/<p><div/g, '<div');
+            html = html.replace(/<\/div><\/p>/g, '</div>');
+            html = html.replace(/<p><\/p>/g, '');
+            
+            return html;
+        }
+
+        // Generate slides
+        const slides = parseMarkdownToSlides(markdownContent);
+        const slidesContainer = document.getElementById('slides-container');
+        
+        slides.forEach((slideHTML, index) => {
+            const section = document.createElement('section');
+            if (index === 0) {
+                section.className = 'title-slide';
+            }
+            section.innerHTML = slideHTML;
+            slidesContainer.appendChild(section);
+        });
+
+        // Initialize Reveal
+        Reveal.initialize({
+            hash: true,
+            center: false,
+            transition: 'slide',
+            transitionSpeed: 'default',
+            backgroundTransition: 'fade',
+            controls: true,
+            progress: true,
+            slideNumber: true,
+            keyboard: true,
+            overview: true,
+            touch: true,
+            loop: false,
+            rtl: false,
+            fragments: true,
+            embedded: false,
+            help: true,
+            showNotes: false,
+            autoPlayMedia: null,
+            preloadIframes: null,
+            width: 1280,
+            height: 720,
+            margin: 0.04,
+            minScale: 0.2,
+            maxScale: 2.0,
+            plugins: [ RevealMarkdown, RevealHighlight, RevealNotes, RevealZoom ]
+        });
+
+        // Render Mermaid diagrams after each slide change
+        Reveal.on('slidechanged', event => {
+            const currentSlide = event.currentSlide;
+            const mermaidDivs = currentSlide.querySelectorAll('.mermaid');
+            
+            mermaidDivs.forEach(div => {
+                if (!div.hasAttribute('data-processed')) {
+                    mermaid.run({
+                        nodes: [div]
+                    });
+                }
+            });
+        });
+
+        // Initial render for first slide
+        Reveal.on('ready', event => {
+            const firstSlide = event.currentSlide;
+            const mermaidDivs = firstSlide.querySelectorAll('.mermaid');
+            
+            mermaidDivs.forEach(div => {
+                mermaid.run({
+                    nodes: [div]
+                });
+            });
+        });
+    </script>
+</body>
+</html>
