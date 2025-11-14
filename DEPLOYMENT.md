@@ -1,5 +1,7 @@
 # Presentation Deployment Guide
 
+> **Note:** You do not need to run `npm install` or any build commands. The files provided (`presentation.md` and `presentation.html`) are ready for direct use.
+
 This guide provides instructions on how to view the presentation generated from `从问一个AI到运营一支AI团队.md`.
 
 There are two methods to view the presentation. The **recommended method** ensures the highest quality and full functionality, including interactive diagrams.
