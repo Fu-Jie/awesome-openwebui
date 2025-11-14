@@ -6,6 +6,13 @@ A curated collection of enhancements for [OpenWebUI](https://github.com/open-web
 
 ## 📦 Project Contents
 
+### 🎥 Presentation
+
+- **From "Asking an AI" to "Running an AI Team"** - Deep dive into OpenWebUI's collaboration capabilities and platform value
+  - 📄 [Original Article](./从问一个AI到运营一支AI团队.md) - Complete Markdown document
+  - 🎬 [Web Presentation](./presentation.html) - Beautiful web-based presentation (with flowcharts)
+  - 📖 [User Guide](./PRESENTATION.md) - Presentation usage instructions
+
 ### 🎯 Prompts
 
 Located in the `/prompts` directory, containing curated prompt templates for various domains:

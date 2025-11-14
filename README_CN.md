@@ -6,6 +6,13 @@
 
 ## 📦 项目内容
 
+### 🎥 演示文稿 (Presentation)
+
+- **从"问一个AI"到"运营一支AI团队"** - 深度解析 OpenWebUI 的协同能力与平台价值
+  - 📄 [原始文章](./从问一个AI到运营一支AI团队.md) - 完整的 Markdown 文档
+  - 🎬 [网页演示](./presentation.html) - 精美的网页版演示文稿（含流程图）
+  - 📖 [使用指南](./PRESENTATION.md) - 演示文稿使用说明
+
 ### 🎯 提示词 (Prompts)
 
 位于 `/prompts` 目录，包含针对不同领域的优质提示词模板：
