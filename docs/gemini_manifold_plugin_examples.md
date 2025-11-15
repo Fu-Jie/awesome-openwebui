@@ -1164,4 +1164,675 @@ await event_emitter.emit_completion(
 - [ ] ❌ 源顺序与引用标记不匹配
 - [ ] ❌ 混合了内容和元数据返回方式
 
+## 补充：Open WebUI 核心模块详解
+
+开发 Open WebUI Pipe 时，需要调用的五个核心模块及其功能说明：
+
+```python
+from open_webui.models.chats import Chats
+from open_webui.models.files import FileForm, Files
+from open_webui.storage.provider import Storage
+from open_webui.models.functions import Functions
+from open_webui.utils.misc import pop_system_message
+```
+
+### 模块 1：`Chats` - 聊天历史管理
+
+**功能：** 访问和管理用户的聊天会话历史记录。
+
+**核心方法：**
+
+```python
+Chats.get_chat_by_id_and_user_id(id: str, user_id: str) -> Chat | None
+```
+
+**使用示例：**
+
+```python
+# 获取特定用户的特定聊天记录
+chat = Chats.get_chat_by_id_and_user_id(
+    id=chat_id,
+    user_id=user_data["id"]
+)
+
+if chat:
+    # 访问聊天内容和消息历史
+    chat_content = chat.chat  # 获取 ChatObjectDataTD
+    messages_db = chat_content.get("messages", [])[:-1]  # 获取消息列表，排除最后的空响应
+    
+    # 从消息中提取源信息（用于引用过滤）
+    for i, message_db in enumerate(messages_db):
+        sources = message_db.get("sources")  # 提取引用源
+        files = message_db.get("files", [])  # 提取文件列表
+else:
+    log.warning(f"Chat {chat_id} not found")
+```
+
+**关键数据结构：**
+
+```python
+# Chat 对象包含：
+{
+    "id": str,
+    "user_id": str,
+    "chat": {
+        "messages": [
+            {
+                "role": "user|assistant",
+                "content": str,
+                "files": [{"type": "file|image", "id": str, "url": str}],
+                "sources": [{"uri": str, "title": str, ...}]
+            },
+            ...
+            {}  # 最后一条消息为空（待填充的助手响应）
+        ],
+        "title": str
+    }
+}
+```
+
+**使用场景：**
+
+- 需要访问历史消息以过滤引用标记
+- 需要获取用户上传的文件附件列表
+- 需要验证当前请求与数据库消息数量是否匹配
+- 需要在处理过程中追踪消息上下文
+
+**注意事项：**
+
+- ⚠️ **必须在线程中调用**：这是同步阻塞操作，需要用 `asyncio.to_thread()` 包装
+- ⚠️ **返回值可为 None**：聊天不存在时返回 None，需要检查
+- ⚠️ **消息数量验证**：请求体消息数必须等于数据库消息数，否则可能表示数据不同步
+
+---
+
+### 模块 2：`Files` - 文件数据库操作
+
+**功能：** 查询和管理 Open WebUI 文件数据库中的文件元数据。
+
+**核心方法：**
+
+```python
+# 查询文件
+Files.get_file_by_id(file_id: str) -> FileModel | None
+
+# 创建新文件记录
+Files.insert_new_file(user_id: str, file_form: FileForm) -> FileModel | None
+
+# 获取文件 MIME 类型等
+FileForm(
+    id: str,
+    filename: str,
+    path: str,
+    meta: dict  # 包含 content_type, size, data 等
+)
+```
+
+**使用示例：**
+
+```python
+# 查询已上传的文件
+file_model = await asyncio.to_thread(Files.get_file_by_id, file_id)
+
+if file_model:
+    # 访问文件元数据
+    file_path = file_model.path  # 磁盘路径或 gs:// 云存储路径
+    mime_type = file_model.meta.get("content_type")  # e.g., "image/png"
+    file_size = file_model.meta.get("size")
+    
+    # 读取文件内容
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+
+# 创建新文件记录（如生成图像后）
+file_item = await asyncio.to_thread(
+    Files.insert_new_file,
+    user_id,
+    FileForm(
+        id=str(uuid.uuid4()),
+        filename="generated-image.png",
+        path="/path/to/file",
+        meta={
+            "name": "generated-image.png",
+            "content_type": "image/png",
+            "size": len(image_bytes),
+            "data": {
+                "model": model_name,
+                "chat_id": chat_id,
+                "message_id": message_id,
+            }
+        }
+    )
+)
+```
+
+**关键数据结构：**
+
+```python
+class FileModel:
+    id: str
+    user_id: str
+    filename: str
+    path: str  # 本地路径或 gs:// URI
+    meta: dict  # 文件元数据
+    created_at: datetime
+    updated_at: datetime
+
+meta = {
+    "name": str,           # 显示名称
+    "content_type": str,   # MIME 类型
+    "size": int,           # 字节数
+    "data": {              # 自定义元数据
+        "model": str,
+        "chat_id": str,
+        "message_id": str,
+    }
+}
+```
+
+**使用场景：**
+
+- 获取用户上传文件的实际路径和 MIME 类型
+- 读取文件内容以上传到 Google Gemini API
+- 记录生成的图像和其他输出文件
+- 追踪文件与生成任务的关联关系
+
+**注意事项：**
+
+- ⚠️ **必须在线程中调用**：使用 `asyncio.to_thread()` 包装
+- ⚠️ **返回值可为 None**：文件不存在时返回 None
+- ⚠️ **路径处理**：可能是本地路径或云存储 URI（gs://），读取时需要相应处理
+- ⚠️ **元数据字段**：`meta["data"]` 是自定义字段，用于存储业务逻辑相关的上下文
+
+---
+
+### 模块 3：`Storage` - 文件存储管理
+
+**功能：** 上传和管理文件到 Open WebUI 的存储后端（本地磁盘或云存储如 Google Cloud Storage）。
+
+**核心方法：**
+
+```python
+Storage.upload_file(
+    file: BinaryIO,       # 文件对象
+    filename: str,        # 文件名
+    tags: dict = {}       # 标签
+) -> tuple[bytes, str]    # 返回 (文件内容, 存储路径)
+```
+
+**使用示例：**
+
+```python
+import io
+import uuid
+
+# 准备图像数据
+image_data = generate_image()  # 生成的字节数据
+image_id = str(uuid.uuid4())
+imagename = f"{image_id}_generated-image.png"
+image_file = io.BytesIO(image_data)
+
+# 上传到存储后端
+try:
+    contents, storage_path = await asyncio.to_thread(
+        Storage.upload_file,
+        image_file,
+        imagename,
+        tags={"model": model_name}  # 可选标签
+    )
+    
+    log.info(f"File uploaded to: {storage_path}")
+    # storage_path 可能是：
+    # - 本地: "/data/uploads/uuid_filename.png"
+    # - 云存储: "gs://bucket/uploads/uuid_filename.png"
+    
+except Exception as e:
+    log.exception("Upload failed")
+```
+
+**关键特性：**
+
+```text
+存储层次：
+├─ 本地存储：/data/uploads/ 下的文件
+└─ 云存储：gs://bucket/ 下的 GCS 文件
+
+自动处理：
+├─ 创建目录
+├─ 重命名以避免冲突
+├─ 返回可访问的路径
+└─ 支持标签分类
+```
+
+**使用场景：**
+
+- 上传模型生成的图像
+- 存储处理后的文件
+- 在数据库记录前持久化文件
+
+**注意事项：**
+
+- ⚠️ **必须在线程中调用**：使用 `asyncio.to_thread()` 包装
+- ⚠️ **返回的路径**：取决于配置（本地/云），需要配合 `Files.insert_new_file` 记录
+- ⚠️ **文件大小**：确保内存中有足够空间存储文件
+- ✓ **与 Files 配合**：通常先 `Storage.upload_file()`，再 `Files.insert_new_file()`
+
+---
+
+### 模块 4：`Functions` - 过滤器/插件管理
+
+**功能：** 查询已安装的过滤器（Filter）的状态和配置，用于检测依赖的 Companion Filter。
+
+**核心方法：**
+
+```python
+Functions.get_function_by_id(filter_id: str) -> Function | None
+
+# Function 对象属性：
+# - id: str
+# - name: str
+# - is_active: bool          # 过滤器在 Functions 仪表板中是否启用
+# - is_global: bool          # 是否对所有模型全局启用
+# - models: list[str]        # 该过滤器启用的模型列表
+```
+
+**使用示例：**
+
+```python
+# 检查 Companion Filter 是否安装并启用
+def is_feature_available(filter_id: str, metadata: dict) -> tuple[bool, bool]:
+    """
+    检查功能是否可用。
+    返回: (is_available, is_toggled_on)
+    """
+    # 1. 检查过滤器是否已安装
+    f = Functions.get_function_by_id(filter_id)
+    if not f:
+        log.warning(f"Filter '{filter_id}' not installed")
+        return (False, False)
+    
+    # 2. 检查过滤器在 Functions 仪表板中是否启用
+    if not f.is_active:
+        log.warning(f"Filter '{filter_id}' is disabled in Functions dashboard")
+        return (False, False)
+    
+    # 3. 检查过滤器是否为当前模型启用
+    model_id = metadata.get("model", {}).get("id")
+    model_filters = metadata.get("model", {}).get("info", {}).get("meta", {}).get("filterIds", [])
+    
+    is_enabled = filter_id in model_filters or f.is_global
+    if not is_enabled:
+        log.debug(f"Filter '{filter_id}' not enabled for model '{model_id}'")
+        return (False, False)
+    
+    # 4. 检查用户是否在当前请求中启用了该功能
+    user_toggled = filter_id in metadata.get("filter_ids", [])
+    
+    return (True, user_toggled)
+
+# 使用
+is_available, is_enabled = is_feature_available(
+    "gemini_manifold_companion_v1.7.0",
+    metadata
+)
+
+if is_available and is_enabled:
+    log.info("Companion filter available and enabled")
+elif is_available:
+    log.debug("Companion filter available but user disabled it")
+else:
+    log.warning("Companion filter not available")
+```
+
+**关键检查流程：**
+
+```text
+功能可用性检查链：
+
+1. 安装检查
+   Functions.get_function_by_id() → None? 返回不可用
+   
+2. 启用检查
+   f.is_active == False? 返回不可用
+   
+3. 模型启用检查
+   filter_id in model_filters or f.is_global? 
+   否则返回不可用
+   
+4. 用户切换检查
+   filter_id in metadata["filter_ids"]? 
+   返回用户是否启用
+```
+
+**使用场景：**
+
+- 检测 Companion Filter 是否已安装（用于引用过滤功能）
+- 检查 URL Context Tool 或其他高级功能的依赖
+- 在日志中区分"功能不可用"和"用户未启用"
+- 决定是否执行相关的处理逻辑
+
+**注意事项：**
+
+- ✓ **同步操作**：不需要 `asyncio.to_thread()`
+- ⚠️ **返回值可为 None**：未安装的过滤器返回 None
+- ✓ **多层检查**：需要逐层检查安装、启用、配置、用户选择
+- 💡 **日志级别**：根据检查阶段使用不同日志级别（warning/debug）
+
+---
+
+### 模块 5：`pop_system_message` - 消息提取工具
+
+**功能：** 从消息列表中提取和分离系统消息。
+
+**功能签名：**
+
+```python
+pop_system_message(
+    messages: list[Message]
+) -> tuple[Message | None, list[Message]]
+```
+
+**使用示例：**
+
+```python
+# 原始消息列表
+messages = [
+    {
+        "role": "system",
+        "content": "You are a helpful assistant..."
+    },
+    {
+        "role": "user",
+        "content": "What is Python?"
+    },
+    {
+        "role": "assistant",
+        "content": "Python is a programming language..."
+    }
+]
+
+# 分离系统消息
+system_message, remaining_messages = pop_system_message(messages)
+
+# 结果：
+# system_message = {"role": "system", "content": "You are a helpful assistant..."}
+# remaining_messages = [
+#     {"role": "user", "content": "What is Python?"},
+#     {"role": "assistant", "content": "Python is a programming language..."}
+# ]
+
+# 提取系统提示文本
+system_prompt = (system_message or {}).get("content")
+
+# 检查是否存在系统消息
+if system_prompt:
+    log.debug(f"System prompt found: {system_prompt[:100]}...")
+else:
+    log.debug("No system prompt provided")
+```
+
+**工作流程：**
+
+```text
+输入消息列表
+    ↓
+遍历找第一个 role=="system" 的消息
+    ↓
+提取该消息
+    ↓
+返回 (提取的消息, 剩余消息列表)
+```
+
+**关键特性：**
+
+- 返回元组：`(system_message, remaining_messages)`
+- `system_message` 为 None 如果不存在系统消息
+- `remaining_messages` 不包含系统消息
+- 只提取第一个系统消息（如果有多个，后续的被视为普通消息）
+
+**使用场景：**
+
+- 从 Open WebUI 的请求中提取系统消息
+- 将系统消息转换为 `GenerateContentConfig.system_instruction`
+- 将其余消息作为对话上下文
+
+**注意事项：**
+
+- ✓ **返回类型安全**：总是返回 2 元组
+- ⚠️ **系统消息可为 None**：需要 `(system_message or {})` 防止错误
+- ✓ **消息顺序保留**：`remaining_messages` 中的消息顺序保持原样
+- 💡 **使用场景**：几乎所有 Pipe 都需要这个操作来提取系统提示
+
+---
+
+### 通用使用技巧总结
+
+#### 技巧 1：异步上下文中调用同步 API
+
+这些模块的大部分方法都是同步阻塞的，但 Pipe 运行在异步上下文中：
+
+```python
+# ❌ 错误：会阻塞事件循环
+chat = Chats.get_chat_by_id_and_user_id(chat_id, user_id)
+
+# ✓ 正确：在线程池中运行
+chat = await asyncio.to_thread(
+    Chats.get_chat_by_id_and_user_id,
+    chat_id,
+    user_id
+)
+```
+
+#### 技巧 2：链式 None 检查
+
+由于这些 API 经常返回 None，使用链式赋值简化代码：
+
+```python
+# ❌ 冗长
+file_model = await asyncio.to_thread(Files.get_file_by_id, file_id)
+if file_model is None:
+    return None
+file_path = file_model.path
+mime_type = file_model.meta.get("content_type")
+
+# ✓ 简洁
+if not (file_model := await asyncio.to_thread(Files.get_file_by_id, file_id)):
+    return None
+file_path = file_model.path
+mime_type = file_model.meta.get("content_type")
+```
+
+#### 技巧 3：错误恢复优先级
+
+不同模块的错误处理优先级：
+
+```python
+# 1. 功能检查失败 → 返回默认值，继续
+if not (f := Functions.get_function_by_id(filter_id)):
+    log.warning("Feature not available")
+    return (False, False)
+
+# 2. 数据库查询失败 → 记录警告，但不中断流程
+try:
+    chat = await asyncio.to_thread(Chats.get_chat_by_id_and_user_id, ...)
+except Exception as e:
+    log.exception("Failed to fetch chat history")
+    chat = None
+
+# 3. 存储操作失败 → 使用 toast 通知用户，并记录错误
+try:
+    path = await asyncio.to_thread(Storage.upload_file, ...)
+except Exception as e:
+    event_emitter.emit_toast("File upload failed", "error")
+    log.exception("Storage error")
+    raise
+```
+
+#### 技巧 4：并发操作优化
+
+多个 API 调用时使用并发：
+
+```python
+# ❌ 串行：慢
+chat = await asyncio.to_thread(Chats.get_chat_by_id_and_user_id, ...)
+file = await asyncio.to_thread(Files.get_file_by_id, ...)
+filter_info = Functions.get_function_by_id(...)
+
+# ✓ 并发：快
+chat, file = await asyncio.gather(
+    asyncio.to_thread(Chats.get_chat_by_id_and_user_id, ...),
+    asyncio.to_thread(Files.get_file_by_id, ...),
+)
+filter_info = Functions.get_function_by_id(...)  # 这个本来就是同步的
+```
+
+#### 技巧 5：日志级别选择
+
+根据严重程度选择日志级别：
+
+```python
+# 配置问题（管理员处理）→ warning
+if not f.is_active:
+    log.warning(f"Filter '{filter_id}' disabled in dashboard")
+
+# 正常功能流程（调试用）→ debug
+if filter_id not in model_filters:
+    log.debug(f"Filter not in model list: {filter_id}")
+
+# 数据不一致（可能的 bug）→ error
+if len(messages_db) != len(messages_body):
+    log.error("Message count mismatch")
+
+# 检查点（流程追踪）→ info
+if is_toggled_on:
+    log.info(f"Feature '{filter_id}' enabled by user")
+```
+
+#### 技巧 6：元数据字段扩展
+
+`Files.meta` 中的 `data` 字段是自定义字段，可存储任意上下文：
+
+```python
+file_item = await asyncio.to_thread(
+    Files.insert_new_file,
+    user_id,
+    FileForm(
+        id=id,
+        filename="output.json",
+        path=path,
+        meta={
+            "name": "output.json",
+            "content_type": "application/json",
+            "size": len(contents),
+            "data": {  # 自定义字段，存储业务逻辑上下文
+                "model": model_name,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "timestamp": time.time(),
+                "processing_time": elapsed_ms,
+                "version": "v1.0",
+            }
+        }
+    )
+)
+
+# 后续查询时可以恢复这些信息
+if file_model.meta.get("data", {}).get("processing_time"):
+    log.debug(f"File processed in {file_model.meta['data']['processing_time']}ms")
+```
+
+#### 技巧 7：条件式功能启用
+
+根据多个条件决定是否启用某项功能：
+
+```python
+# 检查引用过滤是否可用
+companion_available, companion_enabled = is_feature_available(
+    "gemini_manifold_companion",
+    __metadata__
+)
+
+# 结合其他条件
+can_filter_citations = (
+    companion_available and              # 过滤器已安装
+    companion_enabled and                # 用户启用了该功能
+    self.messages_db is not None and     # 聊天历史可用
+    len(messages_db) == len(messages)    # 消息数量一致
+)
+
+if can_filter_citations:
+    # 执行引用过滤逻辑
+    ...
+else:
+    # 跳过该功能
+    log.debug("Citation filtering unavailable")
+```
+
+---
+
+### 实战代码完整示例
+
+```python
+import asyncio
+from open_webui.models.chats import Chats
+from open_webui.models.files import FileForm, Files
+from open_webui.storage.provider import Storage
+from open_webui.models.functions import Functions
+from open_webui.utils.misc import pop_system_message
+
+class MyPipe:
+    async def pipe(
+        self,
+        body: dict,
+        __user__: dict,
+        __request__,
+        __event_emitter__,
+        __metadata__: dict,
+    ):
+        # 1. 提取系统消息
+        system_message, messages = pop_system_message(body.get("messages", []))
+        system_prompt = (system_message or {}).get("content")
+        
+        # 2. 并发获取聊天和过滤器信息
+        chat_data, filter_status = await asyncio.gather(
+            asyncio.to_thread(
+                Chats.get_chat_by_id_and_user_id,
+                __metadata__.get("chat_id", ""),
+                __user__["id"]
+            ),
+            self._check_filter_available("companion_filter_id", __metadata__),
+            return_exceptions=True
+        )
+        
+        # 3. 处理结果
+        chat = chat_data if not isinstance(chat_data, Exception) else None
+        is_available, is_enabled = filter_status if not isinstance(filter_status, Exception) else (False, False)
+        
+        # 4. 条件式处理文件
+        if chat and is_available:
+            for message in chat.chat.get("messages", []):
+                if files := message.get("files", []):
+                    for file_ref in files:
+                        file_model = await asyncio.to_thread(
+                            Files.get_file_by_id,
+                            file_ref.get("id")
+                        )
+                        if file_model:
+                            # 处理文件...
+                            pass
+        
+        # 5. 返回结果
+        async for chunk in self._generate_response(messages, system_prompt):
+            yield chunk
+    
+    @staticmethod
+    def _check_filter_available(filter_id: str, metadata: dict) -> tuple[bool, bool]:
+        f = Functions.get_function_by_id(filter_id)
+        if not f or not f.is_active:
+            return (False, False)
+        
+        is_enabled = filter_id in metadata.get("filter_ids", []) or f.is_global
+        return (True, is_enabled)
+```
+
 > 这些示例可直接集成进团队的插件开发指南或代码模板库，新插件可参考对应场景快速实现相关功能。
