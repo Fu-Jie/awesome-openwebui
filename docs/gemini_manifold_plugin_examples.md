@@ -787,4 +787,381 @@ asyncio.run(demo_search_workflow())
 | **日志控制** | 自动截断 + 多级别 | 避免日志爆炸，便于调试 |
 | **搜索集成** | grounding_metadata 提取 + 源展示 | 联网搜索时收集并显示信息来源 |
 
+## 补充：响应格式与引用解析
+
+### 一、源（Source）的数据结构
+
+当启用联网搜索时，Google Gemini API 返回的 `grounding_metadata` 包含搜索源信息，对应以下结构：
+
+```python
+# Google API 返回的 grounding_metadata 格式
+{
+    "search_queries": ["用户的搜索查询"],
+    "web_search_results": [
+        {
+            "uri": "https://example.com/page1",
+            "title": "网页标题",
+            "snippet": "网页摘要文本...",
+            "display_uri": "example.com",
+        },
+        # ... 更多搜索结果
+    ],
+    "grounding_supports": [
+        {
+            "segment": {
+                "start_index": 0,
+                "end_index": 145,
+                "text": "模型回答中被引用的这段文本"
+            },
+            "supporting_segments": [
+                {
+                    "segment": {
+                        "text": "网页中的相关内容"
+                    },
+                    "uri": "https://example.com/page1"
+                }
+            ],
+            "confidence_scores": [0.95]
+        }
+    ]
+}
+```
+
+### 二、引用标记的格式
+
+**API 返回的响应中引用标记格式：**
+
+Google Gemini API 在响应文本中自动插入引用标记：
+
+```text
+根据搜索结果[1]，Open WebUI 是一个开源平台[2]。用户可以通过插件[1][2]
+扩展功能。
+
+[1] https://docs.openwebui.com - Open WebUI 官方文档
+[2] https://github.com/open-webui/open-webui - GitHub 仓库
+```
+
+**引用标记特征：**
+
+- 格式：`[N]` 其中 N 是数字索引（1-based）
+- 位置：内联在文本中，跟在被引用的短语后
+- 对应关系：`[1]` → `web_search_results[0]`，`[2]` → `web_search_results[1]` 等
+
+### 三、前端显示的 sources 格式
+
+`emit_completion(sources=...)` 发送给前端的数据格式：
+
+```python
+sources = [
+    {
+        "title": "Open WebUI 官方文档",
+        "uri": "https://docs.openwebui.com",
+        "snippet": "Open WebUI 是一个开源的大语言模型管理平台...",
+        "display_uri": "docs.openwebui.com",
+    },
+    {
+        "title": "Open WebUI GitHub 仓库",
+        "uri": "https://github.com/open-webui/open-webui",
+        "snippet": "开源代码库，包含所有源码和插件...",
+        "display_uri": "github.com",
+    }
+]
+```
+
+**前端如何渲染：**
+
+1. **识别内联引用标记** → 将 `[1]` 链接到 `sources[0]`
+
+2. **在消息下方显示源面板**，通常格式为：
+
+   ```text
+   [1] Open WebUI 官方文档 (docs.openwebui.com)
+   [2] Open WebUI GitHub 仓库 (github.com)
+   ```
+
+3. **点击引用标记** → 高亮对应的源，显示摘要
+
+4. **点击源链接** → 在新标签页打开 URL
+
+### 四、完整数据流转
+
+```text
+1. 用户启用搜索功能 (features["google_search_tool"] = true)
+           ↓
+2. Pipe 配置 API：gen_content_conf.tools.append(
+       types.Tool(google_search=types.GoogleSearch())
+   )
+           ↓
+3. Google Gemini API 执行搜索，返回：
+   - 文本响应（含内联 [N] 标记）
+   - grounding_metadata（含搜索结果和支撑段落）
+           ↓
+4. gemini_manifold.py _process_part() 处理：
+   - 提取文本响应
+   - 通过 _disable_special_tags() 处理特殊标签
+   - 返回结构化 chunk: {"content": "文本[1][2]..."}
+           ↓
+5. _do_post_processing() 后处理：
+   - 提取 candidate.grounding_metadata
+   - 存入 request.app.state[f"grounding_{chat_id}_{message_id}"]
+   - 提取 web_search_results → sources 列表
+           ↓
+6. emit_completion(content="...", sources=[...])
+   - 发送完整内容给前端
+   - 同时发送 sources 列表
+           ↓
+7. 前端渲染：
+   - 消息体显示文本和 [1][2] 引用标记
+   - 底部显示 sources 面板
+   - 用户可交互查看源信息
+```
+
+### 五、可能需要移除的引用标记
+
+在某些情况下（如用户编辑消息），需要调用 `_remove_citation_markers()` 移除不再有效的引用标记：
+
+```python
+# 源数据结构（来自 grounding_metadata）
+source = {
+    "uri": "https://example.com",
+    "title": "Page Title",
+    "metadata": [
+        {
+            "supports": [
+                {
+                    "segment": {
+                        "start_index": 10,
+                        "end_index": 50,
+                        "text": "这是被引用的文本片段"
+                    },
+                    "grounding_chunk_indices": [0, 1]  # 对应 [1], [2]
+                }
+            ]
+        }
+    ]
+}
+
+# 方法会找到 "这是被引用的文本片段[1][2]" 并删除 [1][2]
+cleaned_text = _remove_citation_markers(response_text, [source])
+```
+
+### 六、关键要点
+
+**✓ 引用的识别规则：**
+
+- 文本内联的 `[数字]` 是引用标记
+- 必须对应 sources 列表中的同序号元素
+- 通常由 API 自动生成和嵌入
+
+**✗ 常见问题：**
+
+- 删除源但保留标记 → 前端会显示孤立的 `[N]`
+- 修改文本后标记位置错误 → 需要重新生成
+- 混合多个搜索结果 → 确保索引连续且不重叠
+
+### 七、Chat/Completions 接口的响应格式
+
+当直接通过 Open WebUI 的 `chat/completions` API 调用 pipe 时，响应应采用以下格式返回引用信息。
+
+**流式响应（streaming=true）：**
+
+Pipe 返回 `AsyncGenerator[dict]`，每个 dict 按以下顺序发送：
+
+```python
+# 流式块（多次）
+{
+    "choices": [
+        {
+            "delta": {
+                "content": "根据搜索结果[1]，Open WebUI..."
+            }
+        }
+    ]
+}
+
+# 完成标记
+"data: [DONE]"
+
+# 后续元数据通过 event_emitter 事件发送
+# 1. emit_status - 状态更新消息
+# 2. emit_toast - 弹窗通知（如错误或成功提示）
+# 3. emit_usage - Token 使用量数据
+# 4. emit_completion(sources=[...]) - 发送最终的源信息列表
+```
+
+**关键特性：**
+
+- 文本内容通过 `{"choices": [{"delta": {"content": "..."}}]}` 流式返回
+- 引用标记 `[1][2]` 直接包含在内容文本中
+- 源信息通过 `emit_completion(sources=[...])` 以事件形式发送到前端
+- 完成后发送 `"data: [DONE]"` 标记
+
+**非流式响应（streaming=false）：**
+
+整个响应通过适配器转换为单次 AsyncGenerator：
+
+```python
+async def single_item_stream(response):
+    yield response
+
+# 输出结果类似流式，但内容全部在一个块中
+{
+    "choices": [
+        {
+            "delta": {
+                "content": "完整的回答文本[1][2]..."
+            }
+        }
+    ]
+}
+
+"data: [DONE]"
+```
+
+### 八、sources 数据的发送方式
+
+#### 方式 1：通过 EventEmitter 事件发送（推荐）
+
+```python
+await event_emitter.emit_completion(
+    content=None,  # 内容已通过 delta 发送
+    sources=[
+        {
+            "title": "Open WebUI 官方文档",
+            "uri": "https://docs.openwebui.com",
+            "snippet": "Open WebUI 是一个开源的大语言模型管理平台...",
+            "display_uri": "docs.openwebui.com",
+        },
+        {
+            "title": "Open WebUI GitHub 仓库",
+            "uri": "https://github.com/open-webui/open-webui",
+            "snippet": "开源代码库，包含所有源码和插件...",
+            "display_uri": "github.com",
+        }
+    ],
+    done=True
+)
+```
+
+这会产生事件：
+
+```python
+{
+    "type": "chat:completion",
+    "data": {
+        "done": True,
+        "sources": [
+            {"title": "...", "uri": "...", ...},
+            {"title": "...", "uri": "...", ...}
+        ]
+    }
+}
+```
+
+#### 方式 2：通过应用状态存储（Companion Filter 读取）
+
+gemini_manifold 的 `_add_grounding_data_to_state()` 将 grounding_metadata 存入：
+
+```python
+request.app.state[f"grounding_{chat_id}_{message_id}"] = grounding_metadata_obj
+```
+
+Companion Filter 或其他处理组件可以读取这个状态并从中提取源信息。
+
+#### 方式 3：直接在响应文本中（最简单）
+
+如果只需要在文本中显示源链接，可以让 API 返回：
+
+```text
+根据搜索结果[1]，Open WebUI 是一个开源平台[2]。
+
+[1] https://docs.openwebui.com - Open WebUI 官方文档
+[2] https://github.com/open-webui/open-webui - GitHub 仓库
+```
+
+前端将识别 `[N]` 标记并自动提取为引用。
+
+### 九、完整的 pipe 返回规范
+
+**Pipe 方法签名：**
+
+```python
+async def pipe(
+    self,
+    body: dict,  # 请求体：模型、消息、流式标志等
+    __user__: dict,  # 用户信息
+    __request__: Request,  # FastAPI Request
+    __event_emitter__: Callable[[Event], Awaitable[None]] | None,  # 事件发射器
+    __metadata__: dict,  # 元数据：特性、任务类型等
+) -> AsyncGenerator[dict, None] | str:
+    ...
+    return self._unified_response_processor(...)
+```
+
+**返回的 AsyncGenerator 应产生的消息序列：**
+
+```text
+1. {"choices": [{"delta": {"content": "流式文本块..."}}]}  ← 多次
+2. {"choices": [{"delta": {"content": "[1][2]..."}}]}  ← 最后的内容块
+3. "data: [DONE]"  ← 完成标记
+4. (事件发送阶段) emit_status, emit_toast, emit_usage, emit_completion(sources=[...])
+```
+
+**事件发送（通过 EventEmitter）：**
+
+这些不是 AsyncGenerator 的产出，而是通过 `__event_emitter__` 回调发送：
+
+```python
+# 在处理过程中发送状态
+await event_emitter.emit_status("处理中...", done=False)
+
+# 发送错误或成功提示
+event_emitter.emit_toast("✓ 完成", "success")
+
+# 发送 Token 使用量
+await event_emitter.emit_usage({
+    "prompt_tokens": 100,
+    "completion_tokens": 50,
+    "total_tokens": 150,
+    "completion_time": 2.34
+})
+
+# 发送最终的源信息和其他元数据
+await event_emitter.emit_completion(
+    sources=[...],
+    usage={...},
+    done=True
+)
+```
+
+### 十、实现 Pipe 时的源处理清单
+
+当你实现一个支持搜索的 pipe 时，确保：
+
+**✓ 流式响应部分：**
+
+- [ ] 文本包含内联的 `[1]`, `[2]` 等引用标记
+- [ ] 每个块通过 `yield {"choices": [{"delta": {"content": "..."}}]}` 返回
+- [ ] 最后一块完成后发送 `yield "data: [DONE]"`
+
+**✓ 元数据部分：**
+
+- [ ] 调用 `emit_status()` 显示处理进度
+- [ ] 调用 `emit_toast()` 通知成功或错误
+- [ ] 调用 `emit_usage()` 发送 Token 使用量
+- [ ] 调用 `emit_completion(sources=[...])` 发送源列表
+
+**✓ 源数据结构：**
+
+- [ ] 每个源包含 `title`, `uri`, `snippet`, `display_uri`
+- [ ] 源的顺序与文本中 `[N]` 的顺序一一对应
+- [ ] 使用 `emit_completion(sources=[...], done=True)` 标记完成
+
+**✗ 常见错误：**
+
+- [ ] ❌ 只返回文本，不发送源信息
+- [ ] ❌ 源数据格式不完整或字段错误
+- [ ] ❌ 源顺序与引用标记不匹配
+- [ ] ❌ 混合了内容和元数据返回方式
+
 > 这些示例可直接集成进团队的插件开发指南或代码模板库，新插件可参考对应场景快速实现相关功能。
