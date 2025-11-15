@@ -136,7 +136,7 @@
         @media (max-width: 768px) { .main-content { padding: 1.5rem; } .hero { padding: 40px 30px; } .hero h1 { font-size: 2.5em; } .section { padding: 30px 20px; } .feature-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
-<body>
+<body class="sidebar-hidden">
     <div id="sidebar-toggle">
         <span></span>
         <span></span>
@@ -463,9 +463,6 @@
                 sidebarToggle.addEventListener('click', () => {
                     body.classList.toggle('sidebar-hidden');
                 });
-                if (window.innerWidth <= 1200) {
-                    body.classList.add('sidebar-hidden');
-                }
             }
             
             // --- Navigation Logic ---
