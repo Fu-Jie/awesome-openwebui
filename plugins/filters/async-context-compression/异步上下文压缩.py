@@ -484,7 +484,7 @@ class Filter:
 
         return message
 
-    def inlet(
+    async def inlet(
         self, body: dict, __user__: Optional[dict] = None, __metadata__: dict = None
     ) -> dict:
         """
@@ -502,8 +502,10 @@ class Filter:
             print(f"[Inlet] Chat ID: {chat_id}")
             print(f"[Inlet] 收到 {len(messages)} 条消息")
 
-        # 加载已保存的摘要
-        saved_summary = self._load_summary(chat_id, body)
+        # [优化] 在后台线程中加载摘要，以避免阻塞事件循环
+        if self.valves.debug_mode:
+            print("[优化] 正在后台线程中加载摘要，以避免阻塞事件循环。")
+        saved_summary = await asyncio.to_thread(self._load_summary, chat_id, body)
 
         total_kept_count = self.valves.keep_first + self.valves.keep_last
 
@@ -632,8 +634,10 @@ class Filter:
             # 调用 LLM 生成摘要
             summary = await self._call_summary_llm(conversation_text, body, user_data)
 
-            # 保存摘要
-            self._save_summary(chat_id, summary, body)
+            # [优化] 在后台线程中保存摘要，以避免阻塞事件循环
+            if self.valves.debug_mode:
+                print("[优化] 正在后台线程中保存摘要，以避免阻塞事件循环。")
+            await asyncio.to_thread(self._save_summary, chat_id, summary, body)
 
             if self.valves.debug_mode:
                 print(f"[🤖 异步摘要任务] ✅ 完成！摘要长度: {len(summary)} 字符")
@@ -648,7 +652,10 @@ class Filter:
             fallback_summary = (
                 f"[历史对话概要] 包含约 {len(messages_to_summarize)} 条消息的内容。"
             )
-            self._save_summary(chat_id, fallback_summary, body)
+            # [优化] 在后台线程中保存摘要，以避免阻塞事件循环
+            if self.valves.debug_mode:
+                print("[优化] 正在后台线程中保存摘要，以避免阻塞事件循环。")
+            await asyncio.to_thread(self._save_summary, chat_id, fallback_summary, body)
 
     def _format_messages_for_summary(self, messages: list) -> str:
         """格式化消息用于摘要"""
@@ -730,7 +737,11 @@ class Filter:
             if not user_id:
                 raise ValueError("无法获取用户 ID")
 
-            user = Users.get_user_by_id(user_id)
+            # [优化] 在后台线程中获取用户对象，以避免阻塞事件循环
+            if self.valves.debug_mode:
+                print("[优化] 正在后台线程中获取用户对象，以避免阻塞事件循环。")
+            user = await asyncio.to_thread(Users.get_user_by_id, user_id)
+            
             if not user:
                 raise ValueError(f"无法找到用户: {user_id}")
 

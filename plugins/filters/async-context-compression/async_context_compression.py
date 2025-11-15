@@ -484,7 +484,7 @@ class Filter:
 
         return message
 
-    def inlet(
+    async def inlet(
         self, body: dict, __user__: Optional[dict] = None, __metadata__: dict = None
     ) -> dict:
         """
@@ -502,8 +502,10 @@ class Filter:
             print(f"[Inlet] Chat ID: {chat_id}")
             print(f"[Inlet] Received {len(messages)} messages")
 
-        # Load saved summary
-        saved_summary = self._load_summary(chat_id, body)
+        # [Optimization] Load summary in a background thread to avoid blocking the event loop.
+        if self.valves.debug_mode:
+            print("[Optimization] Loading summary in a background thread to avoid blocking the event loop.")
+        saved_summary = await asyncio.to_thread(self._load_summary, chat_id, body)
 
         total_kept_count = self.valves.keep_first + self.valves.keep_last
 
@@ -632,8 +634,10 @@ class Filter:
             # Call LLM to generate summary
             summary = await self._call_summary_llm(conversation_text, body, user_data)
 
-            # Save summary
-            self._save_summary(chat_id, summary, body)
+            # [Optimization] Save summary in a background thread to avoid blocking the event loop.
+            if self.valves.debug_mode:
+                print("[Optimization] Saving summary in a background thread to avoid blocking the event loop.")
+            await asyncio.to_thread(self._save_summary, chat_id, summary, body)
 
             if self.valves.debug_mode:
                 print(f"[🤖 Async Summary Task] ✅ Complete! Summary length: {len(summary)} characters.")
@@ -648,7 +652,11 @@ class Filter:
             fallback_summary = (
                 f"[Historical Conversation Summary] Contains content from approximately {len(messages_to_summarize)} messages."
             )
-            self._save_summary(chat_id, fallback_summary, body)
+            
+            # [Optimization] Save summary in a background thread to avoid blocking the event loop.
+            if self.valves.debug_mode:
+                print("[Optimization] Saving summary in a background thread to avoid blocking the event loop.")
+            await asyncio.to_thread(self._save_summary, chat_id, fallback_summary, body)
 
     def _format_messages_for_summary(self, messages: list) -> str:
         """Formats messages for summarization."""
@@ -730,7 +738,11 @@ Please directly output the compressed summary that meets the above requirements 
             if not user_id:
                 raise ValueError("Could not get user ID")
 
-            user = Users.get_user_by_id(user_id)
+            # [Optimization] Get user object in a background thread to avoid blocking the event loop.
+            if self.valves.debug_mode:
+                print("[Optimization] Getting user object in a background thread to avoid blocking the event loop.")
+            user = await asyncio.to_thread(Users.get_user_by_id, user_id)
+
             if not user:
                 raise ValueError(f"Could not find user: {user_id}")
 
