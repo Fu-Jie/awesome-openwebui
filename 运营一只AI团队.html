@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -19,25 +18,13 @@
             --nav-width: 280px;
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; line-height: 1.7; color: var(--text-primary); background-color: var(--bg-light); }
 
-        html {
-            scroll-behavior: smooth;
-        }
+        .container { display: flex; }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-            line-height: 1.7;
-            color: var(--text-primary);
-            background-color: var(--bg-light);
-            transition: margin-left 0.3s ease;
-        }
-        
-        /* Sidebar Toggle Button */
+        /* --- Sidebar Toggle Button --- */
         #sidebar-toggle {
             position: fixed;
             top: 15px;
@@ -54,21 +41,17 @@
             justify-content: center;
             align-items: center;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
         }
-        #sidebar-toggle span {
-            display: block;
-            width: 20px;
-            height: 2px;
-            background-color: var(--text-primary);
-            margin: 2px 0;
-            transition: all 0.3s ease;
-        }
+        #sidebar-toggle span { display: block; width: 20px; height: 2px; background-color: var(--text-primary); margin: 2px 0; transition: all 0.3s ease; }
+        body:not(.sidebar-hidden) #sidebar-toggle { transform: translateX(var(--nav-width)); }
         
-        body.sidebar-hidden #sidebar-toggle {
-            left: 15px;
-        }
-        
-        /* Sidebar Styles */
+        body:not(.sidebar-hidden) #sidebar-toggle span:nth-child(1) { transform: rotate(45deg) translate(4px, 4px); }
+        body:not(.sidebar-hidden) #sidebar-toggle span:nth-child(2) { opacity: 0; }
+        body:not(.sidebar-hidden) #sidebar-toggle span:nth-child(3) { transform: rotate(-45deg) translate(4px, -4px); }
+
+
+        /* --- Sidebar Navigation --- */
         nav {
             width: var(--nav-width);
             position: fixed;
@@ -77,26 +60,15 @@
             height: 100vh;
             background: var(--bg-white);
             border-right: 1px solid var(--border-color);
-            padding-top: 70px; /* Space for the toggle button */
+            padding-top: 2rem;
             overflow-y: auto;
             transform: translateX(0);
             transition: transform 0.3s ease;
             z-index: 1000;
         }
-        
-        body.sidebar-hidden nav {
-            transform: translateX(calc(-1 * var(--nav-width)));
-        }
+        body.sidebar-hidden nav { transform: translateX(calc(-1 * var(--nav-width))); }
 
-        nav .nav-header {
-            padding: 0 1.5rem 1rem 1.5rem;
-            margin-bottom: 1rem;
-            font-size: 1.2rem;
-            color: var(--text-primary);
-            border-bottom: 1px solid var(--border-color);
-            font-weight: 600;
-        }
-        
+        nav .nav-header { padding: 0 1.5rem 1rem 1.5rem; margin-bottom: 1rem; font-size: 1.2rem; color: var(--text-primary); border-bottom: 1px solid var(--border-color); font-weight: 600; }
         nav details { margin-bottom: 0.5rem; }
         nav summary { display: block; padding: 0.75rem 1.5rem; color: var(--text-primary); font-weight: 600; cursor: pointer; position: relative; transition: background-color 0.2s; list-style: none; }
         nav summary::-webkit-details-marker { display: none; }
@@ -106,18 +78,15 @@
         nav ul { list-style: none; padding: 0.5rem 0 0.5rem 1.5rem; margin: 0; border-left: 2px solid var(--border-color); margin-left: 1.5rem; }
         nav ul li a { display: block; padding: 0.6rem 1rem; color: var(--text-secondary); border-left: 4px solid transparent; transition: all 0.2s ease-in-out; font-weight: 500; font-size: 0.9em; border-radius: 4px; }
         nav ul li a:hover, nav ul li a.active { background-color: #e9ecef; border-left-color: var(--primary-color); font-weight: 600; color: var(--primary-color); transform: translateX(5px); }
-
-        /* Main Content Styles */
+        
+        /* --- Main Content --- */
         .main-content {
             flex-grow: 1;
             padding: 2rem 3rem;
             margin-left: var(--nav-width);
             transition: margin-left 0.3s ease;
         }
-        
-        body.sidebar-hidden .main-content {
-            margin-left: 0;
-        }
+        body.sidebar-hidden .main-content { margin-left: 0; }
 
         .hero { background: var(--bg-white); border-radius: 20px; padding: 60px; margin-bottom: 40px; box-shadow: 0 20px 60px rgba(0,0,0,0.1); text-align: center; }
         .hero h1 { font-size: 3.2em; background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 20px; font-weight: 800; }
@@ -163,28 +132,8 @@
         .section-cta-link { display: block; margin-top: 40px; padding: 15px 25px; background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%); color: white; text-align: center; border-radius: 10px; font-size: 1.1em; font-weight: 600; text-decoration: none; transition: all 0.3s ease; box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3); }
         .section-cta-link:hover { transform: translateY(-3px); box-shadow: 0 12px 30px rgba(102, 126, 234, 0.4); }
 
-        @media (max-width: 1200px) {
-            body:not(.sidebar-hidden) .main-content { margin-left: 0; }
-            body:not(.sidebar-hidden) nav { transform: translateX(calc(-1 * var(--nav-width))); }
-            body.sidebar-hidden #sidebar-toggle { left: 15px; } /* Ensure it stays in place when sidebar is forced hidden */
-        }
-        
-        @media (min-width: 1201px) {
-            #sidebar-toggle {
-                 transform: translateX(var(--nav-width));
-            }
-            body.sidebar-hidden #sidebar-toggle {
-                transform: translateX(0);
-            }
-        }
-
-        @media (max-width: 768px) {
-            .main-content { padding: 1.5rem; }
-            .hero { padding: 40px 30px; }
-            .hero h1 { font-size: 2.5em; }
-            .section { padding: 30px 20px; }
-            .feature-grid { grid-template-columns: 1fr; }
-        }
+        @media (max-width: 1200px) { body { margin-left: 0 !important; } .main-content { margin-left: 0 !important; } }
+        @media (max-width: 768px) { .main-content { padding: 1.5rem; } .hero { padding: 40px 30px; } .hero h1 { font-size: 2.5em; } .section { padding: 30px 20px; } .feature-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -304,9 +253,6 @@
         E --> F["阶段六：决策与产出"]
         style F fill:#B8E986,stroke:#7BA30A,color:#000
                     </div>
-                    <div class="highlight-box">
-                        <strong>💎 核心价值：</strong>四大功能的协同使用，实现了从广度探索到深度挖掘、从宏观战略到微观细节的完美平衡。
-                    </div>
                 </article>
                 <a href="#" title="占位链接" class="section-cta-link">在 OpenWebUI 中探索本章综合对话示例 ➔</a>
             </section>
@@ -317,53 +263,35 @@
                     <h2 id="part2-1">第二部分：超越聊天的智能工作台</h2>
                     <p>组织、知识与自动化</p>
                 </div>
-
-                <article>
+                 <div class="mermaid">
+    graph TB
+        subgraph "智能工作台四大支柱"
+            A["📁 文件夹<br/>项目工作室"]
+            B["📚 知识库<br/>专业智库"]
+            C["📋 用户提示词<br/>交互式模板"]
+            D["⚙️ 自定义模型<br/>专属AI助手"]
+        end
+        A --> E{完整协同}
+        B --> E
+        C --> E
+        D --> E
+        E --> F[高效产出]
+                </div>
+                <article id="part2-2">
                     <h3>📁 文件夹即项目：专业工作室</h3>
                     <p>在OpenWebUI中，文件夹是智能化的项目空间，具备分类、配置和上下文作用域三重身份。</p>
-                    <div class="feature-grid">
-                        <div class="feature-card"> <div class="icon">📁</div><h4>分类容器</h4><p>按项目条理化管理对话</p></div>
-                        <div class="feature-card"> <div class="icon">⚙️</div><h4>项目配置器</h4><p>自动应用系统提示词与知识库</p></div>
-                        <div class="feature-card"> <div class="icon">🎯</div><h4>上下文作用域</h4><p>确保一致的对话风格与规范</p></div>
-                    </div>
                 </article>
-
-                <article id="part2-2">
+                <article id="part2-3">
                     <h3>📚 一切皆知识库：专业智库系统</h3>
                     <p>OpenWebUI支持将笔记、文件、URL和历史对话等多种来源转化为统一的知识库，在对话中实现智能检索和上下文注入。</p>
-                     <div class="mermaid">
-    graph LR
-        A["📝 笔记"] --> F
-        B["📚 文件"] --> F
-        C["🌐 URL"] --> F
-        D["💬 对话"] --> F
-        subgraph " "
-        F["🧠 统一知识库<br/>智能检索与注入"]
-        end
-                    </div>
                 </article>
-
-                <article id="part2-3">
+                <article id="part2-4">
                     <h3>📋 用户提示词：交互式表单</h3>
                     <p>将复杂的重复性需求转化为易用的交互式表单，一次创建，多次复用，极大地提升了效率和准确性。</p>
-                    <div class="highlight-box">
-                        <strong>示例: /code_review 模板</strong><br>
-                        用户只需在表单中选择编程语言、审查焦点，并粘贴代码，即可自动生成一份完整、规范的代码审查请求。
-                    </div>
                 </article>
-
-                <article id="part2-4">
+                <article>
                     <h3>⚙️ 自定义模型配置：打造专属AI助手</h3>
                     <p>提供精细化的模型配置能力，包括用户权限、系统提示词、知识库绑定和工具授权等，满足从个人到企业的各类需求。</p>
-                    <table>
-                        <thead><tr><th>配置类别</th><th>功能说明</th></tr></thead>
-                        <tbody>
-                            <tr><td><strong>用户权限</strong></td><td>控制模型可见性，设置使用权限</td></tr>
-                            <tr><td><strong>系统提示词</strong></td><td>定义角色身份、输出格式、行为规范</td></tr>
-                            <tr><td><strong>知识库绑定</strong></td><td>让模型默认具备特定领域的专业知识</td></tr>
-                            <tr><td><strong>可用工具</strong></td><td>授权模型使用外部API，实现复杂业务流程</td></tr>
-                        </tbody>
-                    </table>
                 </article>
                  <a href="#" title="占位链接" class="section-cta-link">在 OpenWebUI 中探索本章综合对话示例 ➔</a>
             </section>
@@ -372,40 +300,63 @@
             <section id="part3" class="section">
                 <div class="section-header">
                     <h2 id="part3-1">第三部分：扩展功能</h2>
-                    <p>Functions、Tools、OpenAPI Server 和 MCP Server</p>
+                    <p>连接AI与真实世界的桥梁</p>
                 </div>
-
-                <article>
-                    <h3>🔧 Functions：模块化的Python插件系统</h3>
-                    <p>Functions是运行在OpenWebUI内部的纯Python插件，用于对对话流进行深度定制和干预。</p>
-                </article>
+                <p class="intro" style="text-align: left; max-width: none;">
+                    OpenWebUI的真正强大之处在于其丰富的扩展能力。这四种机制没有绝对的优劣之分，而是针对不同场景设计的强大工具集。开发者可以根据需求，选择最合适的“武器”来武装自己的AI平台。
+                </p>
 
                 <article id="part3-2">
-                    <h3>🛠️ Tools：为AI赋予超能力</h3>
-                    <p>Tools是Python脚本，为AI助手添加执行实际任务的能力，如网络搜索、图像生成、代码执行等。</p>
-                </article>
-                
-                <article id="part3-3">
-                    <h3>🌐 OpenAPI Server：标准化的服务集成</h3>
-                    <p>支持通过符合OpenAPI标准的服务器扩展功能，可轻松集成任何语言编写的现有企业服务。</p>
+                    <h3>🔧 Functions：深度集成与流程控制</h3>
+                    <p>
+                        Functions是运行在OpenWebUI内部的纯Python插件，赋予开发者<strong>手术刀级别的控制能力</strong>，可以直接干预和定制对话的核心流程。它们是实现深度集成和复杂内部逻辑的最佳选择。
+                    </p>
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>🔗 Pipe Functions</h4>
+                            <p><strong>核心能力：</strong>创建全新的“虚拟模型”。例如，可以将完整的Gemini API封装成一个Pipe Function，使其在模型列表中与Ollama模型并列，实现无缝的模型扩展。</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>🔍 Filter Functions</h4>
+                            <p><strong>核心能力：</strong>作为对话数据的“守门员”。例如，可以编写一个Filter在请求发送前自动压缩上下文，以节省成本；或在响应返回后过滤掉不当内容。</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>⚡ Action Functions</h4>
+                            <p><strong>核心能力：</strong>事件驱动的自动化。例如，可以创建一个自定义按钮，点击后触发一个Action Function，将当前的对话内容一键生成为思维导图。</p>
+                        </div>
+                    </div>
                 </article>
 
-                <article id="part3-4">
-                    <h3>🚀 MCP Server：下一代工具协议</h3>
-                    <p>MCP（Model Context Protocol）是为AI代理设计的下一代开放标准。在OpenWebUI中，这一先进协议通过一个名为 **`mcpo`** 的代理服务进行集成。`mcpo` 扮演着关键的桥梁角色，它将MCP协议 **翻译** 成一个标准的OpenAPI接口。这使得OpenWebUI能够像调用普通工具一样，与功能强大、具备上下文感知能力的MCP服务器进行无缝交互。</p>
+                <article id="part3-3">
+                    <h3>🛠️ Tools：赋予AI执行具体任务的能力</h3>
+                    <p>
+                       如果说Functions是平台的大脑和神经系统，那么Tools就是AI的<strong>手和脚</strong>。它们是具体的、可被AI自主调用的Python脚本，让AI能够执行现实世界的任务，从一个“聊天者”转变为一个“行动者”。
+                    </p>
+                    <div class="highlight-box">
+                       <strong>工作流程：</strong>用户提出需求（如“画一只猫”） → LLM理解意图并决定调用“图像生成”Tool → 系统执行Tool并返回图片 → LLM将图片呈现给用户。
+                    </div>
                 </article>
                 
+                <article id="part3-4">
+                    <h3>🌐 OpenAPI Server：连接现有服务的标准化桥梁</h3>
+                    <p>
+                        当需要与<strong>外部、已存在的服务或企业内部系统</strong>进行交互时，OpenAPI Server是最佳选择。它提供了一种语言无关的、标准化的集成方式，专注于调用外部接口获取数据或执行操作。
+                    </p>
+                    <p><strong>典型场景：</strong></p>
+                     <ul>
+                        <li><strong>获取实时数据：</strong>通过调用天气API、股票API或新闻API，让AI获取最新信息。</li>
+                        <li><strong>企业系统集成：</strong>连接公司内部的CRM、ERP或数据库，实现数据的查询和录入。</li>
+                    </ul>
+                </article>
+
                 <article id="part3-5">
-                    <h3>📊 扩展功能对比与选择指南</h3>
-                     <table>
-                        <thead><tr><th>对比维度</th><th>Functions</th><th>Tools</th><th>OpenAPI Server</th><th>MCP Server</th></tr></thead>
-                        <tbody>
-                            <tr><td><strong>运行位置</strong></td><td>内部</td><td>内部</td><td>独立服务器</td><td>独立服务器</td></tr>
-                            <tr><td><strong>开发语言</strong></td><td>Python</td><td>Python</td><td>任意</td><td>任意</td></tr>
-                            <tr><td><strong>适用场景</strong></td><td>UI定制/流程控制</td><td>AI能力扩展</td><td>企业集成</td><td>智能代理编排</td></tr>
-                            <tr><td><strong>核心优势</strong></td><td>简单快速</td><td>丰富社区</td><td>标准化</td><td>未来标准</td></tr>
-                        </tbody>
-                    </table>
+                    <h3>🚀 MCP Server：面向未来的智能代理协议</h3>
+                    <p>
+                        MCP（Model Context Protocol）是为高级AI代理设计的下一代开放标准。在OpenWebUI中，它通过一个名为 <code>mcpo</code> 的代理服务进行集成。<code>mcpo</code> 扮演着关键的桥梁角色，它将MCP协议 <strong>翻译</strong> 成一个标准的OpenAPI接口。
+                    </p>
+                     <p>
+                        这种设计的精妙之处在于，它让开发者既能享受到MCP协议带来的<strong>上下文感知、工具自动发现</strong>等高级特性，又无需为集成方式烦恼，因为对OpenWebUI来说，它就是一个强大而标准的OpenAPI工具。
+                    </p>
                 </article>
                 <a href="#" title="占位链接" class="section-cta-link">在 OpenWebUI 中探索本章综合对话示例 ➔</a>
             </section>
@@ -421,21 +372,9 @@
                     <h3>三大核心价值</h3>
                     <p>OpenWebUI的平台价值，可以概括为以下三个核心支柱：</p>
                     <div class="feature-grid">
-                        <div class="feature-card">
-                            <div class="icon">🤝</div>
-                            <h4>统一协作中心</h4>
-                            <p>通过多模型并行、@提及和智能总结等功能，将独立的AI模型整合成一个高效协同的智囊团，实现从发散创意到深度分析的完整工作流。</p>
-                        </div>
-                        <div class="feature-card">
-                            <div class="icon">🧠</div>
-                            <h4>智能知识大脑</h4>
-                            <p>借助文件夹即项目、多源知识库和模板化提示词，将零散的对话和文档系统化，构建一个能够自我演进、上下文感知的智能知识库。</p>
-                        </div>
-                        <div class="feature-card">
-                            <div class="icon">🔌</div>
-                            <h4>无限扩展生态</h4>
-                            <p>通过Functions、Tools、OpenAPI和MCP Server四大机制，提供从轻量级脚本到企业级服务集成的全面扩展能力，让平台能适应任何复杂需求。</p>
-                        </div>
+                        <div class="feature-card"><div class="icon">🤝</div><h4>统一协作中心</h4><p>通过多模型并行、@提及和智能总结等功能，将独立的AI模型整合成一个高效协同的智囊团，实现从发散创意到深度分析的完整工作流。</p></div>
+                        <div class="feature-card"><div class="icon">🧠</div><h4>智能知识大脑</h4><p>借助文件夹即项目、多源知识库和模板化提示词，将零散的对话和文档系统化，构建一个能够自我演进、上下文感知的智能知识库。</p></div>
+                        <div class="feature-card"><div class="icon">🔌</div><h4>无限扩展生态</h4><p>通过Functions、Tools、OpenAPI和MCP Server四大机制，提供从轻量级脚本到企业级服务集成的全面扩展能力，让平台能适应任何复杂需求。</p></div>
                     </div>
                 </article>
 
@@ -449,7 +388,6 @@
 
                 <article id="conclusion">
                     <h3>全文总结</h3>
-                    <p>OpenWebUI 通过其精心设计的三大支柱，成功地将AI从单一的对话伙伴，转变为一个可运营、可管理、可扩展的AI团队和应用平台。</p>
                     <div class="mermaid">
     graph TB
         A[OpenWebUI<br/>AI应用开发平台]
@@ -470,76 +408,67 @@
         style A fill:#764ba2,stroke:#5a67d8,color:#fff
         style E fill:#f6f8fb,stroke:#e2e8f0,color:#2d3748
                     </div>
-
                     <div class="highlight-box">
                         <strong>💎 最终价值主张：</strong>OpenWebUI 不仅仅是一个AI对话界面，而是一个完整的AI应用开发平台。它将AI对话、知识管理、工作流程和应用开发完美融合，为用户提供了一个真正的AI智囊团和工作平台。
                     </div>
                 </article>
             </section>
-
         </main>
     </div>
 
     <script>
-        // Initialize Mermaid
-        mermaid.initialize({ 
-            startOnLoad: true,
-            theme: 'default',
-            themeVariables: {
-                primaryColor: 'var(--bg-light)',
-                primaryTextColor: 'var(--text-primary)',
-                primaryBorderColor: 'var(--primary-color)',
-                lineColor: 'var(--text-secondary)',
-                secondaryColor: '#e9ecef',
-            }
-        });
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- Mermaid Initialization ---
+            try {
+                mermaid.initialize({ startOnLoad: true, theme: 'default' });
+            } catch (e) { console.error("Mermaid initialization failed:", e); }
 
-        // Feature Comparison Chart
-        const featureCtx = document.getElementById('featureChart').getContext('2d');
-        new Chart(featureCtx, {
-            type: 'radar',
-            data: {
-                labels: ['多模型协同', '知识管理', '工作流自动化', '扩展能力', '用户体验', '企业级功能'],
-                datasets: [{
-                    label: 'OpenWebUI',
-                    data: [95, 90, 88, 92, 89, 87],
-                    backgroundColor: 'rgba(102, 126, 234, 0.2)',
-                    borderColor: 'rgba(102, 126, 234, 1)',
-                    borderWidth: 2,
-                    pointBackgroundColor: 'rgba(102, 126, 234, 1)',
-                }, {
-                    label: '传统AI工具',
-                    data: [65, 70, 60, 55, 75, 65],
-                    backgroundColor: 'rgba(113, 128, 150, 0.2)',
-                    borderColor: 'rgba(113, 128, 150, 1)',
-                    borderWidth: 2,
-                    pointBackgroundColor: 'rgba(113, 128, 150, 1)',
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: { r: { beginAtZero: true, max: 100, pointLabels: { font: {size: 13}} } },
-                plugins: {
-                    title: { display: true, text: 'OpenWebUI vs 传统AI工具 功能对比（评分）', font: { size: 16 } }
+            // --- Chart.js Initialization ---
+            try {
+                const featureCtx = document.getElementById('featureChart').getContext('2d');
+                new Chart(featureCtx, {
+                    type: 'radar',
+                    data: {
+                        labels: ['多模型协同', '知识管理', '工作流自动化', '扩展能力', '用户体验', '企业级功能'],
+                        datasets: [{
+                            label: 'OpenWebUI',
+                            data: [95, 90, 88, 92, 89, 87],
+                            backgroundColor: 'rgba(102, 126, 234, 0.2)',
+                            borderColor: 'rgba(102, 126, 234, 1)',
+                            borderWidth: 2,
+                            pointBackgroundColor: 'rgba(102, 126, 234, 1)',
+                        }, {
+                            label: '传统AI工具',
+                            data: [65, 70, 60, 55, 75, 65],
+                            backgroundColor: 'rgba(113, 128, 150, 0.2)',
+                            borderColor: 'rgba(113, 128, 150, 1)',
+                            borderWidth: 2,
+                            pointBackgroundColor: 'rgba(113, 128, 150, 1)',
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: { r: { beginAtZero: true, max: 100, pointLabels: { font: {size: 13}} } },
+                        plugins: {
+                            title: { display: true, text: 'OpenWebUI vs 传统AI工具 功能对比（评分）', font: { size: 16 } }
+                        }
+                    }
+                });
+            } catch(e) { console.error("Chart.js initialization failed:", e); }
+
+            // --- Sidebar Toggle Logic ---
+            const sidebarToggle = document.getElementById('sidebar-toggle');
+            const body = document.body;
+            if (sidebarToggle && body) {
+                sidebarToggle.addEventListener('click', () => {
+                    body.classList.toggle('sidebar-hidden');
+                });
+                if (window.innerWidth <= 1200) {
+                    body.classList.add('sidebar-hidden');
                 }
             }
-        });
-        
-        // Sidebar Toggle Logic
-        const sidebarToggle = document.getElementById('sidebar-toggle');
-        const body = document.body;
-        
-        sidebarToggle.addEventListener('click', () => {
-            body.classList.toggle('sidebar-hidden');
-        });
-        
-        // Auto-hide sidebar on smaller screens initially
-        if (window.innerWidth <= 1200) {
-            body.classList.add('sidebar-hidden');
-        }
-
-        // Active Nav Link on Scroll & Collapsible Menu Logic
-        document.addEventListener('DOMContentLoaded', () => {
+            
+            // --- Navigation Logic ---
             const sections = document.querySelectorAll('section, header.hero');
             const navLinks = document.querySelectorAll('nav a');
             
@@ -570,39 +499,32 @@
 
             sections.forEach(section => observer.observe(section));
             
-             // Make summary clicks navigate
-            document.querySelectorAll('nav summary a').forEach(anchor => {
+            document.querySelectorAll('nav a').forEach(anchor => {
                 anchor.addEventListener('click', e => {
-                    const targetId = anchor.getAttribute('href');
-                    const targetElement = document.querySelector(targetId);
-                    if (targetElement) {
-                       targetElement.scrollIntoView();
-                       // If sidebar is hidden on small screens, hide it after click
-                       if (window.innerWidth <= 1200) {
-                           body.classList.add('sidebar-hidden');
-                       }
+                    if (window.innerWidth <= 1200) {
+                        body.classList.add('sidebar-hidden');
                     }
                 });
             });
-        });
 
-        // Scroll animations
-        const observerOptions = { threshold: 0.1, rootMargin: '0px 0px -100px 0px' };
-        const scrollObserver = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    entry.target.style.opacity = '1';
-                    entry.target.style.transform = 'translateY(0)';
-                    scrollObserver.unobserve(entry.target); // Animate only once
-                }
+            // --- Scroll Animations ---
+            const observerOptions = { threshold: 0.1, rootMargin: '0px 0px -100px 0px' };
+            const scrollObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.style.opacity = '1';
+                        entry.target.style.transform = 'translateY(0)';
+                        scrollObserver.unobserve(entry.target);
+                    }
+                });
+            }, observerOptions);
+
+            document.querySelectorAll('.section, .hero').forEach(el => {
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(30px)';
+                el.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+                scrollObserver.observe(el);
             });
-        }, observerOptions);
-
-        document.querySelectorAll('.section, .hero').forEach(el => {
-            el.style.opacity = '0';
-            el.style.transform = 'translateY(30px)';
-            el.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
-            scrollObserver.observe(el);
         });
     </script>
 </body>
