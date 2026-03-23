@@ -4,7 +4,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPgogIDxsaW5lIHgxPSIxMiIgeTE9IjIwIiB4Mj0iMTIiIHkyPSIxMCIgLz4KICA8bGluZSB4MT0iMTgiIHkxPSIyMCIgeDI9IjE4IiB5Mj0iNCIgLz4KICA8bGluZSB4MT0iNiIgeTE9IjIwIiB4Mj0iNiIgeTI9IjE2IiAvPgo8L3N2Zz4=
-version: 1.5.0
+version: 1.6.0
 openwebui_id: ad6f0c7f-c571-4dea-821d-8e71697274cf
 description: AI-powered infographic generator based on AntV Infographic. Supports professional templates, auto-icon matching, and SVG/PNG downloads.
 """
@@ -16,6 +16,7 @@ import time
 import re
 from fastapi import Request
 from datetime import datetime
+import asyncio
 
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.models.users import Users
@@ -24,6 +25,477 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+TRANSLATIONS = {
+    "en-US": {
+        "status_starting": "Smart Infographic is starting, generating infographic for you...",
+        "error_no_content": "Unable to retrieve valid user message content.",
+        "error_text_too_short": "Text content is too short ({len} characters), unable to perform effective analysis. Please provide at least {min_len} characters of text.",
+        "status_analyzing": "Smart Infographic: Analyzing text structure in depth...",
+        "status_drawing": "Smart Infographic: Drawing completed!",
+        "notification_success": "Mind map has been generated, {user_name}!",
+        "error_processing": "Smart Infographic processing failed: {error}",
+        "error_user_facing": "Sorry, Smart Infographic encountered an error during processing: {error}.\nPlease check the Open WebUI backend logs for more details.",
+        "status_failed": "Smart Infographic: Processing failed.",
+        "notification_failed": "Smart Infographic generation failed, {user_name}!",
+        "status_rendering_image": "Smart Infographic: Rendering image...",
+        "status_image_generated": "Smart Infographic: Image generated!",
+        "notification_image_success": "Mind map image has been generated, {user_name}!",
+        "ui_title": "🧠 Smart Infographic",
+        "ui_user": "User:",
+        "ui_time": "Time:",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "Reset",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "Expand Level",
+        "ui_depth_all": "Expand All",
+        "ui_depth_2": "Level 2",
+        "ui_depth_3": "Level 3",
+        "ui_fullscreen": "Fullscreen",
+        "ui_theme": "Theme",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ Unable to load infographic: Missing valid content.",
+        "html_error_load_failed": "⚠️ Resource loading failed, please try again later.",
+        "js_done": "Done",
+        "js_failed": "Failed",
+        "js_generating": "Generating...",
+        "js_filename": "infographic.png",
+        "js_upload_failed": "Upload failed: ",
+        "md_image_alt": "🧠 Infographic",
+    },
+    "zh-CN": {
+        "status_starting": "信息图已启动，正在为您生成信息图...",
+        "error_no_content": "无法获取有效的用户消息内容。",
+        "error_text_too_short": "文本内容过短（{len}字符），无法进行有效分析。请提供至少{min_len}字符的文本。",
+        "status_analyzing": "信息图：深入分析文本结构...",
+        "status_drawing": "信息图：绘制完成！",
+        "notification_success": "信息图已生成，{user_name}！",
+        "error_processing": "信息图处理失败：{error}",
+        "error_user_facing": "抱歉，信息图在处理时遇到错误：{error}。\n请检查Open WebUI后端日志获取更多详情。",
+        "status_failed": "信息图：处理失败。",
+        "notification_failed": "信息图生成失败，{user_name}！",
+        "status_rendering_image": "信息图：正在渲染图片...",
+        "status_image_generated": "信息图：图片已生成！",
+        "notification_image_success": "信息图图片已生成，{user_name}！",
+        "ui_title": "🧠 智能信息图",
+        "ui_user": "用户：",
+        "ui_time": "时间：",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "缩小",
+        "ui_zoom_reset": "重置",
+        "ui_zoom_in": "放大",
+        "ui_depth_select": "展开层级",
+        "ui_depth_all": "全部展开",
+        "ui_depth_2": "展开 2 级",
+        "ui_depth_3": "展开 3 级",
+        "ui_fullscreen": "全屏",
+        "ui_theme": "主题",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ 无法加载信息图：缺少有效内容。",
+        "html_error_load_failed": "⚠️ 资源加载失败，请稍后重试。",
+        "js_done": "完成",
+        "js_failed": "失败",
+        "js_generating": "生成中...",
+        "js_filename": "信息图.png",
+        "js_upload_failed": "上传失败：",
+        "md_image_alt": "🧠 信息图",
+    },
+    "zh-HK": {
+        "status_starting": "信息圖已啟動，正在為您生成信息圖...",
+        "error_no_content": "無法獲取有效的用戶消息內容。",
+        "error_text_too_short": "文本內容過短（{len}字元），無法進行有效分析。請提供至少{min_len}字元的文本。",
+        "status_analyzing": "信息圖：深入分析文本結構...",
+        "status_drawing": "信息圖：繪製完成！",
+        "notification_success": "信息圖已生成，{user_name}！",
+        "error_processing": "信息圖處理失敗：{error}",
+        "error_user_facing": "抱歉，信息圖在處理時遇到錯誤：{error}。\n請檢查Open WebUI後端日誌獲取更多詳情。",
+        "status_failed": "信息圖：處理失敗。",
+        "notification_failed": "信息圖生成失敗，{user_name}！",
+        "status_rendering_image": "信息圖：正在渲染圖片...",
+        "status_image_generated": "信息圖：圖片已生成！",
+        "notification_image_success": "信息圖圖片已生成，{user_name}！",
+        "ui_title": "🧠 智能信息圖",
+        "ui_user": "用戶：",
+        "ui_time": "時間：",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "縮小",
+        "ui_zoom_reset": "重置",
+        "ui_zoom_in": "放大",
+        "ui_depth_select": "展開層級",
+        "ui_depth_all": "全部展開",
+        "ui_depth_2": "展開 2 級",
+        "ui_depth_3": "展開 3 級",
+        "ui_fullscreen": "全屏",
+        "ui_theme": "主題",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ 無法加載信息圖：缺少有效內容。",
+        "html_error_load_failed": "⚠️ 資源加載失敗，請稍後重試。",
+        "js_done": "完成",
+        "js_failed": "失敗",
+        "js_generating": "生成中...",
+        "js_filename": "信息圖.png",
+        "js_upload_failed": "上傳失敗：",
+        "md_image_alt": "🧠 信息圖",
+    },
+    "zh-TW": {
+        "status_starting": "信息圖已啟動，正在為您生成信息圖...",
+        "error_no_content": "無法獲取有效的用戶消息內容。",
+        "error_text_too_short": "文本內容過短（{len}字元），無法進行有效分析。請提供至少{min_len}字元的文本。",
+        "status_analyzing": "信息圖：深入分析文本結構...",
+        "status_drawing": "信息圖：繪製完成！",
+        "notification_success": "信息圖已生成，{user_name}！",
+        "error_processing": "信息圖處理失敗：{error}",
+        "error_user_facing": "抱歉，信息圖在處理時遇到錯誤：{error}。\n請檢查Open WebUI後端日誌獲取更多詳情。",
+        "status_failed": "信息圖：處理失敗。",
+        "notification_failed": "信息圖生成失敗，{user_name}！",
+        "status_rendering_image": "信息圖：正在渲染圖片...",
+        "status_image_generated": "信息圖：圖片已生成！",
+        "notification_image_success": "信息圖圖片已生成，{user_name}！",
+        "ui_title": "🧠 智能信息圖",
+        "ui_user": "用戶：",
+        "ui_time": "時間：",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "縮小",
+        "ui_zoom_reset": "重置",
+        "ui_zoom_in": "放大",
+        "ui_depth_select": "展開層級",
+        "ui_depth_all": "全部展開",
+        "ui_depth_2": "展開 2 級",
+        "ui_depth_3": "展開 3 級",
+        "ui_fullscreen": "全屏",
+        "ui_theme": "主題",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ 無法加載信息圖：缺少有效內容。",
+        "html_error_load_failed": "⚠️ 資源加載失敗，請稍後重試。",
+        "js_done": "完成",
+        "js_failed": "失敗",
+        "js_generating": "生成中...",
+        "js_filename": "信息圖.png",
+        "js_upload_failed": "上傳失敗：",
+        "md_image_alt": "🧠 信息圖",
+    },
+    "ko-KR": {
+        "status_starting": "스마트 마인드맵이 시작되었습니다, 마인드맵을 생성 중입니다...",
+        "error_no_content": "유효한 사용자 메시지 내용을 가져올 수 없습니다.",
+        "error_text_too_short": "텍스트 내용이 너무 짧아({len}자), 효과적인 분석을 수행할 수 없습니다. 최소 {min_len}자 이상의 텍스트를 제공해 주세요.",
+        "status_analyzing": "스마트 마인드맵: 텍스트 구조 심층 분석 중...",
+        "status_drawing": "스마트 마인드맵: 그리기 완료!",
+        "notification_success": "마인드맵이 생성되었습니다, {user_name}님!",
+        "error_processing": "스마트 마인드맵 처리 실패: {error}",
+        "error_user_facing": "죄송합니다, 스마트 마인드맵 처리 중 오류가 발생했습니다: {error}.\n자세한 내용은 Open WebUI 백엔드 로그를 확인해 주세요.",
+        "status_failed": "스마트 마인드맵: 처리 실패.",
+        "notification_failed": "스마트 마인드맵 생성 실패, {user_name}님!",
+        "status_rendering_image": "스마트 마인드맵: 이미지 렌더링 중...",
+        "status_image_generated": "스마트 마인드맵: 이미지 생성됨!",
+        "notification_image_success": "마인드맵 이미지가 생성되었습니다, {user_name}님!",
+        "ui_title": "🧠 스마트 마인드맵",
+        "ui_user": "사용자:",
+        "ui_time": "시간:",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "초기화",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "레벨 확장",
+        "ui_depth_all": "모두 확장",
+        "ui_depth_2": "레벨 2",
+        "ui_depth_3": "레벨 3",
+        "ui_fullscreen": "전체 화면",
+        "ui_theme": "테마",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ 마인드맵을 로드할 수 없습니다: 유효한 내용이 없습니다.",
+        "html_error_load_failed": "⚠️ 리소스 로드 실패, 나중에 다시 시도해 주세요.",
+        "js_done": "완료",
+        "js_failed": "실패",
+        "js_generating": "생성 중...",
+        "js_filename": "infographic.png",
+        "js_upload_failed": "업로드 실패: ",
+        "md_image_alt": "🧠 마인드맵",
+    },
+    "ja-JP": {
+        "status_starting": "スマートマインドマップが起動しました。マインドマップを生成しています...",
+        "error_no_content": "有効なユーザーメッセージの内容を取得できませんでした。",
+        "error_text_too_short": "テキストの内容が短すぎるため（{len}文字）、効果的な分析を実行できません。少なくとも{min_len}文字のテキストを提供してください。",
+        "status_analyzing": "スマートマインドマップ：テキスト構造を詳細に分析中...",
+        "status_drawing": "スマートマインドマップ：描画完了！",
+        "notification_success": "マインドマップが生成されました、{user_name}さん！",
+        "error_processing": "スマートマインドマップ処理失敗：{error}",
+        "error_user_facing": "申し訳ありません、スマートマインドマップの処理中にエラーが発生しました：{error}。\n詳細については、Open WebUIバックエンドログを確認してください。",
+        "status_failed": "スマートマインドマップ：処理失敗。",
+        "notification_failed": "スマートマインドマップ生成失敗、{user_name}さん！",
+        "status_rendering_image": "スマートマインドマップ：画像レンダリング中...",
+        "status_image_generated": "スマートマインドマップ：画像生成完了！",
+        "notification_image_success": "マインドマップ画像が生成されました、{user_name}さん！",
+        "ui_title": "🧠 スマートマインドマップ",
+        "ui_user": "ユーザー：",
+        "ui_time": "時間：",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "リセット",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "レベル展開",
+        "ui_depth_all": "すべて展開",
+        "ui_depth_2": "レベル2",
+        "ui_depth_3": "レベル3",
+        "ui_fullscreen": "全画面",
+        "ui_theme": "テーマ",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ マインドマップを読み込めません：有効なコンテンツがありません。",
+        "html_error_load_failed": "⚠️ リソースの読み込みに失敗しました。後でもう一度お試しください。",
+        "js_done": "完了",
+        "js_failed": "失敗",
+        "js_generating": "生成中...",
+        "js_filename": "infographic.png",
+        "js_upload_failed": "アップロード失敗：",
+        "md_image_alt": "🧠 マインドマップ",
+    },
+    "fr-FR": {
+        "status_starting": "Smart Infographic démarre, génération de la carte heuristique en cours...",
+        "error_no_content": "Impossible de récupérer le contenu valide du message utilisateur.",
+        "error_text_too_short": "Le contenu du texte est trop court ({len} caractères), impossible d'effectuer une analyse efficace. Veuillez fournir au moins {min_len} caractères de texte.",
+        "status_analyzing": "Smart Infographic : Analyse approfondie de la structure du texte...",
+        "status_drawing": "Smart Infographic : Dessin terminé !",
+        "notification_success": "La carte heuristique a été générée, {user_name} !",
+        "error_processing": "Échec du traitement de Smart Infographic : {error}",
+        "error_user_facing": "Désolé, Smart Infographic a rencontré une erreur lors du traitement : {error}.\nVeuillez vérifier les journaux backend d'Open WebUI pour plus de détails.",
+        "status_failed": "Smart Infographic : Échec du traitement.",
+        "notification_failed": "Échec de la génération de la carte heuristique, {user_name} !",
+        "status_rendering_image": "Smart Infographic : Rendu de l'image...",
+        "status_image_generated": "Smart Infographic : Image générée !",
+        "notification_image_success": "L'image de la carte heuristique a été générée, {user_name} !",
+        "ui_title": "🧠 Smart Infographic",
+        "ui_user": "Utilisateur :",
+        "ui_time": "Heure :",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "Rénitialiser",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "Niveau d'expansion",
+        "ui_depth_all": "Tout développer",
+        "ui_depth_2": "Niveau 2",
+        "ui_depth_3": "Niveau 3",
+        "ui_fullscreen": "Plein écran",
+        "ui_theme": "Thème",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ Impossible de charger la carte heuristique : contenu valide manquant.",
+        "html_error_load_failed": "⚠️ Échec du chargement des ressources, veuillez réessayer plus tard.",
+        "js_done": "Terminé",
+        "js_failed": "Échec",
+        "js_generating": "Génération...",
+        "js_filename": "carte_heuristique.png",
+        "js_upload_failed": "Échec du téléchargement : ",
+        "md_image_alt": "🧠 Carte Heuristique",
+    },
+    "de-DE": {
+        "status_starting": "Smart Infographic startet, Infographic wird für Sie erstellt...",
+        "error_no_content": "Gültiger Inhalt der Benutzernachricht konnte nicht abgerufen werden.",
+        "error_text_too_short": "Der Textinhalt ist zu kurz ({len} Zeichen), eine effektive Analyse ist nicht möglich. Bitte geben Sie mindestens {min_len} Zeichen Text an.",
+        "status_analyzing": "Smart Infographic: Detaillierte Analyse der Textstruktur...",
+        "status_drawing": "Smart Infographic: Zeichnen abgeschlossen!",
+        "notification_success": "Infographic wurde erstellt, {user_name}!",
+        "error_processing": "Smart Infographic Verarbeitung fehlgeschlagen: {error}",
+        "error_user_facing": "Entschuldigung, bei der Verarbeitung von Smart Infographic ist ein Fehler aufgetreten: {error}.\nBitte überprüfen Sie die Open WebUI Backend-Protokolle für weitere Details.",
+        "status_failed": "Smart Infographic: Verarbeitung fehlgeschlagen.",
+        "notification_failed": "Erstellung der Infographic fehlgeschlagen, {user_name}!",
+        "status_rendering_image": "Smart Infographic: Bild wird gerendert...",
+        "status_image_generated": "Smart Infographic: Bild erstellt!",
+        "notification_image_success": "Infographic-Bild wurde erstellt, {user_name}!",
+        "ui_title": "🧠 Smart Infographic",
+        "ui_user": "Benutzer:",
+        "ui_time": "Zeit:",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "Zurücksetzen",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "Ebene erweitern",
+        "ui_depth_all": "Alles erweitern",
+        "ui_depth_2": "Ebene 2",
+        "ui_depth_3": "Ebene 3",
+        "ui_fullscreen": "Vollbild",
+        "ui_theme": "Thema",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ Infographic kann nicht geladen werden: Gültiger Inhalt fehlt.",
+        "html_error_load_failed": "⚠️ Ressourcenladen fehlgeschlagen, bitte versuchen Sie es später erneut.",
+        "js_done": "Fertig",
+        "js_failed": "Fehlgeschlagen",
+        "js_generating": "Generiere...",
+        "js_filename": "infographic.png",
+        "js_upload_failed": "Upload fehlgeschlagen: ",
+        "md_image_alt": "🧠 Infographic",
+    },
+    "es-ES": {
+        "status_starting": "Smart Infographic se está iniciando, generando mapa mental para usted...",
+        "error_no_content": "No se puede recuperar el contenido válido del mensaje del usuario.",
+        "error_text_too_short": "El contenido del texto es demasiado corto ({len} caracteres), no se puede realizar un análisis efectivo. Proporcione al menos {min_len} caracteres de texto.",
+        "status_analyzing": "Smart Infographic: Analizando la estructura del texto en profundidad...",
+        "status_drawing": "Smart Infographic: ¡Dibujo completado!",
+        "notification_success": "¡El mapa mental ha sido generado, {user_name}!",
+        "error_processing": "Falló el procesamiento de Smart Infographic: {error}",
+        "error_user_facing": "Lo sentimos, Smart Infographic encontró un error durante el procesamiento: {error}.\nConsulte los registros del backend de Open WebUI para más detalles.",
+        "status_failed": "Smart Infographic: Procesamiento fallido.",
+        "notification_failed": "¡La generación del mapa mental falló, {user_name}!",
+        "status_rendering_image": "Smart Infographic: Renderizando imagen...",
+        "status_image_generated": "Smart Infographic: ¡Imagen generada!",
+        "notification_image_success": "¡La imagen del mapa mental ha sido generada, {user_name}!",
+        "ui_title": "🧠 Smart Infographic",
+        "ui_user": "Usuario:",
+        "ui_time": "Hora:",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "Restablecer",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "Expandir Nivel",
+        "ui_depth_all": "Expandir Todo",
+        "ui_depth_2": "Nivel 2",
+        "ui_depth_3": "Nivel 3",
+        "ui_fullscreen": "Pantalla completa",
+        "ui_theme": "Tema",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ No se puede cargar el mapa mental: Falta contenido válido.",
+        "html_error_load_failed": "⚠️ Falló la carga de recursos, inténtelo de nuevo más tarde.",
+        "js_done": "Hecho",
+        "js_failed": "Fallido",
+        "js_generating": "Generando...",
+        "js_filename": "mapa_mental.png",
+        "js_upload_failed": "Carga fallida: ",
+        "md_image_alt": "🧠 Mapa Mental",
+    },
+    "it-IT": {
+        "status_starting": "Smart Infographic si sta avviando, generazione mappa mentale in corso...",
+        "error_no_content": "Impossibile recuperare il contenuto valido del messaggio utente.",
+        "error_text_too_short": "Il testo è troppo breve ({len} caratteri), impossibile eseguire un'analisi efficace. Fornire almeno {min_len} caratteri di testo.",
+        "status_analyzing": "Smart Infographic: Analisi approfondita della struttura del testo...",
+        "status_drawing": "Smart Infographic: Disegno completato!",
+        "notification_success": "La mappa mentale è stata generata, {user_name}!",
+        "error_processing": "Elaborazione Smart Infographic fallita: {error}",
+        "error_user_facing": "Spiacenti, Smart Infographic ha riscontrato un errore durante l'elaborazione: {error}.\nControllare i log del backend di Open WebUI per ulteriori dettagli.",
+        "status_failed": "Smart Infographic: Elaborazione fallita.",
+        "notification_failed": "Generazione mappa mentale fallita, {user_name}!",
+        "status_rendering_image": "Smart Infographic: Rendering immagine...",
+        "status_image_generated": "Smart Infographic: Immagine generata!",
+        "notification_image_success": "L'immagine della mappa mentale è stata generata, {user_name}!",
+        "ui_title": "🧠 Smart Infographic",
+        "ui_user": "Utente:",
+        "ui_time": "Ora:",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "Reimposta",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "Espandi Livello",
+        "ui_depth_all": "Espandi Tutto",
+        "ui_depth_2": "Livello 2",
+        "ui_depth_3": "Livello 3",
+        "ui_fullscreen": "Schermo intero",
+        "ui_theme": "Tema",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ Impossibile caricare la mappa mentale: Contenuto valido mancante.",
+        "html_error_load_failed": "⚠️ Caricamento risorse fallito, riprovare più tardi.",
+        "js_done": "Fatto",
+        "js_failed": "Fallito",
+        "js_generating": "Generazione...",
+        "js_filename": "mappa_mentale.png",
+        "js_upload_failed": "Caricamento fallito: ",
+        "md_image_alt": "🧠 Mappa Mentale",
+    },
+    "vi-VN": {
+        "status_starting": "Smart Infographic đang khởi động, đang tạo sơ đồ tư duy cho bạn...",
+        "error_no_content": "Không thể lấy nội dung tin nhắn người dùng hợp lệ.",
+        "error_text_too_short": "Nội dung văn bản quá ngắn ({len} ký tự), không thể thực hiện phân tích hiệu quả. Vui lòng cung cấp ít nhất {min_len} ký tự văn bản.",
+        "status_analyzing": "Smart Infographic: Phân tích sâu cấu trúc văn bản...",
+        "status_drawing": "Smart Infographic: Vẽ hoàn tất!",
+        "notification_success": "Sơ đồ tư duy đã được tạo, {user_name}!",
+        "error_processing": "Xử lý Smart Infographic thất bại: {error}",
+        "error_user_facing": "Xin lỗi, Smart Infographic đã gặp lỗi trong quá trình xử lý: {error}.\nVui lòng kiểm tra nhật ký backend Open WebUI để biết thêm chi tiết.",
+        "status_failed": "Smart Infographic: Xử lý thất bại.",
+        "notification_failed": "Tạo sơ đồ tư duy thất bại, {user_name}!",
+        "status_rendering_image": "Smart Infographic: Đang render hình ảnh...",
+        "status_image_generated": "Smart Infographic: Hình ảnh đã tạo!",
+        "notification_image_success": "Hình ảnh sơ đồ tư duy đã được tạo, {user_name}!",
+        "ui_title": "🧠 Smart Infographic",
+        "ui_user": "Người dùng:",
+        "ui_time": "Thời gian:",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "Đặt lại",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "Mở rộng Cấp độ",
+        "ui_depth_all": "Mở rộng Tất cả",
+        "ui_depth_2": "Cấp độ 2",
+        "ui_depth_3": "Cấp độ 3",
+        "ui_fullscreen": "Toàn màn hình",
+        "ui_theme": "Chủ đề",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ Không thể tải sơ đồ tư duy: Thiếu nội dung hợp lệ.",
+        "html_error_load_failed": "⚠️ Tải tài nguyên thất bại, vui lòng thử lại sau.",
+        "js_done": "Xong",
+        "js_failed": "Thất bại",
+        "js_generating": "Đang tạo...",
+        "js_filename": "sodo_tuduy.png",
+        "js_upload_failed": "Tải lên thất bại: ",
+        "md_image_alt": "🧠 Sơ đồ Tư duy",
+    },
+    "id-ID": {
+        "status_starting": "Smart Infographic sedang dimulai, membuat peta pikiran untuk Anda...",
+        "error_no_content": "Tidak dapat mengambil konten pesan pengguna yang valid.",
+        "error_text_too_short": "Konten teks terlalu pendek ({len} karakter), tidak dapat melakukan analisis efektif. Harap berikan setidaknya {min_len} karakter teks.",
+        "status_analyzing": "Smart Infographic: Menganalisis struktur teks secara mendalam...",
+        "status_drawing": "Smart Infographic: Menggambar selesai!",
+        "notification_success": "Peta pikiran telah dibuat, {user_name}!",
+        "error_processing": "Pemrosesan Smart Infographic gagal: {error}",
+        "error_user_facing": "Maaf, Smart Infographic mengalami kesalahan saat memproses: {error}.\nSilakan periksa log backend Open WebUI untuk detail lebih lanjut.",
+        "status_failed": "Smart Infographic: Pemrosesan gagal.",
+        "notification_failed": "Pembuatan peta pikiran gagal, {user_name}!",
+        "status_rendering_image": "Smart Infographic: Merender gambar...",
+        "status_image_generated": "Smart Infographic: Gambar dibuat!",
+        "notification_image_success": "Gambar peta pikiran telah dibuat, {user_name}!",
+        "ui_title": "🧠 Smart Infographic",
+        "ui_user": "Pengguna:",
+        "ui_time": "Waktu:",
+        "ui_download_png": "PNG",
+        "ui_download_svg": "SVG",
+        "ui_download_md": "Markdown",
+        "ui_zoom_out": "-",
+        "ui_zoom_reset": "Atur Ulang",
+        "ui_zoom_in": "+",
+        "ui_depth_select": "Perluas Level",
+        "ui_depth_all": "Perluas Semua",
+        "ui_depth_2": "Level 2",
+        "ui_depth_3": "Level 3",
+        "ui_fullscreen": "Layar Penuh",
+        "ui_theme": "Tema",
+        "ui_footer": "<b>Powered by</b> <a href='https://markmap.js.org/' target='_blank' rel='noopener noreferrer'>Markmap</a>",
+        "html_error_missing_content": "⚠️ Tidak dapat memuat peta pikiran: Konten valid hilang.",
+        "html_error_load_failed": "⚠️ Gagal memuat sumber daya, silakan coba lagi nanti.",
+        "js_done": "Selesai",
+        "js_failed": "Gagal",
+        "js_generating": "Membuat...",
+        "js_filename": "peta_pikiran.png",
+        "js_upload_failed": "Unggah gagal: ",
+        "md_image_alt": "🧠 Peta Pikiran",
+    },
+}
 
 # =================================================================
 # LLM Prompts
@@ -92,7 +564,7 @@ Choose the most appropriate template based on content structure.
 `chart-pie-plain-text`, `chart-pie-donut-plain-text`, `chart-wordcloud`
 
 *Other:*
-`quadrant-quarter-simple-card`, `relation-circle-icon-badge`
+`quadrant-quarter-simple-card`, `relation-circle-icon-badge`, `relation-dagre-flow-tb-simple-circle-node`
 
 **Text Capacity by Template Type:**
 - HIGH capacity (long descriptions OK): `list-column-*`, `compare-binary-*`, `sequence-timeline-*`
@@ -109,6 +581,19 @@ Choose the most appropriate template based on content structure.
 **Illustrations (unDraw):**
 - Format: filename without .svg, e.g., `coding`, `team-work`
 - Use `illus` field instead of `icon`
+
+### 📊 Template to Data Field Mapping (CRITICAL)
+For maximum rendering speed and stability, match the list identifier to the template kind structure. Do NOT just use `items` if a specific field exists:
+
+| Template Prefix | Data Field Identifier | Core Variables on Items |
+| :--- | :--- | :--- |
+| `list-*` | **`lists`** | `label`, `desc`, `icon` |
+| `sequence-*` | **`sequences`** | `label`, `desc` |
+| `compare-*` | **`compares`** | `label`, `value`, `children` |
+| `chart-*` | **`values`** | `label`, `value` |
+| `hierarchy-*` | **`root` + `children`** | 嵌套嵌套组合 |
+
+*Note: `items` can be used as a universal fallback adapter if template categorization is ambiguous.*
 
 ### Data Structure Examples
 
@@ -250,10 +735,22 @@ data
 ### Common Data Fields
 - `label`: Main title/label (Required)
 - `desc`: Description text
-- `value`: Numeric value (for charts)
+- `value`: Numeric value. **ONLY displayed on `chart-*` series templates**. For cards or lists, put data into `desc` instead.
 - `icon`: Icon name (e.g., `mdi/home`, `mdi/account`) or `ref:search:<keyword>`
 - `children`: Nested items (for trees, SWOT, etc.)
 - `illus`: Illustration icon (specific to some templates like Quadrant)
+
+### 📊 Data & Numeric Fields Standard
+1. **Value Specification**: `value` MUST be a **pure number** (integer or float), without any symbols like `$`, `%`, or `¥`.
+2. **Units Placement**: Put units or currency symbols into the `label` or `desc` instead.
+   - ❌ Wrong: `value $1.234` / `value 5.2%`
+   - ✅ Correct: `label USD ($)` -> `value 1.234` OR `label Rate` -> `desc 5.2%`
+
+### ⚠️ Strict Styling & Layout Rules
+1. **Color Palette (`palette`)**: MUST use space-separated naked Hex values. Do NOT use quotes (`"`) or commas (`,`).
+   - ✅ Correct: `palette #4f46e5 #06b6d4 #10b981`
+   - ❌ Wrong: `palette "#4f46e5", "#06b6d4"`
+2. **Binary Compare (`compare-binary-*`)**: The root of `compares` tree MUST contain **EXACTLY TWO** comparison objects.
 
 ### Content Refinement Principles
 1. **Brevity is King**: Infographics are visual. Keep text to a minimum.
@@ -278,6 +775,7 @@ Please analyze the following text content and convert its core information into 
 User Name: {user_name}
 Current Date/Time: {current_date_time_str}
 User Language: {user_language}
+OpenWebUI Theme: {user_theme}
 ---
 
 **Text Content:**
@@ -291,6 +789,8 @@ Please select the most appropriate infographic template based on text characteri
 - **Subtitle (`data.desc`):** **MUST** be ≤ **20 Chinese characters** (or ≤40 English characters).
 - **Card Title (`label`):** **MUST** be ≤ **6 Chinese characters** (or ≤12 English characters). Use 2-4 keywords only.
 - **Card Description (`desc`):** **MUST** be ≤ **12 Chinese characters** (or ≤24 English characters). Use short phrases.
+- **Numeric Strictness:** `value` MUST be a pure number (no `$`, `%`, etc.). Append units to `label` or `desc` instead.
+- **Dynamic Selection:** For multiple stats/currencies, use structures like `list-grid-*` or `list-row-*` for dense layouts.
 
 ⚠️ **CRITICAL**: If the original text is too long, you MUST rephrase and shorten it. Do NOT simply truncate with "...".
 Examples:
@@ -365,10 +865,22 @@ CSS_TEMPLATE_INFOGRAPHIC = """
     --ig-border-color: #e2e8f0;
     --ig-header-gradient: linear-gradient(135deg, #6366f1, #8b5cf6);
 }
+.infographic-container-wrapper.dark {
+    --ig-primary-color: #818cf8;
+    --ig-secondary-color: #a78bfa;
+    --ig-tertiary-color: #34d399;
+    --ig-background-color: #0f172a;
+    --ig-card-bg-color: #1e293b;
+    --ig-text-color: #f8fafc;
+    --ig-muted-text-color: #94a3b8;
+    --ig-border-color: #334155;
+    --ig-header-gradient: linear-gradient(135deg, #4338ca, #6d28d9);
+}
 .infographic-container-wrapper {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     line-height: 1.6;
     color: var(--ig-text-color);
+    background-color: var(--ig-background-color);
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -387,7 +899,7 @@ CSS_TEMPLATE_INFOGRAPHIC = """
 .infographic-container-wrapper .user-context {
     font-size: 0.8em;
     color: var(--ig-muted-text-color);
-    background-color: #f1f5f9;
+    background-color: var(--ig-card-bg-color);
     padding: 8px 16px;
     display: flex;
     justify-content: space-around;
@@ -402,7 +914,7 @@ CSS_TEMPLATE_INFOGRAPHIC = """
     border-radius: 8px;
     padding: 16px;
     min-height: 600px;
-    background: #fff;
+    background: var(--ig-card-bg-color);
     overflow: visible;
     transition: height 0.3s ease;
 }
@@ -413,6 +925,12 @@ CSS_TEMPLATE_INFOGRAPHIC = """
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
     line-height: 1.3 !important;
     overflow: visible !important;
+}
+.infographic-container-wrapper.dark .infographic-render-container svg text {
+    fill: var(--ig-text-color) !important;
+}
+.infographic-container-wrapper.dark .infographic-render-container svg foreignObject * {
+    color: var(--ig-text-color) !important;
 }
 /* Main title styles */
 .infographic-render-container svg foreignObject[data-element-type="title"] > * {
@@ -640,6 +1158,7 @@ SCRIPT_TEMPLATE_INFOGRAPHIC = """
             // Charts
             'chart-column': 'chart-column-simple',
             'quadrant': 'quadrant-quarter-simple-card',
+            'relation-dagre': 'relation-dagre-flow-tb-simple-circle-node',
             
             // Legacy mappings for backward compatibility
             'list-vertical': 'list-column-simple-vertical-arrow',
@@ -699,6 +1218,24 @@ SCRIPT_TEMPLATE_INFOGRAPHIC = """
             console.error('[Infographic] AntVInfographic library not loaded');
             containerEl.innerHTML = '<div class="error-message">⚠️ Unable to load AntV Infographic library. Please check your network connection.</div>';
             return;
+        }}
+
+        // --- Auto Theme Loading ---
+        try {{
+            const html = document.documentElement;
+            const body = document.body;
+            const htmlClass = html ? html.className : '';
+            const bodyClass = body ? body.className : '';
+            const htmlDataTheme = html ? html.getAttribute('data-theme') : '';
+            
+            const wrapper = containerEl.closest('.infographic-container-wrapper');
+            if (wrapper) {{
+                if (htmlDataTheme === 'dark' || bodyClass.includes('dark') || htmlClass.includes('dark')) {{
+                    wrapper.classList.add('dark');
+                }}
+            }}
+        }} catch (e) {{
+            console.warn('[Infographic] Failed to apply theme class', e);
         }}
 
         try {{
@@ -961,13 +1498,24 @@ class Action:
 
     def __init__(self):
         self.valves = self.Valves()
+        # Fallback mapping for variants not in TRANSLATIONS keys
+        self.fallback_map = {
+            "es-AR": "es-ES",
+            "es-MX": "es-ES",
+            "fr-CA": "fr-FR",
+            "en-CA": "en-US",
+            "en-GB": "en-US",
+            "en-AU": "en-US",
+            "de-AT": "de-DE",
+        }
 
     async def _get_user_context(
         self,
         __user__: Optional[Dict[str, Any]],
         __event_call__: Optional[Callable[[Any], Awaitable[None]]] = None,
+        __request__: Optional[Request] = None,
     ) -> Dict[str, str]:
-        """Safely extracts user context information."""
+        """Extract basic user context with safe fallbacks."""
         if isinstance(__user__, (list, tuple)):
             user_data = __user__[0] if __user__ else {}
         elif isinstance(__user__, dict):
@@ -977,31 +1525,122 @@ class Action:
 
         user_id = user_data.get("id", "unknown_user")
         user_name = user_data.get("name", "User")
+        # Default from profile
         user_language = user_data.get("language", "en-US")
+        user_theme = "light"
 
+        # Level 1 Fallback: Accept-Language from __request__ headers
+        if (
+            __request__
+            and hasattr(__request__, "headers")
+            and "accept-language" in __request__.headers
+        ):
+            raw_lang = __request__.headers.get("accept-language", "")
+            if raw_lang:
+                user_language = raw_lang.split(",")[0].split(";")[0]
+
+        # Priority: Document Lang > LocalStorage (Frontend) > Browser > Request Header > Profile
         if __event_call__:
             try:
                 js_code = """
-                    return (
-                        localStorage.getItem('locale') || 
-                        localStorage.getItem('language') || 
-                        navigator.language || 
-                        'en-US'
-                    );
+                    try {
+                        const html = document.documentElement;
+                        const body = document.body;
+                        const htmlClass = html ? html.className : '';
+                        const bodyClass = body ? body.className : '';
+                        const htmlDataTheme = html ? html.getAttribute('data-theme') : '';
+                        
+                        let theme = 'light';
+                        
+                        // 1. Check parent document's html/body class or data-theme
+                        if (htmlDataTheme === 'dark' || bodyClass.includes('dark') || htmlClass.includes('dark')) {
+                            theme = 'dark';
+                        } else if (htmlDataTheme === 'light' || bodyClass.includes('light') || htmlClass.includes('light')) {
+                            theme = 'light';
+                        } else {
+                            // 2. Check meta theme-color luma
+                            const metas = document.querySelectorAll('meta[name="theme-color"]');
+                            let foundMeta = false;
+                            if (metas.length > 0) {
+                                const color = metas[metas.length - 1].content.trim();
+                                const m = color.match(/^#?([0-9a-f]{6})$/i);
+                                if (m) {
+                                    const hex = m[1];
+                                    const r = parseInt(hex.slice(0, 2), 16);
+                                    const g = parseInt(hex.slice(2, 4), 16);
+                                    const b = parseInt(hex.slice(4, 6), 16);
+                                    const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+                                    theme = luma < 0.5 ? 'dark' : 'light';
+                                    foundMeta = true;
+                                }
+                            }
+                            // 3. Check system preference
+                            if (!foundMeta && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                                theme = 'dark';
+                            }
+                        }
+
+                        const lang = document.documentElement.lang ||
+                                     localStorage.getItem('locale') || 
+                                     localStorage.getItem('language') || 
+                                     navigator.language || 
+                                     'en-US';
+
+                        return JSON.stringify({ lang, theme });
+                    } catch (e) {
+                        return JSON.stringify({ lang: 'en-US', theme: 'light' });
+                    }
                 """
-                frontend_lang = await __event_call__(
-                    {"type": "execute", "data": {"code": js_code}}
+                # Use asyncio.wait_for to prevent hanging if frontend fails to callback
+                frontend_res_str = await asyncio.wait_for(
+                    __event_call__({"type": "execute", "data": {"code": js_code}}),
+                    timeout=2.0,
                 )
-                if frontend_lang and isinstance(frontend_lang, str):
-                    user_language = frontend_lang
+                if frontend_res_str and isinstance(frontend_res_str, str):
+                    try:
+                        import json
+                        frontend_res = json.loads(frontend_res_str)
+                        user_language = frontend_res.get("lang", user_language)
+                        user_theme = frontend_res.get("theme", user_theme)
+                    except Exception:
+                        user_language = frontend_res_str
             except Exception as e:
-                logger.warning(f"Failed to retrieve frontend language: {e}")
+                logger.warning(f"Failed to retrieve frontend language/theme: {e}")
 
         return {
             "user_id": user_id,
             "user_name": user_name,
             "user_language": user_language,
+            "user_theme": user_theme,
         }
+
+    def _resolve_language(self, lang: str) -> str:
+        """Resolve the best matching language code from the TRANSLATIONS dict."""
+        target_lang = lang
+        if target_lang in TRANSLATIONS:
+            return target_lang
+        if hasattr(self, 'fallback_map') and target_lang in self.fallback_map:
+            target_lang = self.fallback_map[target_lang]
+            if target_lang in TRANSLATIONS:
+                return target_lang
+        if "-" in lang:
+            base_lang = lang.split("-")[0]
+            for supported_lang in TRANSLATIONS:
+                if supported_lang.startswith(base_lang + "-"):
+                    return supported_lang
+        return "en-US"
+
+    def _get_translation(self, lang: str, key: str, **kwargs) -> str:
+        """Get translated string for the given language and key."""
+        target_lang = self._resolve_language(lang)
+        lang_dict = TRANSLATIONS.get(target_lang, TRANSLATIONS["en-US"])
+        text = lang_dict.get(key, TRANSLATIONS["en-US"].get(key, key))
+        if kwargs:
+            try:
+                text = text.format(**kwargs)
+            except Exception as e:
+                logger.warning(f"Translation formatting failed for {key}: {e}")
+        return text
 
     def _get_chat_context(
         self, body: dict, __metadata__: Optional[dict] = None
@@ -1245,6 +1884,7 @@ class Action:
             'sequence-horizontal': 'sequence-horizontal-zigzag-simple',
             'relation-sankey': 'relation-sankey-simple',
             'relation-circle': 'relation-circle-icon-badge',
+            'relation-dagre': 'relation-dagre-flow-tb-simple-circle-node',
             'compare-binary': 'compare-binary-horizontal-simple-vs',
             'compare-swot': 'compare-swot',
             'quadrant-quarter': 'quadrant-quarter-simple-card',
@@ -1496,13 +2136,14 @@ class Action:
         __metadata__: Optional[dict] = None,
         __request__: Optional[Request] = None,
     ) -> Optional[dict]:
-        logger.info("Action: Infographic started (v1.4.0)")
+        logger.info("Action: Infographic started (v1.6.0)")
 
         # Get user information
-        user_ctx = await self._get_user_context(__user__, __event_call__)
+        user_ctx = await self._get_user_context(__user__, __event_call__, __request__)
         user_name = user_ctx["user_name"]
         user_id = user_ctx["user_id"]
         user_language = user_ctx["user_language"]
+        user_theme = user_ctx.get("user_theme", "light")
 
         # Get current time
         now = datetime.now()
@@ -1562,11 +2203,11 @@ class Action:
                 }
 
             await self._emit_notification(
-                __event_emitter__, "📊 Infographic started, generating...", "info"
+                __event_emitter__, self._get_translation(user_language, "status_starting"), "info"
             )
             await self._emit_status(
                 __event_emitter__,
-                "📊 Infographic: Starting generation...",
+                self._get_translation(user_language, "status_starting"),
                 False,
             )
 
@@ -1576,13 +2217,14 @@ class Action:
             # Build prompt
             await self._emit_status(
                 __event_emitter__,
-                "📊 Infographic: Calling AI model to analyze content...",
+                self._get_translation(user_language, "status_analyzing"),
                 False,
             )
             formatted_user_prompt = USER_PROMPT_GENERATE_INFOGRAPHIC.format(
                 user_name=user_name,
                 current_date_time_str=current_date_time_str,
                 user_language=user_language,
+                user_theme=user_theme,
                 long_text_content=long_text_content,
             )
 
@@ -1617,7 +2259,7 @@ class Action:
 
             await self._emit_status(
                 __event_emitter__,
-                "📊 Infographic: AI analysis complete, parsing syntax...",
+                self._get_translation(user_language, "status_analyzing"),
                 False,
             )
 
@@ -1631,7 +2273,7 @@ class Action:
             # Prepare content components
             await self._emit_status(
                 __event_emitter__,
-                "📊 Infographic: Rendering chart...",
+                self._get_translation(user_language, "status_rendering_image"),
                 False,
             )
             content_html = (
@@ -1692,7 +2334,7 @@ class Action:
 
                 await self._emit_status(
                     __event_emitter__,
-                    "📊 Infographic: Rendering image...",
+                    self._get_translation(user_language, "status_rendering_image"),
                     False,
                 )
 
@@ -1712,11 +2354,11 @@ class Action:
                     )
 
                 await self._emit_status(
-                    __event_emitter__, "✅ Infographic: Image generated!", True
+                    __event_emitter__, self._get_translation(user_language, "status_image_generated"), True
                 )
                 await self._emit_notification(
                     __event_emitter__,
-                    f"📊 Infographic image generated, {user_name}!",
+                    self._get_translation(user_language, "notification_image_success", user_name=user_name),
                     "success",
                 )
                 logger.info("Infographic generation completed in image mode")
@@ -1727,11 +2369,11 @@ class Action:
             body["messages"][-1]["content"] = f"{original_content}\n\n{html_embed_tag}"
 
             await self._emit_status(
-                __event_emitter__, "✅ Infographic: Generation complete!", True
+                __event_emitter__, self._get_translation(user_language, "status_drawing"), True
             )
             await self._emit_notification(
                 __event_emitter__,
-                f"📊 Infographic generated, {user_name}!",
+                self._get_translation(user_language, "notification_success", user_name=user_name),
                 "success",
             )
             logger.info("Infographic generation completed")
@@ -1745,11 +2387,11 @@ class Action:
             ] = f"{original_content}\n\n❌ **Error:** {user_facing_error}"
 
             await self._emit_status(
-                __event_emitter__, "❌ Infographic: Generation failed", True
+                __event_emitter__, self._get_translation(user_language, "status_failed"), True
             )
             await self._emit_notification(
                 __event_emitter__,
-                f"❌ Infographic generation failed, {user_name}!",
+                self._get_translation(user_language, "notification_failed", user_name=user_name),
                 "error",
             )
 
