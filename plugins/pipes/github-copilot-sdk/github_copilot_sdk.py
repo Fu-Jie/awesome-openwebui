@@ -8133,7 +8133,15 @@ class Pipe:
         ) or self.valves.BYOK_BEARER_TOKEN
         effective_models = (uv.BYOK_MODELS if uv else "") or self.valves.BYOK_MODELS
 
-        if effective_base_url:
+        # If user explicitly configured BYOK_MODELS, use them directly (skip API fetch)
+        if effective_models.strip():
+            model_list = [
+                m.strip() for m in effective_models.split(",") if m.strip()
+            ]
+            await self._emit_debug_log(
+                f"BYOK: Using user-configured BYOK_MODELS ({len(model_list)} models)."
+            )
+        elif effective_base_url:
             try:
                 base_url = effective_base_url.rstrip("/")
                 url = f"{base_url}/models"
@@ -8187,16 +8195,6 @@ class Pipe:
                             await asyncio.sleep(1)
             except Exception as e:
                 await self._emit_debug_log(f"BYOK: Setup error: {e}")
-
-        # Fallback to configured list or defaults
-        if not model_list:
-            if effective_models.strip():
-                model_list = [
-                    m.strip() for m in effective_models.split(",") if m.strip()
-                ]
-                await self._emit_debug_log(
-                    f"BYOK: Using user-configured BYOK_MODELS ({len(model_list)} models)."
-                )
 
         # Infer per-model provider from ID string (BYOK endpoints can return multi-provider lists)
         byok_models = [
