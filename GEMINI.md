@@ -130,7 +130,7 @@ Must update ALL of these or the PR check fails:
 ## i18n & Language Standards
 
 1. **Alignment**: Keep the number of supported languages in `TRANSLATIONS` consistent with major plugins (e.g., `smart-mind-map`).
-2. **Supported Languages**: en-US, zh-CN, zh-HK, zh-TW, ko-KR, ja-JP, fr-FR, de-DE, es-ES, it-IT, vi-VN, id-ID.
+2. **Supported Languages**: en-US, zh-CN, zh-HK, zh-TW, ko-KR, ja-JP, fr-FR, de-DE, es-ES, it-IT, vi-VN, id-ID, pl-PL.
 3. **Fallback Map**: Must include variant redirects (e.g., `es-MX` -> `es-ES`, `fr-CA` -> `fr-FR`).
 4. **Tooltips**: All `description` fields in `Valves` must be **English only** to maintain clean UI.
 5. **Language Consistency**: All authored system prompts and templates MUST enforce that the Agent response language matches the exact same language as the user's input content (e.g., if concept/task input is in Chinese, provide response in Chinese).

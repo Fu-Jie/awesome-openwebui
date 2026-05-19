@@ -618,6 +618,19 @@ TRANSLATIONS = {
         "tool_trimmed": "... [Output degli strumenti tagliati]\n{content}",
         "content_collapsed": "\n... [Contenuto compresso] ...\n",
     },
+    "pl-PL": {
+        "status_context_usage": "Zużycie kontekstu (szacowane): {tokens} / {max_tokens} tokenów ({ratio}%)",
+        "status_high_usage": " | ⚠️ Wysokie zużycie",
+        "status_loaded_summary": "Wczytano historyczne podsumowanie (Ukryto {count} historycznych wiadomości)",
+        "status_context_summary_updated": "Zaktualizowano podsumowanie kontekstu: {tokens} / {max_tokens} tokenów ({ratio}%)",
+        "status_generating_summary": "Generowanie podsumowania kontekstu w tle...",
+        "status_summary_error": "Błąd podsumowania: {error} | Sprawdź konsolę przeglądarki (F12) w celu uzyskania szczegółów",
+        "status_external_refs_injected": "Pominięto chat RAG i wstrzyknięto {count} odniesień do kontekstu czatu",
+        "summary_prompt_prefix": "【Poprzednie podsumowanie: Poniżej znajduje się podsumowanie historycznej konwersacji, podane jedynie w celach kontekstowych. Nie odpowiadaj na samą treść podsumowania; odnieś się bezpośrednio do poniższych najnowszych pytań.】\n\n",
+        "summary_prompt_suffix": "\n\n---\nPoniżej znajduje się najnowsza konwersacja:",
+        "tool_trimmed": "... [Wyjścia narzędzi przycięte]\n{content}",
+        "content_collapsed": "\n... [Treść zwinięta] ...\n",
+    },
 }
 
 
