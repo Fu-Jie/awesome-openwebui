@@ -3,7 +3,7 @@ title: OpenWebUI Skills Manager Tool
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.3.2
+version: 0.3.3
 openwebui_id: b4bce8e4-08e7-4f90-bea7-dc31d463a0bb
 requirements:
 description: Standalone OpenWebUI tool for managing native Workspace Skills (list/show/install/create/update/delete) for any model.
@@ -71,6 +71,20 @@ BASE_TRANSLATIONS = {
     "msg_updated": "Skill updated successfully.",
     "msg_deleted": "Skill deleted successfully.",
     "msg_installed": "Skill installed successfully.",
+    "confirm_update_title": "Update skill?",
+    "confirm_update_message": "Update skill \"{name}\".\nDescription: {description}",
+    "confirm_delete_title": "Delete skill?",
+    "confirm_delete_message": "Permanently delete skill \"{name}\". This cannot be undone.\nDescription: {description}",
+    "status_update_cancelled": "Update cancelled by user.",
+    "status_delete_cancelled": "Deletion cancelled by user.",
+    "msg_update_cancelled": "Skill update cancelled by user.",
+    "msg_delete_cancelled": "Skill deletion cancelled by user.",
+    "confirm_overwrite_title": "Overwrite existing skill?",
+    "confirm_overwrite_message": "Overwrite skill \"{name}\". Its description and content will be replaced.\nCurrent description: {description}",
+    "status_overwrite_cancelled": "Overwrite cancelled by user.",
+    "msg_overwrite_cancelled": "Skill overwrite cancelled by user.",
+    "err_confirmation_unavailable": "Cannot prompt for confirmation in this context (no interactive event channel). Disable REQUIRE_CONFIRMATION in valves to proceed without prompting.",
+    "no_description": "(no description)",
 }
 
 TRANSLATIONS = {
@@ -111,6 +125,20 @@ TRANSLATIONS = {
         "msg_updated": "技能更新成功。",
         "msg_deleted": "技能删除成功。",
         "msg_installed": "技能安装成功。",
+        "confirm_update_title": "更新技能？",
+        "confirm_update_message": "更新技能 \"{name}\"。\n描述：{description}",
+        "confirm_delete_title": "删除技能？",
+        "confirm_delete_message": "将永久删除技能 \"{name}\"。此操作无法撤销。\n描述：{description}",
+        "status_update_cancelled": "用户已取消更新。",
+        "status_delete_cancelled": "用户已取消删除。",
+        "msg_update_cancelled": "技能更新已由用户取消。",
+        "msg_delete_cancelled": "技能删除已由用户取消。",
+        "confirm_overwrite_title": "覆盖已存在的技能？",
+        "confirm_overwrite_message": "覆盖技能 \"{name}\"。其描述和内容将被替换。\n当前描述：{description}",
+        "status_overwrite_cancelled": "用户已取消覆盖。",
+        "msg_overwrite_cancelled": "技能覆盖已由用户取消。",
+        "err_confirmation_unavailable": "当前上下文无法弹出确认提示（无交互事件通道）。请在阀门设置中关闭 REQUIRE_CONFIRMATION 以跳过确认。",
+        "no_description": "（无描述）",
     },
     "zh-TW": {
         "status_listing": "正在列出你的技能...",
@@ -147,6 +175,20 @@ TRANSLATIONS = {
         "msg_updated": "技能更新成功。",
         "msg_deleted": "技能刪除成功。",
         "msg_installed": "技能安裝成功。",
+        "confirm_update_title": "更新技能？",
+        "confirm_update_message": "更新技能 \"{name}\"。\n描述：{description}",
+        "confirm_delete_title": "刪除技能？",
+        "confirm_delete_message": "將永久刪除技能 \"{name}\"。此操作無法復原。\n描述：{description}",
+        "status_update_cancelled": "使用者已取消更新。",
+        "status_delete_cancelled": "使用者已取消刪除。",
+        "msg_update_cancelled": "技能更新已由使用者取消。",
+        "msg_delete_cancelled": "技能刪除已由使用者取消。",
+        "confirm_overwrite_title": "覆寫已存在的技能？",
+        "confirm_overwrite_message": "覆寫技能 \"{name}\"。其描述和內容將被取代。\n目前描述：{description}",
+        "status_overwrite_cancelled": "使用者已取消覆寫。",
+        "msg_overwrite_cancelled": "技能覆寫已由使用者取消。",
+        "err_confirmation_unavailable": "目前上下文無法彈出確認提示（無互動事件通道）。請在閥門設定中關閉 REQUIRE_CONFIRMATION 以略過確認。",
+        "no_description": "（無描述）",
     },
     "zh-HK": {
         "status_listing": "正在列出你的技能...",
@@ -183,6 +225,20 @@ TRANSLATIONS = {
         "msg_updated": "技能更新成功。",
         "msg_deleted": "技能刪除成功。",
         "msg_installed": "技能安裝成功。",
+        "confirm_update_title": "更新技能？",
+        "confirm_update_message": "更新技能 \"{name}\"。\n描述：{description}",
+        "confirm_delete_title": "刪除技能？",
+        "confirm_delete_message": "將永久刪除技能 \"{name}\"。此操作無法復原。\n描述：{description}",
+        "status_update_cancelled": "使用者已取消更新。",
+        "status_delete_cancelled": "使用者已取消刪除。",
+        "msg_update_cancelled": "技能更新已由使用者取消。",
+        "msg_delete_cancelled": "技能刪除已由使用者取消。",
+        "confirm_overwrite_title": "覆寫已存在的技能？",
+        "confirm_overwrite_message": "覆寫技能 \"{name}\"。其描述和內容將被取代。\n目前描述：{description}",
+        "status_overwrite_cancelled": "使用者已取消覆寫。",
+        "msg_overwrite_cancelled": "技能覆寫已由使用者取消。",
+        "err_confirmation_unavailable": "目前上下文無法彈出確認提示（無互動事件通道）。請在閥門設定中關閉 REQUIRE_CONFIRMATION 以略過確認。",
+        "no_description": "（無描述）",
     },
     "ja-JP": {
         "status_listing": "スキル一覧を取得しています...",
@@ -219,6 +275,20 @@ TRANSLATIONS = {
         "msg_updated": "スキルを更新しました。",
         "msg_deleted": "スキルを削除しました。",
         "msg_installed": "スキルをインストールしました。",
+        "confirm_update_title": "スキルを更新しますか？",
+        "confirm_update_message": "スキル \"{name}\" を更新します。\n説明: {description}",
+        "confirm_delete_title": "スキルを削除しますか？",
+        "confirm_delete_message": "スキル \"{name}\" を完全に削除します。この操作は取り消せません。\n説明: {description}",
+        "status_update_cancelled": "ユーザーが更新をキャンセルしました。",
+        "status_delete_cancelled": "ユーザーが削除をキャンセルしました。",
+        "msg_update_cancelled": "スキルの更新がユーザーによりキャンセルされました。",
+        "msg_delete_cancelled": "スキルの削除がユーザーによりキャンセルされました。",
+        "confirm_overwrite_title": "既存のスキルを上書きしますか？",
+        "confirm_overwrite_message": "スキル \"{name}\" を上書きします。説明と内容が置き換えられます。\n現在の説明: {description}",
+        "status_overwrite_cancelled": "ユーザーが上書きをキャンセルしました。",
+        "msg_overwrite_cancelled": "スキルの上書きがユーザーによりキャンセルされました。",
+        "err_confirmation_unavailable": "現在のコンテキストでは確認プロンプトを表示できません（対話型イベントチャネルなし）。確認なしで実行するにはバルブの REQUIRE_CONFIRMATION を無効にしてください。",
+        "no_description": "(説明なし)",
     },
     "ko-KR": {
         "status_listing": "스킬 목록을 불러오는 중...",
@@ -255,6 +325,20 @@ TRANSLATIONS = {
         "msg_updated": "스킬이 업데이트되었습니다.",
         "msg_deleted": "스킬이 삭제되었습니다.",
         "msg_installed": "스킬이 설치되었습니다.",
+        "confirm_update_title": "스킬을 업데이트하시겠습니까?",
+        "confirm_update_message": "스킬 \"{name}\"을(를) 업데이트합니다.\n설명: {description}",
+        "confirm_delete_title": "스킬을 삭제하시겠습니까?",
+        "confirm_delete_message": "스킬 \"{name}\"을(를) 영구적으로 삭제합니다. 이 작업은 되돌릴 수 없습니다.\n설명: {description}",
+        "status_update_cancelled": "사용자가 업데이트를 취소했습니다.",
+        "status_delete_cancelled": "사용자가 삭제를 취소했습니다.",
+        "msg_update_cancelled": "스킬 업데이트가 사용자에 의해 취소되었습니다.",
+        "msg_delete_cancelled": "스킬 삭제가 사용자에 의해 취소되었습니다.",
+        "confirm_overwrite_title": "기존 스킬을 덮어쓰시겠습니까?",
+        "confirm_overwrite_message": "스킬 \"{name}\"을(를) 덮어씁니다. 설명과 내용이 교체됩니다.\n현재 설명: {description}",
+        "status_overwrite_cancelled": "사용자가 덮어쓰기를 취소했습니다.",
+        "msg_overwrite_cancelled": "스킬 덮어쓰기가 사용자에 의해 취소되었습니다.",
+        "err_confirmation_unavailable": "현재 컨텍스트에서 확인 프롬프트를 표시할 수 없습니다(대화형 이벤트 채널 없음). 확인 없이 진행하려면 밸브에서 REQUIRE_CONFIRMATION을 비활성화하세요.",
+        "no_description": "(설명 없음)",
     },
     "fr-FR": {
         "status_listing": "Liste des skills en cours...",
@@ -291,6 +375,20 @@ TRANSLATIONS = {
         "msg_updated": "Skill mis à jour avec succès.",
         "msg_deleted": "Skill supprimé avec succès.",
         "msg_installed": "Skill installé avec succès.",
+        "confirm_update_title": "Mettre à jour le skill ?",
+        "confirm_update_message": "Mettre à jour le skill \"{name}\".\nDescription : {description}",
+        "confirm_delete_title": "Supprimer le skill ?",
+        "confirm_delete_message": "Supprimer définitivement le skill \"{name}\". Cette action est irréversible.\nDescription : {description}",
+        "status_update_cancelled": "Mise à jour annulée par l'utilisateur.",
+        "status_delete_cancelled": "Suppression annulée par l'utilisateur.",
+        "msg_update_cancelled": "Mise à jour du skill annulée par l'utilisateur.",
+        "msg_delete_cancelled": "Suppression du skill annulée par l'utilisateur.",
+        "confirm_overwrite_title": "Écraser le skill existant ?",
+        "confirm_overwrite_message": "Écraser le skill \"{name}\". Sa description et son contenu seront remplacés.\nDescription actuelle : {description}",
+        "status_overwrite_cancelled": "Écrasement annulé par l'utilisateur.",
+        "msg_overwrite_cancelled": "Écrasement du skill annulé par l'utilisateur.",
+        "err_confirmation_unavailable": "Impossible d'afficher une invite de confirmation dans ce contexte (aucun canal d'événement interactif). Désactivez REQUIRE_CONFIRMATION dans les valves pour continuer sans invite.",
+        "no_description": "(aucune description)",
     },
     "de-DE": {
         "status_listing": "Deine Skills werden aufgelistet...",
@@ -324,6 +422,20 @@ TRANSLATIONS = {
         "msg_updated": "Skill erfolgreich aktualisiert.",
         "msg_deleted": "Skill erfolgreich gelöscht.",
         "msg_installed": "Skill erfolgreich installiert.",
+        "confirm_update_title": "Skill aktualisieren?",
+        "confirm_update_message": "Skill \"{name}\" aktualisieren.\nBeschreibung: {description}",
+        "confirm_delete_title": "Skill löschen?",
+        "confirm_delete_message": "Skill \"{name}\" dauerhaft löschen. Dies kann nicht rückgängig gemacht werden.\nBeschreibung: {description}",
+        "status_update_cancelled": "Aktualisierung vom Benutzer abgebrochen.",
+        "status_delete_cancelled": "Löschung vom Benutzer abgebrochen.",
+        "msg_update_cancelled": "Skill-Aktualisierung vom Benutzer abgebrochen.",
+        "msg_delete_cancelled": "Skill-Löschung vom Benutzer abgebrochen.",
+        "confirm_overwrite_title": "Vorhandenen Skill überschreiben?",
+        "confirm_overwrite_message": "Skill \"{name}\" überschreiben. Seine Beschreibung und sein Inhalt werden ersetzt.\nAktuelle Beschreibung: {description}",
+        "status_overwrite_cancelled": "Überschreiben vom Benutzer abgebrochen.",
+        "msg_overwrite_cancelled": "Skill-Überschreiben vom Benutzer abgebrochen.",
+        "err_confirmation_unavailable": "In diesem Kontext kann keine Bestätigung angezeigt werden (kein interaktiver Ereigniskanal). Deaktiviere REQUIRE_CONFIRMATION in den Valves, um ohne Bestätigung fortzufahren.",
+        "no_description": "(keine Beschreibung)",
     },
     "es-ES": {
         "status_listing": "Listando tus skills...",
@@ -357,6 +469,20 @@ TRANSLATIONS = {
         "msg_updated": "Skill actualizado correctamente.",
         "msg_deleted": "Skill eliminado correctamente.",
         "msg_installed": "Skill instalado correctamente.",
+        "confirm_update_title": "¿Actualizar skill?",
+        "confirm_update_message": "Actualizar skill \"{name}\".\nDescripción: {description}",
+        "confirm_delete_title": "¿Eliminar skill?",
+        "confirm_delete_message": "Eliminar permanentemente el skill \"{name}\". Esta acción no se puede deshacer.\nDescripción: {description}",
+        "status_update_cancelled": "Actualización cancelada por el usuario.",
+        "status_delete_cancelled": "Eliminación cancelada por el usuario.",
+        "msg_update_cancelled": "Actualización del skill cancelada por el usuario.",
+        "msg_delete_cancelled": "Eliminación del skill cancelada por el usuario.",
+        "confirm_overwrite_title": "¿Sobrescribir skill existente?",
+        "confirm_overwrite_message": "Sobrescribir el skill \"{name}\". Su descripción y contenido serán reemplazados.\nDescripción actual: {description}",
+        "status_overwrite_cancelled": "Sobrescritura cancelada por el usuario.",
+        "msg_overwrite_cancelled": "Sobrescritura del skill cancelada por el usuario.",
+        "err_confirmation_unavailable": "No se puede mostrar la confirmación en este contexto (no hay canal de eventos interactivo). Desactiva REQUIRE_CONFIRMATION en las valves para continuar sin confirmación.",
+        "no_description": "(sin descripción)",
     },
     "it-IT": {
         "status_listing": "Elenco delle skill in corso...",
@@ -390,6 +516,20 @@ TRANSLATIONS = {
         "msg_updated": "Skill aggiornata con successo.",
         "msg_deleted": "Skill eliminata con successo.",
         "msg_installed": "Skill installata con successo.",
+        "confirm_update_title": "Aggiornare la skill?",
+        "confirm_update_message": "Aggiornare la skill \"{name}\".\nDescrizione: {description}",
+        "confirm_delete_title": "Eliminare la skill?",
+        "confirm_delete_message": "Eliminare definitivamente la skill \"{name}\". L'operazione non può essere annullata.\nDescrizione: {description}",
+        "status_update_cancelled": "Aggiornamento annullato dall'utente.",
+        "status_delete_cancelled": "Eliminazione annullata dall'utente.",
+        "msg_update_cancelled": "Aggiornamento della skill annullato dall'utente.",
+        "msg_delete_cancelled": "Eliminazione della skill annullata dall'utente.",
+        "confirm_overwrite_title": "Sovrascrivere la skill esistente?",
+        "confirm_overwrite_message": "Sovrascrivere la skill \"{name}\". La descrizione e il contenuto saranno sostituiti.\nDescrizione attuale: {description}",
+        "status_overwrite_cancelled": "Sovrascrittura annullata dall'utente.",
+        "msg_overwrite_cancelled": "Sovrascrittura della skill annullata dall'utente.",
+        "err_confirmation_unavailable": "Impossibile mostrare la conferma in questo contesto (nessun canale di eventi interattivo). Disattiva REQUIRE_CONFIRMATION nelle valvole per procedere senza conferma.",
+        "no_description": "(nessuna descrizione)",
     },
     "vi-VN": {
         "status_listing": "Đang liệt kê kỹ năng của bạn...",
@@ -423,6 +563,20 @@ TRANSLATIONS = {
         "msg_updated": "Cập nhật kỹ năng thành công.",
         "msg_deleted": "Xóa kỹ năng thành công.",
         "msg_installed": "Cài đặt kỹ năng thành công.",
+        "confirm_update_title": "Cập nhật kỹ năng?",
+        "confirm_update_message": "Cập nhật kỹ năng \"{name}\".\nMô tả: {description}",
+        "confirm_delete_title": "Xóa kỹ năng?",
+        "confirm_delete_message": "Xóa vĩnh viễn kỹ năng \"{name}\". Hành động này không thể hoàn tác.\nMô tả: {description}",
+        "status_update_cancelled": "Người dùng đã hủy cập nhật.",
+        "status_delete_cancelled": "Người dùng đã hủy xóa.",
+        "msg_update_cancelled": "Người dùng đã hủy cập nhật kỹ năng.",
+        "msg_delete_cancelled": "Người dùng đã hủy xóa kỹ năng.",
+        "confirm_overwrite_title": "Ghi đè kỹ năng đã tồn tại?",
+        "confirm_overwrite_message": "Ghi đè kỹ năng \"{name}\". Mô tả và nội dung sẽ bị thay thế.\nMô tả hiện tại: {description}",
+        "status_overwrite_cancelled": "Người dùng đã hủy ghi đè.",
+        "msg_overwrite_cancelled": "Người dùng đã hủy ghi đè kỹ năng.",
+        "err_confirmation_unavailable": "Không thể hiển thị xác nhận trong ngữ cảnh này (không có kênh sự kiện tương tác). Tắt REQUIRE_CONFIRMATION trong valves để tiếp tục mà không cần xác nhận.",
+        "no_description": "(không có mô tả)",
     },
     "id-ID": {
         "status_listing": "Sedang menampilkan daftar skill Anda...",
@@ -456,6 +610,20 @@ TRANSLATIONS = {
         "msg_updated": "Skill berhasil diperbarui.",
         "msg_deleted": "Skill berhasil dihapus.",
         "msg_installed": "Skill berhasil dipasang.",
+        "confirm_update_title": "Perbarui skill?",
+        "confirm_update_message": "Perbarui skill \"{name}\".\nDeskripsi: {description}",
+        "confirm_delete_title": "Hapus skill?",
+        "confirm_delete_message": "Hapus skill \"{name}\" secara permanen. Tindakan ini tidak dapat dibatalkan.\nDeskripsi: {description}",
+        "status_update_cancelled": "Pembaruan dibatalkan oleh pengguna.",
+        "status_delete_cancelled": "Penghapusan dibatalkan oleh pengguna.",
+        "msg_update_cancelled": "Pembaruan skill dibatalkan oleh pengguna.",
+        "msg_delete_cancelled": "Penghapusan skill dibatalkan oleh pengguna.",
+        "confirm_overwrite_title": "Timpa skill yang ada?",
+        "confirm_overwrite_message": "Timpa skill \"{name}\". Deskripsi dan kontennya akan diganti.\nDeskripsi saat ini: {description}",
+        "status_overwrite_cancelled": "Penimpaan dibatalkan oleh pengguna.",
+        "msg_overwrite_cancelled": "Penimpaan skill dibatalkan oleh pengguna.",
+        "err_confirmation_unavailable": "Tidak dapat menampilkan konfirmasi dalam konteks ini (tidak ada saluran event interaktif). Nonaktifkan REQUIRE_CONFIRMATION di valves untuk melanjutkan tanpa konfirmasi.",
+        "no_description": "(tanpa deskripsi)",
     },
 }
 
@@ -612,6 +780,40 @@ async def _emit_status(
                 "data": {"description": description, "done": done},
             }
         )
+
+
+async def _request_confirmation(
+    event_call: Optional[Any],
+    title: str,
+    message: str,
+) -> Optional[bool]:
+    """Prompt the user for a yes/no confirmation via __event_call__.
+    Returns True if confirmed, False if the user declined, or None if no
+    interactive event channel is available (caller decides how to handle).
+    """
+    if not event_call:
+        return None
+    try:
+        result = await event_call(
+            {
+                "type": "confirmation",
+                "data": {"title": title, "message": message},
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Confirmation prompt failed: {e}")
+        return None
+    return bool(result)
+
+
+def _format_description_for_prompt(description: Any, lang: str, max_len: int = 200) -> str:
+    """Render a skill description for inclusion in a confirmation dialog."""
+    text = str(description or "").strip()
+    if not text:
+        return _t(lang, "no_description")
+    if len(text) > max_len:
+        return text[: max_len - 1].rstrip() + "…"
+    return text
 
 
 def _require_skills_model():
@@ -1133,6 +1335,7 @@ async def _install_single_skill(
     lang: str,
     overwrite: bool,
     __event_emitter__: Optional[Any] = None,
+    __event_call__: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Internal method to install a single skill from URL."""
     try:
@@ -1208,6 +1411,40 @@ async def _install_single_skill(
                     "error": f"Skill already exists: {final_name}",
                     "hint": "Pass overwrite=true to replace the existing skill.",
                 }
+            if valves.REQUIRE_CONFIRMATION:
+                confirmed = await _request_confirmation(
+                    __event_call__,
+                    _t(lang, "confirm_overwrite_title"),
+                    _t(
+                        lang,
+                        "confirm_overwrite_message",
+                        name=final_name,
+                        description=_format_description_for_prompt(
+                            getattr(existing, "description", ""), lang
+                        ),
+                    ),
+                )
+                if confirmed is None:
+                    # Batch caller aggregates per-URL results; do not raise.
+                    return {
+                        "error": _t(lang, "err_confirmation_unavailable"),
+                        "url": url,
+                    }
+                if not confirmed:
+                    await _emit_status(
+                        valves,
+                        __event_emitter__,
+                        _t(lang, "status_overwrite_cancelled"),
+                        done=True,
+                    )
+                    return {
+                        "cancelled": True,
+                        "action": "overwrite_cancelled",
+                        "id": sid,
+                        "name": final_name,
+                        "source_url": url,
+                        "message": _t(lang, "msg_overwrite_cancelled"),
+                    }
             updated = await _call_openwebui_compat(
                 Skills.update_skill_by_id,
                 sid,
@@ -1280,6 +1517,10 @@ class Tools:
         SHOW_STATUS: bool = Field(
             default=True,
             description="Whether to show operation status updates.",
+        )
+        REQUIRE_CONFIRMATION: bool = Field(
+            default=True,
+            description="Require an interactive yes/no confirmation before destructive actions (update_skill, delete_skill, and overwrite on create_skill/install_skill). Disable to allow these without prompting.",
         )
         ALLOW_OVERWRITE_ON_CREATE: bool = Field(
             default=True,
@@ -1516,6 +1757,7 @@ class Tools:
                         lang=lang,
                         overwrite=overwrite,
                         __event_emitter__=__event_emitter__,
+                        __event_call__=__event_call__,
                     )
 
                     # Track installed name to detect duplicates
@@ -1578,6 +1820,7 @@ class Tools:
                     lang=lang,
                     overwrite=overwrite,
                     __event_emitter__=__event_emitter__,
+                    __event_call__=__event_call__,
                 )
                 return result
 
@@ -1643,6 +1886,35 @@ class Tools:
                     }
 
                 sid = str(getattr(existing, "id", "") or "")
+                if self.valves.REQUIRE_CONFIRMATION:
+                    confirmed = await _request_confirmation(
+                        __event_call__,
+                        _t(lang, "confirm_overwrite_title"),
+                        _t(
+                            lang,
+                            "confirm_overwrite_message",
+                            name=skill_name,
+                            description=_format_description_for_prompt(
+                                getattr(existing, "description", ""), lang
+                            ),
+                        ),
+                    )
+                    if confirmed is None:
+                        raise ValueError(_t(lang, "err_confirmation_unavailable"))
+                    if not confirmed:
+                        await _emit_status(
+                            self.valves,
+                            __event_emitter__,
+                            _t(lang, "status_overwrite_cancelled"),
+                            done=True,
+                        )
+                        return {
+                            "cancelled": True,
+                            "action": "overwrite_cancelled",
+                            "id": sid,
+                            "name": skill_name,
+                            "message": _t(lang, "msg_overwrite_cancelled"),
+                        }
                 updated = await _call_openwebui_compat(
                     Skills.update_skill_by_id,
                     sid,
@@ -1766,6 +2038,36 @@ class Tools:
             if not updates:
                 raise ValueError(_t(lang, "err_no_update_fields"))
 
+            if self.valves.REQUIRE_CONFIRMATION:
+                current_name = str(getattr(skill, "name", "") or sid)
+                confirmed = await _request_confirmation(
+                    __event_call__,
+                    _t(lang, "confirm_update_title"),
+                    _t(
+                        lang,
+                        "confirm_update_message",
+                        name=current_name,
+                        description=_format_description_for_prompt(
+                            getattr(skill, "description", ""), lang
+                        ),
+                    ),
+                )
+                if confirmed is None:
+                    raise ValueError(_t(lang, "err_confirmation_unavailable"))
+                if not confirmed:
+                    await _emit_status(
+                        self.valves,
+                        __event_emitter__,
+                        _t(lang, "status_update_cancelled"),
+                        done=True,
+                    )
+                    return {
+                        "cancelled": True,
+                        "id": sid,
+                        "name": current_name,
+                        "message": _t(lang, "msg_update_cancelled"),
+                    }
+
             updated = await _call_openwebui_compat(Skills.update_skill_by_id, sid, updates, prefer_thread_for_sync=True)
             updated_name = str(
                 getattr(updated, "name", "")
@@ -1823,6 +2125,36 @@ class Tools:
 
             sid = str(getattr(skill, "id", "") or "")
             sname = str(getattr(skill, "name", "") or "")
+
+            if self.valves.REQUIRE_CONFIRMATION:
+                confirmed = await _request_confirmation(
+                    __event_call__,
+                    _t(lang, "confirm_delete_title"),
+                    _t(
+                        lang,
+                        "confirm_delete_message",
+                        name=sname or "unknown",
+                        description=_format_description_for_prompt(
+                            getattr(skill, "description", ""), lang
+                        ),
+                    ),
+                )
+                if confirmed is None:
+                    raise ValueError(_t(lang, "err_confirmation_unavailable"))
+                if not confirmed:
+                    await _emit_status(
+                        self.valves,
+                        __event_emitter__,
+                        _t(lang, "status_delete_cancelled"),
+                        done=True,
+                    )
+                    return {
+                        "cancelled": True,
+                        "id": sid,
+                        "name": sname,
+                        "message": _t(lang, "msg_delete_cancelled"),
+                    }
+
             await _call_openwebui_compat(Skills.delete_skill_by_id, sid, prefer_thread_for_sync=True)
             deleted_name = sname or sid or "unknown"
 
