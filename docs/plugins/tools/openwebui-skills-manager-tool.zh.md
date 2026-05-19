@@ -1,6 +1,6 @@
 # 🧰 OpenWebUI Skills 管理工具
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v0.3.2 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v0.3.3 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -23,9 +23,8 @@
 
 ## 最新更新
 
-- **⚡ OpenWebUI 0.9.x 兼容性**：新增运行时异步检测和兼容性适配层，支持 OpenWebUI 0.9.x 及以上版本的异步数据库模型（Skills），同时完美回退支持旧版本的同步调用。
-- **📝 支持多行 Frontmatter 描述**：`install_skill` 现在可以正确解析远程 `SKILL.md` 里的 `description: >` 和 `description: |`，导入后的技能描述不再被截断成单行。
-- **↩️ 更稳的元数据回退**：当 frontmatter 只有 `title` 没有 `name` 时，安装器会优先使用 `title`，避免退回到通用目录名。
+- **🛡️ 破坏性操作确认**：新增 `REQUIRE_CONFIRMATION` 阀门（默认 `True`），在执行 `update_skill`、`delete_skill` 以及 `create_skill`/`install_skill` 触发覆盖前通过 `__event_call__` 弹出用户确认。取消时返回结构化的 `{cancelled: true, ...}` 结果，并发出本地化的状态消息。
+- **🌐 本地化确认文案**：所有新增的确认标题、提示信息和取消状态文案均已翻译至支持的 12 种语言。
 
 > [!TIP]
 > **💡 想要批量安装/管理全局插件 (Actions, Filters, Pipes, Tools)？**

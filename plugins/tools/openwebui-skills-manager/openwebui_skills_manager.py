@@ -794,11 +794,12 @@ async def _request_confirmation(
     if not event_call:
         return None
     try:
-        result = await event_call(
+        result = await _call_openwebui_compat(
+            event_call,
             {
                 "type": "confirmation",
                 "data": {"title": title, "message": message},
-            }
+            },
         )
     except Exception as e:
         logger.warning(f"Confirmation prompt failed: {e}")
