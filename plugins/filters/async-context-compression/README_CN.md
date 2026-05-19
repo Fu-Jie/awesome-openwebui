@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.2 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.3 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -23,12 +23,11 @@
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
 
-## 1.6.2 版本更新
+## 1.6.3 版本更新
 
-- **修复重复压缩问题**（Issue #68）：Outlet 不再在首次压缩后每条消息都重复触发压缩。Token 阈值检查现在模拟实际发送上下文（head + summary + tail），而非计算完整原始历史。
-- **滞后守护**：新增守护机制，防止仅积累少量新消息时浪费 LLM 摘要调用。
-- **更准确的 Token 状态显示**：Tiktoken 精确计算触发点从 85% 降至 60%，上下文用量显示更准确。
-- **增强调试日志**：改进阈值检查决策的日志输出，显示估算值、精确值和触发阈值。
+- **默认静默处理摘要失败**：新增 `SUMMARY_FAIL_MODE` 配置项，默认在摘要模型出现瞬时错误时只记录错误并跳过本轮摘要，不再打断当前聊天。
+- **保留可选的严格抛错模式**：如需保留旧行为，可将 `SUMMARY_FAIL_MODE="raise"`，用于调试或希望强制暴露摘要链路故障的场景。
+- **补齐双模式回归测试**：新增 silent 默认路径与 raise 显式路径的直接测试，避免后续摘要错误处理回归时无提示。
 ## 1.5.0 版本更新
 
 - **外部聊天引用摘要**: 新增对引用聊天上下文的摘要支持。现在可以复用缓存摘要、直接注入较小引用聊天，或先为较大的引用聊天生成摘要再注入。
@@ -168,6 +167,7 @@ flowchart TD
 | `summary_model_max_context` | `0`     | 摘要请求可使用的输入上下文窗口。如果为 0，则回退到 `model_thresholds` 或全局 `max_context_tokens`。                                          |
 | `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限。                                                                                 |
 | `summary_temperature` | `0.1`   | 控制摘要生成的随机性，较低的值结果更稳定。                                                                                                  |
+| `SUMMARY_FAIL_MODE`   | `silent` | 控制摘要 LLM 调用失败时的行为。`silent` 会记录错误并跳过本轮摘要；`raise` 会保留之前的硬抛错行为。                                         |
 
 ### 高级配置
 
@@ -217,6 +217,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.5.0` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.5.0_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.6.3` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.6.3_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

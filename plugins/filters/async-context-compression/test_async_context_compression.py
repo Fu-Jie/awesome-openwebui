@@ -639,9 +639,63 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertEqual(captured["conversation_text"], "Q" * 60)
         self.assertIsNone(captured["previous_summary"])
 
-    def test_call_summary_llm_surfaces_provider_error_dict(self):
+    def test_call_summary_llm_silently_handles_provider_error_dict_by_default(self):
         self.filter.valves.summary_model = "fake-summary-model"
         self.filter.valves.show_debug_log = False
+
+        async def fake_generate_chat_completion(request, payload, user):
+            return {"error": {"message": "context too long", "code": 400}}
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        frontend_calls = []
+
+        async def fake_event_call(payload):
+            frontend_calls.append(payload)
+            return True
+
+        original_generate = module.generate_chat_completion
+        original_get_user = getattr(module.Users, "get_user_by_id", None)
+
+        module.generate_chat_completion = fake_generate_chat_completion
+        module.Users.get_user_by_id = staticmethod(
+            lambda user_id: types.SimpleNamespace(email="user@example.com")
+        )
+        self.filter._log = noop_log
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 8192
+        }
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+
+        try:
+            summary = asyncio.run(
+                self.filter._call_summary_llm(
+                    "conversation",
+                    {"model": "fake-summary-model"},
+                    {"id": "user-1"},
+                    __event_call__=fake_event_call,
+                )
+            )
+        finally:
+            module.generate_chat_completion = original_generate
+            if original_get_user is None:
+                delattr(module.Users, "get_user_by_id")
+            else:
+                module.Users.get_user_by_id = original_get_user
+
+        self.assertEqual(summary, "")
+        self.assertTrue(frontend_calls)
+        self.assertEqual(frontend_calls[0]["type"], "execute")
+        self.assertIn("console.error", frontend_calls[0]["data"]["code"])
+        self.assertIn("context too long", frontend_calls[0]["data"]["code"])
+
+    def test_call_summary_llm_raises_provider_error_dict_when_fail_mode_is_raise(self):
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.show_debug_log = False
+        self.filter.valves.SUMMARY_FAIL_MODE = "raise"
 
         async def fake_generate_chat_completion(request, payload, user):
             return {"error": {"message": "context too long", "code": 400}}
@@ -687,7 +741,9 @@ class TestAsyncContextCompression(unittest.TestCase):
             else:
                 module.Users.get_user_by_id = original_get_user
 
-        self.assertIn("Upstream provider error: context too long", str(exc_info.exception))
+        self.assertIn(
+            "Upstream provider error: context too long", str(exc_info.exception)
+        )
         self.assertNotIn(
             "LLM response format incorrect or empty", str(exc_info.exception)
         )
