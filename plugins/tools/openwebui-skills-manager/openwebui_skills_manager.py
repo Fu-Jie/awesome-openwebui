@@ -804,7 +804,12 @@ async def _request_confirmation(
     except Exception as e:
         logger.warning(f"Confirmation prompt failed: {e}")
         return None
-    return bool(result)
+    # Only trust an explicit bool True/False from the event channel.
+    # Any other truthy value (e.g. an error dict returned on channel disconnect)
+    # must be treated as unavailable so callers can block the destructive action.
+    if isinstance(result, bool):
+        return result
+    return None
 
 
 def _format_description_for_prompt(description: Any, lang: str, max_len: int = 200) -> str:
