@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.6.2
+version: 1.6.3
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -303,7 +303,7 @@ Solution:
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List, Union, Callable, Awaitable
+from typing import Optional, Dict, Any, List, Union, Callable, Awaitable, Literal
 import re
 import asyncio
 import json
@@ -1617,6 +1617,16 @@ class Filter:
             ge=0.0,
             le=2.0,
             description="The temperature for summary generation.",
+        )
+        summary_fail_mode: Literal["silent", "raise"] = Field(
+            default="silent",
+            description=(
+                "What to do when the summary LLM call fails (e.g. upstream 502 "
+                "during a transient wedge). 'silent' (default) logs the error "
+                "and returns an empty summary so the chat continues without a "
+                "summary this turn; 'raise' propagates the wrapped exception to "
+                "the caller (useful for debugging or surfacing breakage hard)."
+            ),
         )
         debug_mode: bool = Field(
             default=False, description="Enable detailed logging for debugging."
@@ -4922,4 +4932,11 @@ Return only the XML working memory:
 
             wrapped_error = Exception(error_message)
             setattr(wrapped_error, "_frontend_logged", True)
-            raise wrapped_error
+            # Best-effort: a failed summary should not be a chat-breaking error.
+            # 'silent' (default) returns "" so the caller treats this turn the
+            # same as the existing empty-input path (see line 4817) — chat
+            # continues without a summary. 'raise' preserves the prior behavior
+            # for operators who want hard failures during debugging.
+            if self.valves.summary_fail_mode == "raise":
+                raise wrapped_error
+            return ""
