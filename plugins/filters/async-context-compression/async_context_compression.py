@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.6.5
+version: 1.6.7
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -25,6 +25,7 @@ Core Features:
   ✅ Configurable compression style (aggressive, balanced, faithful)
   ✅ Structure-aware trimming to preserve document skeleton
   ✅ Native tool output trimming for function calling support
+  ✅ Manual invoke via /compact command (compress without sending a request)
 
 ═══════════════════════════════════════════════════════════════════════════════
 🔄 Workflow
@@ -509,6 +510,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nBelow is the recent conversation:",
         "tool_trimmed": "... [Tool outputs trimmed]\n{content}",
         "content_collapsed": "\n... [Content collapsed] ...\n",
+        "manual_compressed": "✅ Context compressed: {count} messages summarized (boundary {prev} → {new}).",
+        "manual_skipped": "⏭️ Compression skipped: {reason}.",
+        "manual_error": "❌ Compression failed: {error}.",
     },
     "zh-CN": {
         "status_context_usage": "上下文用量 (预估): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -522,6 +526,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下是最近的对话：",
         "tool_trimmed": "... [工具输出已裁剪]\n{content}",
         "content_collapsed": "\n... [内容已折叠] ...\n",
+        "manual_compressed": "✅ 上下文已压缩：{count} 条消息已摘要化（边界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 跳过压缩：{reason}。",
+        "manual_error": "❌ 压缩失败：{error}。",
     },
     "zh-HK": {
         "status_context_usage": "上下文用量 (預估): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -535,6 +542,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下是最近的對話：",
         "tool_trimmed": "... [工具輸出已裁剪]\n{content}",
         "content_collapsed": "\n... [內容已折疊] ...\n",
+        "manual_compressed": "✅ 上下文已壓縮：{count} 條訊息已摘要化（邊界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 跳過壓縮：{reason}。",
+        "manual_error": "❌ 壓縮失敗：{error}。",
     },
     "zh-TW": {
         "status_context_usage": "上下文用量 (預估): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -548,6 +558,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下是最近的對話：",
         "tool_trimmed": "... [工具輸出已裁剪]\n{content}",
         "content_collapsed": "\n... [內容已折疊] ...\n",
+        "manual_compressed": "✅ 上下文已壓縮：{count} 條訊息已摘要化（邊界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 跳過壓縮：{reason}。",
+        "manual_error": "❌ 壓縮失敗：{error}。",
     },
     "ja-JP": {
         "status_context_usage": "コンテキスト使用量 (推定): {tokens} / {max_tokens} トークン ({ratio}%)",
@@ -561,6 +574,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下は最近の会話です：",
         "tool_trimmed": "... [ツールの出力をトリミングしました]\n{content}",
         "content_collapsed": "\n... [コンテンツが折りたたまれました] ...\n",
+        "manual_compressed": "✅ コンテキストを圧縮しました：{count} 件のメッセージを要約化（境界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 圧縮をスキップ：{reason}。",
+        "manual_error": "❌ 圧縮失敗：{error}。",
     },
     "ko-KR": {
         "status_context_usage": "컨텍스트 사용량 (예상): {tokens} / {max_tokens} 토큰 ({ratio}%)",
@@ -574,6 +590,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n다음은 최근 대화입니다:",
         "tool_trimmed": "... [도구 출력 잘림]\n{content}",
         "content_collapsed": "\n... [내용 접힘] ...\n",
+        "manual_compressed": "✅ 컨텍스트 압축됨: {count}개 메시지 요약화 (경계 {prev} → {new}).",
+        "manual_skipped": "⏭️ 압축 건너뜀: {reason}.",
+        "manual_error": "❌ 압축 실패: {error}.",
     },
     "fr-FR": {
         "status_context_usage": "Utilisation du contexte (estimée) : {tokens} / {max_tokens} jetons ({ratio}%)",
@@ -587,6 +606,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nVoici la conversation récente :",
         "tool_trimmed": "... [Sorties d'outils coupées]\n{content}",
         "content_collapsed": "\n... [Contenu réduit] ...\n",
+        "manual_compressed": "✅ Contexte compressé : {count} messages résumés (limite {prev} → {new}).",
+        "manual_skipped": "⏭️ Compression ignorée : {reason}.",
+        "manual_error": "❌ Échec de la compression : {error}.",
     },
     "de-DE": {
         "status_context_usage": "Kontextnutzung (geschätzt): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -600,6 +622,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nHier ist die jüngste Konversation:",
         "tool_trimmed": "... [Werkzeugausgaben gekürzt]\n{content}",
         "content_collapsed": "\n... [Inhalt ausgeblendet] ...\n",
+        "manual_compressed": "✅ Kontext komprimiert: {count} Nachrichten zusammengefasst (Grenze {prev} → {new}).",
+        "manual_skipped": "⏭️ Komprimierung übersprungen: {reason}.",
+        "manual_error": "❌ Komprimierung fehlgeschlagen: {error}.",
     },
     "es-ES": {
         "status_context_usage": "Uso del contexto (estimado): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -613,6 +638,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nA continuación se muestra la conversación reciente:",
         "tool_trimmed": "... [Salidas de herramientas recortadas]\n{content}",
         "content_collapsed": "\n... [Contenido contraído] ...\n",
+        "manual_compressed": "✅ Contexto comprimido: {count} mensajes resumidos (límite {prev} → {new}).",
+        "manual_skipped": "⏭️ Compresión omitida: {reason}.",
+        "manual_error": "❌ Compresión fallida: {error}.",
     },
     "it-IT": {
         "status_context_usage": "Utilizzo contesto (stimato): {tokens} / {max_tokens} Token ({ratio}%)",
@@ -626,6 +654,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nDi seguito è riportata la conversazione recente:",
         "tool_trimmed": "... [Output degli strumenti tagliati]\n{content}",
         "content_collapsed": "\n... [Contenuto compresso] ...\n",
+        "manual_compressed": "✅ Contesto compresso: {count} messaggi riassunti (limite {prev} → {new}).",
+        "manual_skipped": "⏭️ Compressione saltata: {reason}.",
+        "manual_error": "❌ Compressione fallita: {error}.",
     },
     "pl-PL": {
         "status_context_usage": "Zużycie kontekstu (szacowane): {tokens} / {max_tokens} tokenów ({ratio}%)",
@@ -639,6 +670,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nPoniżej znajduje się najnowsza konwersacja:",
         "tool_trimmed": "... [Wyjścia narzędzi przycięte]\n{content}",
         "content_collapsed": "\n... [Treść zwinięta] ...\n",
+        "manual_compressed": "✅ Kontekst skompresowany: {count} wiadomości podsumowano (granica {prev} → {new}).",
+        "manual_skipped": "⏭️ Kompresja pominięta: {reason}.",
+        "manual_error": "❌ Kompresja nie powiodła się: {error}.",
     },
 }
 
@@ -1677,6 +1711,11 @@ class Filter:
             default=600,
             ge=1,
             description="Trim native tool outputs when their total content length reaches this many characters.",
+        )
+        manual_compress_min_messages: int = Field(
+            default=4,
+            ge=1,
+            description="Minimum number of messages required for the /compact command to trigger compression (ignored when force is used).",
         )
 
     async def _handle_external_chat_references(
@@ -3029,6 +3068,22 @@ class Filter:
         chat_ctx = self._get_chat_context(body, __metadata__)
         chat_id = chat_ctx["chat_id"]
 
+        # --- Manual invoke via /compact command (issue #80) ---
+        # Recognize /compact, /compress, /summary (case-insensitive) in the
+        # latest user message and trigger compression without sending the
+        # command to the LLM. Append " force" or use a trailing "!" (e.g.
+        # /compact!) to bypass threshold/hysteresis guards.
+        manual_result = await self._try_handle_manual_command(
+            body=body,
+            chat_id=chat_id,
+            user_data=__user__,
+            __request__=__request__,
+            __event_call__=__event_call__,
+            lang=lang,
+        )
+        if manual_result is not None:
+            return manual_result
+
         body = await self._handle_external_chat_references(
             body,
             user_data=__user__,
@@ -3899,6 +3954,407 @@ class Filter:
         )
 
         return body
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Manual invoke via /compact command (issue #80)
+    # ─────────────────────────────────────────────────────────────────────
+
+    _MANUAL_COMMANDS = frozenset(["/compact", "/compress", "/summary"])
+
+    async def _try_handle_manual_command(
+        self,
+        body: dict,
+        chat_id: str,
+        user_data: Optional[dict],
+        __request__: Request,
+        __event_call__: Optional[Callable],
+        lang: str,
+    ) -> Optional[dict]:
+        """Detect a manual-compress command in the latest user message.
+
+        Returns a rewritten ``body`` (with the command replaced by a system
+        notice instructing the LLM to relay the compression result) when a
+        command is matched, or ``None`` when the message is not a manual
+        command (so the caller continues the normal inlet flow).
+
+        Supported forms (case-insensitive):
+            /compact            /compress           /summary
+            /compact!           /compress!          /summary!
+            /compact force      /compress force     /summary force
+
+        The trailing ``!`` or the ``force`` argument bypasses the threshold
+        and hysteresis guards.
+        """
+        messages = body.get("messages", [])
+        if not messages:
+            return None
+
+        last_msg = messages[-1]
+        if not isinstance(last_msg, dict) or last_msg.get("role") != "user":
+            return None
+
+        raw_content = last_msg.get("content", "")
+        if not isinstance(raw_content, str):
+            return None
+
+        text = raw_content.strip()
+        if not text:
+            return None
+
+        lowered = text.lower()
+
+        # Detect the command and optional force flag.
+        force = False
+        matched_cmd = None
+        for cmd in self._MANUAL_COMMANDS:
+            if lowered == cmd:
+                matched_cmd = cmd
+                break
+            if lowered == cmd + "!":
+                matched_cmd = cmd
+                force = True
+                break
+            if lowered.startswith(cmd + " "):
+                rest = lowered[len(cmd):].strip()
+                if rest in ("force", "!", "force!"):
+                    matched_cmd = cmd
+                    force = True
+                    break
+
+        if matched_cmd is None:
+            return None
+
+        if self.valves.show_debug_log and __event_call__:
+            await self._log(
+                f"[Manual] Recognized command '{text}' (force={force}) for chat {chat_id}",
+                event_call=__event_call__,
+            )
+
+        # Without a chat_id we cannot load history; relay an error notice.
+        if not chat_id:
+            notice = self._get_translation(
+                lang, "manual_error", error="chat_id unavailable"
+            )
+            body["messages"][-1]["content"] = (
+                f"[System] {notice} Please send this command inside an existing chat."
+            )
+            return body
+
+        # Resolve the model id for threshold lookup.
+        raw_model = body.get("model")
+        if isinstance(raw_model, dict):
+            model_id = raw_model.get("id")
+        else:
+            model_id = raw_model
+
+        try:
+            result = await self.manual_compress(
+                chat_id=chat_id,
+                user_data=user_data,
+                model_id=model_id,
+                force=force,
+                __request__=__request__,
+            )
+        except Exception as exc:
+            logger.exception(f"[Manual] manual_compress failed for chat {chat_id}: {exc}")
+            notice = self._get_translation(lang, "manual_error", error=str(exc))
+            body["messages"][-1]["content"] = (
+                f"[System] {notice}"
+            )
+            return body
+
+        status = result.get("status", "error")
+        if status == "compressed":
+            notice = self._get_translation(
+                lang,
+                "manual_compressed",
+                count=result.get("compressed_count", 0),
+                prev=result.get("previous_compressed_count", 0),
+                new=result.get("compressed_count", 0),
+            )
+        elif status == "skipped":
+            reason = result.get("reason", "unknown")
+            notice = self._get_translation(lang, "manual_skipped", reason=reason)
+        else:
+            notice = self._get_translation(
+                lang, "manual_error", error=result.get("error", "unknown")
+            )
+
+        # Replace the command with a system notice so the LLM relays the
+        # outcome instead of answering the literal "/compact" text.
+        body["messages"][-1]["content"] = (
+            f"[System] {notice} Reply to the user with this notice verbatim."
+        )
+        return body
+
+    async def manual_compress(
+        self,
+        chat_id: str,
+        user_data: Optional[Dict[str, Any]] = None,
+        model_id: Optional[str] = None,
+        force: bool = False,
+        __request__: Request = None,
+    ) -> Dict[str, Any]:
+        """Manually trigger context compression for a chat without sending a request.
+
+        Reuses the same compression pipeline as the automatic outlet trigger.
+        Safe to call repeatedly: the underlying ``_save_summary`` optimistic lock
+        and the hysteresis guard in ``_generate_summary_async`` keep it idempotent,
+        so repeated calls on an already-compressed chat are no-ops unless ``force``
+        bypasses the threshold/hysteresis checks.
+
+        Args:
+            chat_id: Target Open WebUI chat id.
+            user_data: Caller user dict (``{"id": ..., "name": ..., "language": ...}``).
+                Falls back to an anonymous context when ``None``.
+            model_id: Optional model id used for threshold lookup and as the
+                summary model fallback. Defaults to ``valves.summary_model``.
+            force: When ``True``, skip the token-threshold check and the
+                hysteresis guard so compression runs even if the chat is small
+                or was recently compressed. The optimistic lock still applies.
+            __request__: Optional FastAPI request, forwarded to the summary LLM call.
+
+        Returns:
+            A dict describing the compression outcome, including ``status``
+            (``"compressed"`` / ``"skipped"`` / ``"error"``), ``chat_id``,
+            ``message_count``, ``compressed_count`` (new boundary),
+            ``previous_compressed_count``, ``summary_tokens``, and ``threshold``.
+        """
+        if not chat_id:
+            return {
+                "status": "error",
+                "error": "chat_id is required",
+                "chat_id": "",
+            }
+
+        if Chats is None:
+            return {
+                "status": "error",
+                "error": "Open WebUI Chats model is unavailable in this runtime",
+                "chat_id": chat_id,
+            }
+
+        # Resolve user context with safe fallbacks (no __event_call__ here).
+        if user_data is None:
+            user_data = {}
+        user_ctx = await self._get_user_context(user_data, None)
+        lang = user_ctx.get("user_language", "en-US")
+
+        # Load the full persisted chat history.
+        try:
+            messages = await self._load_full_chat_messages(chat_id)
+        except Exception as exc:
+            logger.error(f"[Manual] Failed to load chat {chat_id}: {exc}")
+            return {
+                "status": "error",
+                "error": f"Failed to load chat: {exc}",
+                "chat_id": chat_id,
+            }
+
+        if not messages:
+            return {
+                "status": "skipped",
+                "reason": "chat_not_found_or_empty",
+                "chat_id": chat_id,
+                "message_count": 0,
+            }
+
+        # Minimum message count guard (skipped unless force is used).
+        if not force and len(messages) < self.valves.manual_compress_min_messages:
+            return {
+                "status": "skipped",
+                "reason": "below_min_messages",
+                "chat_id": chat_id,
+                "message_count": len(messages),
+                "min_messages": self.valves.manual_compress_min_messages,
+            }
+
+        # Unfold compact tool messages so the boundary math matches inlet/outlet.
+        summary_messages = self._unfold_messages(messages)
+
+        # Reinject any existing summary placeholder so the boundary alignment
+        # only scans the new tail (mirrors the outlet's reinjection logic).
+        if not any(self._is_summary_message(m) for m in summary_messages):
+            existing_record = await self._load_summary_record(chat_id)
+            if existing_record and existing_record.compressed_message_count > 0:
+                boundary = min(
+                    existing_record.compressed_message_count, len(summary_messages)
+                )
+                injected_summary_msg = self._build_summary_message(
+                    existing_record.summary,
+                    lang,
+                    existing_record.compressed_message_count,
+                )
+                summary_messages = (
+                    summary_messages[:boundary]
+                    + [injected_summary_msg]
+                    + summary_messages[boundary:]
+                )
+
+        previous_record = await self._load_summary_record(chat_id)
+        previous_compressed_count = (
+            previous_record.compressed_message_count if previous_record else 0
+        )
+
+        target_compressed_count = self._calculate_target_compressed_count(
+            summary_messages
+        )
+
+        # Resolve effective model id for threshold lookup.
+        effective_model_id = self._clean_model_id(model_id) or self._clean_model_id(
+            self.valves.summary_model
+        )
+        thresholds = (
+            self._get_model_thresholds(effective_model_id)
+            if effective_model_id
+            else {
+                "compression_threshold_tokens": self.valves.compression_threshold_tokens,
+                "max_context_tokens": self.valves.max_context_tokens,
+            }
+        )
+        compression_threshold_tokens = thresholds.get(
+            "compression_threshold_tokens", self.valves.compression_threshold_tokens
+        )
+
+        # Estimate current context tokens for reporting and (when not forced)
+        # threshold gating. Reuse the same "simulated sent context" approach as
+        # the outlet so the count reflects what inlet would actually send.
+        summary_state = self._get_summary_view_state(summary_messages)
+        summary_index = summary_state["summary_index"]
+        base_progress = summary_state["base_progress"] or 0
+
+        if summary_index is not None:
+            effective_keep_first = self._get_effective_keep_first(summary_messages)
+            head_messages_for_check = (
+                summary_messages[:effective_keep_first]
+                if effective_keep_first > 0
+                else []
+            )
+            summary_msg_for_check = summary_messages[summary_index]
+            tail_messages_for_check = summary_messages[summary_index + 1 :]
+            preserved_system_for_check = [
+                m
+                for m in summary_messages[effective_keep_first:summary_index]
+                if isinstance(m, dict) and m.get("role") == "system"
+            ]
+            threshold_check_messages = (
+                head_messages_for_check
+                + preserved_system_for_check
+                + [summary_msg_for_check]
+                + tail_messages_for_check
+            )
+        else:
+            threshold_check_messages = summary_messages
+
+        current_tokens = self._estimate_messages_tokens(threshold_check_messages)
+        summary_tokens = current_tokens
+
+        if not force:
+            # Threshold gate (mirrors _check_and_generate_summary_async).
+            if current_tokens < compression_threshold_tokens:
+                return {
+                    "status": "skipped",
+                    "reason": "below_threshold",
+                    "chat_id": chat_id,
+                    "message_count": len(messages),
+                    "current_tokens": current_tokens,
+                    "threshold": compression_threshold_tokens,
+                    "previous_compressed_count": previous_compressed_count,
+                }
+
+            # Hysteresis guard: avoid re-compressing when only a few new
+            # messages accumulated beyond the last boundary.
+            if summary_index is not None:
+                compressible_gain = max(
+                    0, (target_compressed_count or 0) - base_progress
+                )
+                min_compression_gain = max(1, self.valves.keep_last)
+                if compressible_gain < min_compression_gain:
+                    return {
+                        "status": "skipped",
+                        "reason": "hysteresis_guard",
+                        "chat_id": chat_id,
+                        "message_count": len(messages),
+                        "current_tokens": current_tokens,
+                        "threshold": compression_threshold_tokens,
+                        "previous_compressed_count": previous_compressed_count,
+                        "compressible_gain": compressible_gain,
+                        "min_compression_gain": min_compression_gain,
+                    }
+
+        # Guard: nothing new to compress.
+        if summary_index is not None and target_compressed_count <= base_progress:
+            return {
+                "status": "skipped",
+                "reason": "no_new_messages",
+                "chat_id": chat_id,
+                "message_count": len(messages),
+                "current_tokens": current_tokens,
+                "threshold": compression_threshold_tokens,
+                "previous_compressed_count": previous_compressed_count,
+            }
+
+        # Acquire the per-chat lock to avoid racing with the outlet background task.
+        chat_lock = self._get_chat_lock(chat_id)
+        if chat_lock.locked():
+            return {
+                "status": "skipped",
+                "reason": "compression_in_progress",
+                "chat_id": chat_id,
+                "message_count": len(messages),
+            }
+
+        body = {
+            "model": effective_model_id or "",
+            "messages": summary_messages,
+            "metadata": {"chat_id": chat_id},
+        }
+
+        async with chat_lock:
+            try:
+                await self._generate_summary_async(
+                    summary_messages,
+                    chat_id,
+                    body,
+                    user_data,
+                    target_compressed_count,
+                    lang,
+                    None,  # __event_emitter__ — no live frontend session
+                    None,  # __event_call__ — no bidirectional frontend channel
+                    __request__,
+                )
+            except Exception as exc:
+                logger.exception(
+                    f"[Manual] Compression failed for chat {chat_id}: {exc}"
+                )
+                return {
+                    "status": "error",
+                    "error": str(exc),
+                    "chat_id": chat_id,
+                    "message_count": len(messages),
+                    "previous_compressed_count": previous_compressed_count,
+                }
+
+        # Reload to report the new boundary.
+        new_record = await self._load_summary_record(chat_id)
+        new_compressed_count = (
+            new_record.compressed_message_count if new_record else 0
+        )
+        new_summary_tokens = (
+            self._count_tokens(new_record.summary) if new_record else 0
+        )
+
+        return {
+            "status": "compressed" if new_record else "skipped",
+            "chat_id": chat_id,
+            "message_count": len(messages),
+            "current_tokens": current_tokens,
+            "summary_tokens": new_summary_tokens,
+            "threshold": compression_threshold_tokens,
+            "previous_compressed_count": previous_compressed_count,
+            "compressed_count": new_compressed_count,
+            "forced": force,
+        }
 
     async def _locked_summary_task(
         self,
