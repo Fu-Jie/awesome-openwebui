@@ -22,14 +22,16 @@ async def main():
     # Ensure it exists
     os.makedirs(config_dir, exist_ok=True)
 
-    client = CopilotClient({"config_dir": config_dir})
+    # copilot-sdk >= 1.0: CopilotClient takes kwargs directly; the config
+    # directory is expressed via base_directory (sets COPILOT_HOME).
+    client = CopilotClient(base_directory=config_dir)
     await client.start()
 
     try:
         # 1. Create a session
         logger.info("Creating a persistent session...")
         session = await client.create_session(
-            {"on_permission_request": PermissionHandler.approve_all, "model": "gpt-4o"}
+            on_permission_request=PermissionHandler.approve_all, model="gpt-4o"
         )
         chat_id = session.session_id
         logger.info(f"Session ID: {chat_id}")

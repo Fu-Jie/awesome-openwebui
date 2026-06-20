@@ -79,7 +79,7 @@ def deploy_pipe() -> None:
                     "and manage_skills tool."
                 ),
                 "version": version,
-                "requirements": "github-copilot-sdk==0.1.25",
+                "requirements": "github-copilot-sdk==1.0.2",
             },
             "type": "pipe",
         },

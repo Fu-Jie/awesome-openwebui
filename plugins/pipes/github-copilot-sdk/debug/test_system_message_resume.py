@@ -187,9 +187,12 @@ async def main():
     cli_path = os.environ.get("COPILOT_CLI_PATH")
     client_config = {"log_level": "info"}
     if cli_path:
-        client_config["cli_path"] = cli_path
+        # copilot-sdk >= 1.0: cli_path is expressed via a StdioRuntimeConnection.
+        from copilot.client import StdioRuntimeConnection
 
-    client = CopilotClient(client_config)
+        client_config["connection"] = StdioRuntimeConnection(path=cli_path)
+
+    client = CopilotClient(**client_config)
 
     try:
         await client.start()
@@ -355,9 +358,12 @@ async def main_byok():
     cli_path = os.environ.get("COPILOT_CLI_PATH")
     client_config = {"log_level": "info"}
     if cli_path:
-        client_config["cli_path"] = cli_path
+        # copilot-sdk >= 1.0: cli_path is expressed via a StdioRuntimeConnection.
+        from copilot.client import StdioRuntimeConnection
 
-    client = CopilotClient(client_config)
+        client_config["connection"] = StdioRuntimeConnection(path=cli_path)
+
+    client = CopilotClient(**client_config)
 
     try:
         await client.start()

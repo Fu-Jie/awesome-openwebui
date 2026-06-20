@@ -56,14 +56,15 @@ async def fetch_copilot(token: str) -> List[Dict]:
         return []
     try:
         from copilot import CopilotClient
-        from copilot.client import SubprocessConfig
     except ImportError as e:
         logger.error(f"Import error: {e}")
         return []
 
     try:
-        config = SubprocessConfig(github_token=token, use_logged_in_user=False)
-        client = CopilotClient(config=config, auto_start=True)
+        # copilot-sdk >= 1.0: SubprocessConfig removed; pass kwargs directly.
+        client = CopilotClient(
+            github_token=token, use_logged_in_user=False
+        )
         await client.start()
         raw = await client.list_models()
         logger.info(
