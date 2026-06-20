@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.5 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.6 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -22,6 +22,14 @@
 
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
+
+## 1.6.6 版本更新
+
+- **手动触发压缩端点（issue #80）**：新增 HTTP 端点 `POST /api/v1/filters/async-context-compression/compress`，让你可以**无需先向模型发送请求**就为某个会话触发上下文压缩。解决三类常见痛点：
+  - **克隆会话**丢失了压缩（克隆后消息 ID 变化，原摘要不再生效）。
+  - **导入会话 JSON** 没有存储摘要，导致上下文超出模型窗口。
+  - **会话中途切换到小上下文模型** —— 在下一次请求前先压缩一次即可放下。
+  该端点复用与自动 outlet 触发**完全相同**的压缩管线（阈值检查、滞回保护、原子组对齐、乐观锁），因此是幂等的，可安全重复调用。可选的 `force: true` 会跳过阈值与滞回保护，用于调试或救场。详见下文[手动触发](#手动触发issue-80)。
 
 ## 1.6.5 版本更新
 
@@ -61,6 +69,7 @@
 - ✅ **可配置压缩风格**: 可在更省 token、默认平衡和高保真摘要之间切换。
 - ✅ **实时监控**: 实时监控上下文使用情况，超过 90% 发出警告。
 - ✅ **快速预估 + 精确回退**: 提供更快的多语言 Token 预估，并在必要时回退到精确统计，便于调试。
+- ✅ **手动触发 HTTP 端点**: 无需先向模型发送请求即可按需压缩某个会话。
 - ✅ **智能模型匹配**: 自定义模型自动继承基础模型的阈值配置。
 - ⚠ **多模态支持**: 图片内容会被保留，但其 Token **不参与计算**。请相应调整阈值。
 
@@ -208,6 +217,85 @@ flowchart TD
 | `show_debug_log`               | `false`  | 是否在浏览器控制台 (F12) 打印调试日志。便于前端调试。                                                                   |
 | `show_token_usage_status`      | `true`   | 是否在对话结束时显示 Token 使用情况的状态通知。                                                                         |
 | `token_usage_status_threshold` | `80`     | 触发显示上下文用量状态通知的最低百分比阈值 (0-100)。                                                                    |
+
+---
+
+## 手动触发（issue #80）
+
+该过滤器暴露了一个 HTTP 端点，让你可以**无需先向模型发送请求**就为某个会话触发上下文压缩。适用场景：
+
+- **克隆会话**丢失了压缩（克隆后消息 ID 变化，原摘要不再生效）。
+- **导入会话 JSON** 没有存储摘要，导致上下文超出模型窗口。
+- **会话中途切换到小上下文模型** —— 在下一次请求前先压缩一次即可放下。
+- **调试**压缩管线。
+
+### 端点
+
+```
+POST /api/v1/filters/async-context-compression/compress
+```
+
+该路由在过滤器首次实例化时自动注册到 Open WebUI 应用上（注册是幂等的）。使用与 Open WebUI API 相同的 Bearer Token 进行鉴权。
+
+### 请求体
+
+| 字段        | 类型    | 必填 | 说明 |
+|-------------|---------|------|------|
+| `chat_id`   | string  | 是   | 目标 Open WebUI 会话 ID。 |
+| `model_id`  | string  | 否   | 用于阈值查询和作为摘要模型回退的模型 ID。默认取 `valves.summary_model`。 |
+| `force`     | boolean | 否   | 跳过 token 阈值检查与滞回保护。默认 `false`。乐观锁仍然生效，因此对已压缩且无新消息的会话强制压缩依然是空操作。 |
+
+### 响应
+
+```json
+{
+  "status": "compressed",
+  "chat_id": "abc123",
+  "message_count": 42,
+  "current_tokens": 71234,
+  "summary_tokens": 1820,
+  "threshold": 64000,
+  "previous_compressed_count": 0,
+  "compressed_count": 36,
+  "forced": false
+}
+```
+
+`status` 取值：
+
+| status        | 含义 |
+|---------------|------|
+| `compressed`  | 生成了新摘要并已持久化。 |
+| `skipped`     | 无需压缩（见 `reason`：`below_threshold`、`hysteresis_guard`、`no_new_messages`、`compression_in_progress`、`chat_not_found_or_empty`）。 |
+| `error`       | 压缩失败；详见 `error` 字段。 |
+
+### 示例
+
+```bash
+# 标准手动压缩（遵守阈值）
+curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
+  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": "abc123"}'
+
+# 强制压缩，忽略阈值（调试/救场）
+curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
+  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": "abc123", "force": true}'
+
+# 指定用于阈值查询的模型
+curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
+  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": "abc123", "model_id": "gpt-4o-mini"}'
+```
+
+### 注意事项
+
+- 该端点复用与自动 outlet 触发**完全相同**的压缩管线（阈值检查、滞回保护、原子组对齐、乐观锁），因此是**幂等**的 —— 对已压缩的会话重复调用是空操作。
+- 它与自动后台任务共享按会话维度的锁，不会与正在进行的 outlet 压缩产生竞争。
+- 若过滤器尚未初始化，端点会返回 `503`（请先在某个模型上启用该过滤器并至少处理一次请求）。
 
 ---
 

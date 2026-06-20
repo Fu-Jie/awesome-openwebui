@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.6.5
+version: 1.6.6
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -25,6 +25,7 @@ Core Features:
   ✅ Configurable compression style (aggressive, balanced, faithful)
   ✅ Structure-aware trimming to preserve document skeleton
   ✅ Native tool output trimming for function calling support
+  ✅ Manual invoke HTTP endpoint (compress without sending a request)
 
 ═══════════════════════════════════════════════════════════════════════════════
 🔄 Workflow
@@ -810,6 +811,17 @@ class Filter:
         self._chat_locks = {}
         self._pending_inlet_messages: Dict[str, List[Dict[str, Any]]] = {}
         self._init_database()
+
+        # Expose this instance to the module-level manual-compress endpoint and
+        # ensure the HTTP route is registered (retries are idempotent).
+        global _MANUAL_FILTER_INSTANCE
+        _MANUAL_FILTER_INSTANCE = self
+        try:
+            register_manual_compress_endpoint()
+        except Exception as _init_route_err:  # pragma: no cover - defensive
+            logger.debug(
+                f"[Manual] Deferred endpoint registration in __init__: {_init_route_err}"
+            )
 
     def _resolve_language(self, lang: str) -> str:
         """Resolve the best matching language code from the TRANSLATIONS dict."""
@@ -3900,6 +3912,265 @@ class Filter:
 
         return body
 
+    async def manual_compress(
+        self,
+        chat_id: str,
+        user_data: Optional[Dict[str, Any]] = None,
+        model_id: Optional[str] = None,
+        force: bool = False,
+        __request__: Request = None,
+    ) -> Dict[str, Any]:
+        """Manually trigger context compression for a chat without sending a request.
+
+        Reuses the same compression pipeline as the automatic outlet trigger.
+        Safe to call repeatedly: the underlying ``_save_summary`` optimistic lock
+        and the hysteresis guard in ``_generate_summary_async`` keep it idempotent,
+        so repeated calls on an already-compressed chat are no-ops unless ``force``
+        bypasses the threshold/hysteresis checks.
+
+        Args:
+            chat_id: Target Open WebUI chat id.
+            user_data: Caller user dict (``{"id": ..., "name": ..., "language": ...}``).
+                Falls back to an anonymous context when ``None``.
+            model_id: Optional model id used for threshold lookup and as the
+                summary model fallback. Defaults to ``valves.summary_model``.
+            force: When ``True``, skip the token-threshold check and the
+                hysteresis guard so compression runs even if the chat is small
+                or was recently compressed. The optimistic lock still applies.
+            __request__: Optional FastAPI request, forwarded to the summary LLM call.
+
+        Returns:
+            A dict describing the compression outcome, including ``status``
+            (``"compressed"`` / ``"skipped"`` / ``"error"``), ``chat_id``,
+            ``message_count``, ``compressed_count`` (new boundary),
+            ``previous_compressed_count``, ``summary_tokens``, and ``threshold``.
+        """
+        if not chat_id:
+            return {
+                "status": "error",
+                "error": "chat_id is required",
+                "chat_id": "",
+            }
+
+        if Chats is None:
+            return {
+                "status": "error",
+                "error": "Open WebUI Chats model is unavailable in this runtime",
+                "chat_id": chat_id,
+            }
+
+        # Resolve user context with safe fallbacks (no __event_call__ here).
+        if user_data is None:
+            user_data = {}
+        user_ctx = await self._get_user_context(user_data, None)
+        lang = user_ctx.get("user_language", "en-US")
+
+        # Load the full persisted chat history.
+        try:
+            messages = await self._load_full_chat_messages(chat_id)
+        except Exception as exc:
+            logger.error(f"[Manual] Failed to load chat {chat_id}: {exc}")
+            return {
+                "status": "error",
+                "error": f"Failed to load chat: {exc}",
+                "chat_id": chat_id,
+            }
+
+        if not messages:
+            return {
+                "status": "skipped",
+                "reason": "chat_not_found_or_empty",
+                "chat_id": chat_id,
+                "message_count": 0,
+            }
+
+        # Unfold compact tool messages so the boundary math matches inlet/outlet.
+        summary_messages = self._unfold_messages(messages)
+
+        # Reinject any existing summary placeholder so the boundary alignment
+        # only scans the new tail (mirrors the outlet's reinjection logic).
+        if not any(self._is_summary_message(m) for m in summary_messages):
+            existing_record = await self._load_summary_record(chat_id)
+            if existing_record and existing_record.compressed_message_count > 0:
+                boundary = min(
+                    existing_record.compressed_message_count, len(summary_messages)
+                )
+                injected_summary_msg = self._build_summary_message(
+                    existing_record.summary,
+                    lang,
+                    existing_record.compressed_message_count,
+                )
+                summary_messages = (
+                    summary_messages[:boundary]
+                    + [injected_summary_msg]
+                    + summary_messages[boundary:]
+                )
+
+        previous_record = await self._load_summary_record(chat_id)
+        previous_compressed_count = (
+            previous_record.compressed_message_count if previous_record else 0
+        )
+
+        target_compressed_count = self._calculate_target_compressed_count(
+            summary_messages
+        )
+
+        # Resolve effective model id for threshold lookup.
+        effective_model_id = self._clean_model_id(model_id) or self._clean_model_id(
+            self.valves.summary_model
+        )
+        thresholds = (
+            self._get_model_thresholds(effective_model_id)
+            if effective_model_id
+            else {
+                "compression_threshold_tokens": self.valves.compression_threshold_tokens,
+                "max_context_tokens": self.valves.max_context_tokens,
+            }
+        )
+        compression_threshold_tokens = thresholds.get(
+            "compression_threshold_tokens", self.valves.compression_threshold_tokens
+        )
+
+        # Estimate current context tokens for reporting and (when not forced)
+        # threshold gating. Reuse the same "simulated sent context" approach as
+        # the outlet so the count reflects what inlet would actually send.
+        summary_state = self._get_summary_view_state(summary_messages)
+        summary_index = summary_state["summary_index"]
+        base_progress = summary_state["base_progress"] or 0
+
+        if summary_index is not None:
+            effective_keep_first = self._get_effective_keep_first(summary_messages)
+            head_messages_for_check = (
+                summary_messages[:effective_keep_first]
+                if effective_keep_first > 0
+                else []
+            )
+            summary_msg_for_check = summary_messages[summary_index]
+            tail_messages_for_check = summary_messages[summary_index + 1 :]
+            preserved_system_for_check = [
+                m
+                for m in summary_messages[effective_keep_first:summary_index]
+                if isinstance(m, dict) and m.get("role") == "system"
+            ]
+            threshold_check_messages = (
+                head_messages_for_check
+                + preserved_system_for_check
+                + [summary_msg_for_check]
+                + tail_messages_for_check
+            )
+        else:
+            threshold_check_messages = summary_messages
+
+        current_tokens = self._estimate_messages_tokens(threshold_check_messages)
+        summary_tokens = current_tokens
+
+        if not force:
+            # Threshold gate (mirrors _check_and_generate_summary_async).
+            if current_tokens < compression_threshold_tokens:
+                return {
+                    "status": "skipped",
+                    "reason": "below_threshold",
+                    "chat_id": chat_id,
+                    "message_count": len(messages),
+                    "current_tokens": current_tokens,
+                    "threshold": compression_threshold_tokens,
+                    "previous_compressed_count": previous_compressed_count,
+                }
+
+            # Hysteresis guard: avoid re-compressing when only a few new
+            # messages accumulated beyond the last boundary.
+            if summary_index is not None:
+                compressible_gain = max(
+                    0, (target_compressed_count or 0) - base_progress
+                )
+                min_compression_gain = max(1, self.valves.keep_last)
+                if compressible_gain < min_compression_gain:
+                    return {
+                        "status": "skipped",
+                        "reason": "hysteresis_guard",
+                        "chat_id": chat_id,
+                        "message_count": len(messages),
+                        "current_tokens": current_tokens,
+                        "threshold": compression_threshold_tokens,
+                        "previous_compressed_count": previous_compressed_count,
+                        "compressible_gain": compressible_gain,
+                        "min_compression_gain": min_compression_gain,
+                    }
+
+        # Guard: nothing new to compress.
+        if summary_index is not None and target_compressed_count <= base_progress:
+            return {
+                "status": "skipped",
+                "reason": "no_new_messages",
+                "chat_id": chat_id,
+                "message_count": len(messages),
+                "current_tokens": current_tokens,
+                "threshold": compression_threshold_tokens,
+                "previous_compressed_count": previous_compressed_count,
+            }
+
+        # Acquire the per-chat lock to avoid racing with the outlet background task.
+        chat_lock = self._get_chat_lock(chat_id)
+        if chat_lock.locked():
+            return {
+                "status": "skipped",
+                "reason": "compression_in_progress",
+                "chat_id": chat_id,
+                "message_count": len(messages),
+            }
+
+        body = {
+            "model": effective_model_id or "",
+            "messages": summary_messages,
+            "metadata": {"chat_id": chat_id},
+        }
+
+        async with chat_lock:
+            try:
+                await self._generate_summary_async(
+                    summary_messages,
+                    chat_id,
+                    body,
+                    user_data,
+                    target_compressed_count,
+                    lang,
+                    None,  # __event_emitter__ — no live frontend session
+                    None,  # __event_call__ — no bidirectional frontend channel
+                    __request__,
+                )
+            except Exception as exc:
+                logger.exception(
+                    f"[Manual] Compression failed for chat {chat_id}: {exc}"
+                )
+                return {
+                    "status": "error",
+                    "error": str(exc),
+                    "chat_id": chat_id,
+                    "message_count": len(messages),
+                    "previous_compressed_count": previous_compressed_count,
+                }
+
+        # Reload to report the new boundary.
+        new_record = await self._load_summary_record(chat_id)
+        new_compressed_count = (
+            new_record.compressed_message_count if new_record else 0
+        )
+        new_summary_tokens = (
+            self._count_tokens(new_record.summary) if new_record else 0
+        )
+
+        return {
+            "status": "compressed" if new_record else "skipped",
+            "chat_id": chat_id,
+            "message_count": len(messages),
+            "current_tokens": current_tokens,
+            "summary_tokens": new_summary_tokens,
+            "threshold": compression_threshold_tokens,
+            "previous_compressed_count": previous_compressed_count,
+            "compressed_count": new_compressed_count,
+            "forced": force,
+        }
+
     async def _locked_summary_task(
         self,
         lock: asyncio.Lock,
@@ -5082,3 +5353,184 @@ Return only the XML working memory:
             if self.valves.summary_fail_mode == "raise":
                 raise wrapped_error
             return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manual invoke endpoint (issue #80)
+# ─────────────────────────────────────────────────────────────────────────────
+# Registers a POST route on the Open WebUI FastAPI app so users can trigger
+# context compression for a chat without first sending a request to the model.
+# Registration is idempotent: a module-level flag prevents duplicate routes when
+# the filter is re-instantiated or reloaded.
+
+_MANUAL_ROUTE_REGISTERED = False
+_MANUAL_ROUTE_PATH = "/api/v1/filters/async-context-compression/compress"
+
+
+def _get_manual_filter_instance() -> Optional["Filter"]:
+    """Return the most recently instantiated Filter instance, if any.
+
+    Open WebUI instantiates filter functions lazily and keeps the instance for
+    the lifetime of the process. We track the latest instance via a module-level
+    reference set in ``Filter.__init__``.
+    """
+    return _MANUAL_FILTER_INSTANCE
+
+
+# Module-level handle to the active Filter instance (set in Filter.__init__).
+_MANUAL_FILTER_INSTANCE: Optional["Filter"] = None
+
+
+def register_manual_compress_endpoint(app: Any = None) -> bool:
+    """Register the manual-compress HTTP endpoint on the Open WebUI app.
+
+    Returns ``True`` if the route was registered (or was already registered),
+    ``False`` if registration could not be performed (e.g. app unavailable).
+    Safe to call multiple times.
+    """
+    global _MANUAL_ROUTE_REGISTERED
+    if _MANUAL_ROUTE_REGISTERED:
+        return True
+
+    if app is None:
+        app = webui_app
+    if app is None:
+        return False
+
+    try:
+        from fastapi import HTTPException, status
+        from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+        # Open WebUI exposes a verified user dependency. Fall back gracefully if
+        # the import path changes across versions.
+        try:
+            from open_webui.utils.auth import get_current_user  # type: ignore
+        except Exception:  # pragma: no cover - import path varies by version
+            get_current_user = None  # type: ignore
+
+        bearer_scheme = HTTPBearer(auto_error=False)
+
+        async def _resolve_user(
+            credentials: Optional[HTTPAuthorizationCredentials] = None,
+        ) -> Dict[str, Any]:
+            """Resolve the calling user from a bearer token.
+
+            Prefers Open WebUI's ``get_current_user``; otherwise returns an
+            anonymous context so the endpoint still functions in degraded
+            environments (e.g. tests) but does not impersonate anyone.
+            """
+            if get_current_user is not None and credentials is not None:
+                token = getattr(credentials, "credentials", None)
+                if token:
+                    try:
+                        user = get_current_user(token)
+                        if isinstance(user, dict):
+                            return user
+                        if user is not None and hasattr(user, "id"):
+                            return {
+                                "id": getattr(user, "id", "unknown"),
+                                "name": getattr(user, "name", "User"),
+                                "role": getattr(user, "role", "user"),
+                                "email": getattr(user, "email", ""),
+                            }
+                    except Exception as exc:
+                        logger.warning(
+                            f"[Manual] get_current_user failed: {exc}; "
+                            "proceeding with anonymous context"
+                        )
+            return {"id": "unknown", "name": "Anonymous", "role": "user"}
+
+        async def _manual_compress_endpoint(
+            payload: Dict[str, Any],
+            credentials: Optional[HTTPAuthorizationCredentials] = None,
+        ) -> Dict[str, Any]:
+            """POST /api/v1/filters/async-context-compression/compress
+
+            Body:
+                - chat_id (str, required): target chat id
+                - model_id (str, optional): model used for threshold lookup
+                - force (bool, optional, default False): bypass threshold and
+                  hysteresis guards
+
+            Returns the compression outcome dict produced by
+            ``Filter.manual_compress``.
+            """
+            if not isinstance(payload, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Request body must be a JSON object",
+                )
+
+            chat_id = payload.get("chat_id")
+            if not chat_id or not isinstance(chat_id, str):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Field 'chat_id' is required and must be a string",
+                )
+
+            model_id = payload.get("model_id")
+            if model_id is not None and not isinstance(model_id, str):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Field 'model_id' must be a string when provided",
+                )
+
+            force = bool(payload.get("force", False))
+
+            filter_instance = _get_manual_filter_instance()
+            if filter_instance is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "Async Context Compression filter is not initialized. "
+                        "Ensure the filter is enabled on a model and at least "
+                        "one request has been processed."
+                    ),
+                )
+
+            user_data = await _resolve_user(credentials)
+
+            try:
+                return await filter_instance.manual_compress(
+                    chat_id=chat_id,
+                    user_data=user_data,
+                    model_id=model_id,
+                    force=force,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    f"[Manual] Endpoint failed for chat {chat_id}: {exc}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Manual compression failed: {exc}",
+                )
+
+        app.add_api_route(
+            _MANUAL_ROUTE_PATH,
+            _manual_compress_endpoint,
+            methods=["POST"],
+            response_model=None,
+            tags=["async-context-compression"],
+            summary="Manually invoke context compression for a chat",
+            dependencies=None,
+        )
+
+        _MANUAL_ROUTE_REGISTERED = True
+        logger.info(
+            f"[Manual] Registered manual compress endpoint at {_MANUAL_ROUTE_PATH}"
+        )
+        return True
+    except Exception as exc:
+        logger.error(f"[Manual] Failed to register endpoint: {exc}")
+        return False
+
+
+# Best-effort registration at import time. If the app is not yet ready (e.g.
+# during early startup), Filter.__init__ will retry via register_manual_compress_endpoint.
+try:
+    register_manual_compress_endpoint()
+except Exception as _route_err:  # pragma: no cover - defensive
+    logger.debug(f"[Manual] Deferred endpoint registration: {_route_err}")
