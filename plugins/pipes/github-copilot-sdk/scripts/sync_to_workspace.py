@@ -16,7 +16,7 @@ except ImportError:
 try:
     from copilot import CopilotClient
 except ImportError:
-    print("❌ 错误: 无法导入 copilot SDK。请运行: pip install github-copilot-sdk==0.1.23")
+    print("❌ 错误: 无法导入 copilot SDK。请运行: pip install github-copilot-sdk==1.0.2")
     sys.exit(1)
 
 async def fetch_real_models() -> List[Dict]:
