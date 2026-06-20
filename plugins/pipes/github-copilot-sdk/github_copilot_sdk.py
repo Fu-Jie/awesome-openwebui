@@ -7954,7 +7954,10 @@ class Pipe:
         previous interrupted request, which may cause unrelated extra model turns.
         """
         try:
-            history = await session.get_messages()
+            # copilot-sdk >= 1.0: get_messages() removed; use get_events()
+            # which returns list[SessionEvent] with the same .type attribute
+            # (user.message, assistant.turn_start, assistant.turn_end, etc.)
+            history = await session.get_events()
         except Exception as e:
             await self._emit_debug_log(
                 f"Failed to inspect resumed session history: {e}",
@@ -9621,10 +9624,11 @@ class Pipe:
                         else "Empty response."
                     )
                 finally:
-                    # Cleanup: destroy session if no chat_id (temporary session)
+                    # Cleanup: disconnect session if no chat_id (temporary session)
+                    # copilot-sdk >= 1.0: destroy() removed; use disconnect()
                     if not chat_id:
                         try:
-                            await session.destroy()
+                            await session.disconnect()
                         except Exception as cleanup_error:
                             await self._emit_debug_log(
                                 f"Session cleanup warning: {cleanup_error}",
