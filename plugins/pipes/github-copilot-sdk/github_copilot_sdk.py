@@ -6,7 +6,7 @@ funding_url: https://github.com/open-webui
 openwebui_id: ce96f7b4-12fc-4ac3-9a01-875713e69359
 description: A powerful Agent SDK integration for OpenWebUI. It deeply bridges GitHub Copilot SDK with OpenWebUI's ecosystem, enabling the Agent to autonomously perform intent recognition, web search, and context compaction. It seamlessly reuses your existing Tools, MCP servers, OpenAPI servers, and Skills for a professional, full-featured experience.
 version: 0.13.2
-requirements: github-copilot-sdk==0.2.2
+requirements: github-copilot-sdk==1.0.2
 """
 
 import asyncio
@@ -35,7 +35,7 @@ from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Tuple, Un
 
 import aiohttp
 from copilot import CopilotClient, define_tool
-from copilot.generated.rpc import Mode, SessionModeSetParams
+from copilot.generated.rpc import SessionMode, ModeSetRequest
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, create_model
 
@@ -7303,16 +7303,24 @@ class Pipe:
         chat_id: Optional[str] = None,
         token: Optional[str] = None,
     ):
-        """Build CopilotClient config from valves and request body."""
-        from copilot import SubprocessConfig
+        """Build CopilotClient config from valves and request body.
+
+        github-copilot-sdk >= 1.0: CopilotClient accepts keyword arguments
+        directly (no SubprocessConfig). cli_path is replaced by
+        connection=StdioRuntimeConnection(path=...); cwd is renamed to
+        working_directory.
+        """
+        from copilot import StdioRuntimeConnection
 
         cwd = self._get_workspace_dir(user_id=user_id, chat_id=chat_id)
         config_dir = self._get_copilot_config_dir()
 
-        client_config = {}
+        client_config: Dict[str, Any] = {}
         if os.environ.get("COPILOT_CLI_PATH"):
-            client_config["cli_path"] = os.environ["COPILOT_CLI_PATH"]
-        client_config["cwd"] = cwd
+            client_config["connection"] = StdioRuntimeConnection(
+                path=os.environ["COPILOT_CLI_PATH"]
+            )
+        client_config["working_directory"] = cwd
         client_config["github_token"] = token
 
         if self.valves.LOG_LEVEL:
@@ -7372,7 +7380,7 @@ class Pipe:
 
         client_config["env"] = agent_env
 
-        return SubprocessConfig(**client_config)
+        return client_config
 
     # ==================== Agent Team Helpers ====================
 
@@ -7807,7 +7815,7 @@ class Pipe:
         session_mode: str = "autopilot",
     ):
         """Build SessionConfig for Copilot SDK."""
-        from copilot.session import InfiniteSessionConfig, SessionConfig
+        from copilot.session import InfiniteSessionConfig
 
         infinite_session_config = None
         if self.valves.INFINITE_SESSION:
@@ -7848,7 +7856,7 @@ class Pipe:
             "streaming": is_streaming,
             "tools": custom_tools,
             "system_message": system_message_config,
-            "config_dir": self._get_copilot_config_dir(),
+            "config_directory": self._get_copilot_config_dir(),
             "infinite_sessions": infinite_session_config,
             "working_directory": resolved_cwd,
         }
@@ -8438,7 +8446,10 @@ class Pipe:
             client = self.__class__._shared_clients.get(token_hash)
             if client:
                 try:
-                    state = client.get_state()
+                    # copilot-sdk >= 1.0 removed the public get_state(); the
+                    # equivalent connection state lives on the private _state
+                    # attribute ("disconnected"|"connecting"|"connected"|"error").
+                    state = getattr(client, "_state", "disconnected")
                     if state == "connected":
                         return client
                     if state == "error":
@@ -8454,12 +8465,14 @@ class Pipe:
             if not self.__class__._env_setup_done:
                 self._setup_env(token=token)
 
-            # Build configuration and start persistent client
+            # Build configuration and start persistent client.
+            # copilot-sdk >= 1.0: CopilotClient takes keyword args (no
+            # positional config, no auto_start flag); call start() manually.
             client_config = self._build_client_config(
                 user_id=None, chat_id=None, token=token
             )
 
-            new_client = CopilotClient(client_config, auto_start=True)
+            new_client = CopilotClient(**client_config)
             await new_client.start()
             self.__class__._shared_clients[token_hash] = new_client
             return new_client
@@ -9193,7 +9206,7 @@ class Pipe:
         client_config = self._build_client_config(
             user_id=user_id, chat_id=chat_id, token=effective_token
         )
-        client = CopilotClient(client_config)
+        client = CopilotClient(**client_config)
         should_stop_client = True
         try:
             await client.start()
@@ -9293,12 +9306,12 @@ class Pipe:
                     resolved_cwd = self._get_workspace_dir(
                         user_id=user_id, chat_id=chat_id
                     )
-                    # Prepare resume config (Requires github-copilot-sdk >= 0.1.23)
+                    # Prepare resume config (Requires github-copilot-sdk >= 1.0.2)
                     resume_params = {
                         "model": real_model_id,
                         "streaming": is_streaming,
                         "tools": custom_tools,
-                        "config_dir": self._get_copilot_config_dir(),
+                        "config_directory": self._get_copilot_config_dir(),
                     }
 
                     permission_request_handler = getattr(
@@ -9416,9 +9429,9 @@ class Pipe:
                     # The system prompt already carries the active-mode directive, so this
                     # is an additional SDK-level hint.  A 5-second timeout prevents hangs.
                     try:
-                        mode_enum = Mode(effective_session_mode)
+                        mode_enum = SessionMode(effective_session_mode)
                         await asyncio.wait_for(
-                            session.rpc.mode.set(SessionModeSetParams(mode=mode_enum)),
+                            session.rpc.mode.set(ModeSetRequest(mode=mode_enum)),
                             timeout=5.0,
                         )
                         logger.info(
@@ -9500,9 +9513,9 @@ class Pipe:
                 # The system prompt already carries the active-mode directive, so this
                 # is an additional SDK-level hint.  A 5-second timeout prevents hangs.
                 try:
-                    mode_enum = Mode(effective_session_mode)
+                    mode_enum = SessionMode(effective_session_mode)
                     await asyncio.wait_for(
-                        session.rpc.mode.set(SessionModeSetParams(mode=mode_enum)),
+                        session.rpc.mode.set(ModeSetRequest(mode=mode_enum)),
                         timeout=5.0,
                     )
                     logger.info(
