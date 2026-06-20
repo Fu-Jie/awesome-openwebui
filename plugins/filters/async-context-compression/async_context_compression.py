@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.6.6
+version: 1.6.7
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -25,7 +25,7 @@ Core Features:
   ✅ Configurable compression style (aggressive, balanced, faithful)
   ✅ Structure-aware trimming to preserve document skeleton
   ✅ Native tool output trimming for function calling support
-  ✅ Manual invoke HTTP endpoint (compress without sending a request)
+  ✅ Manual invoke via /compact command (compress without sending a request)
 
 ═══════════════════════════════════════════════════════════════════════════════
 🔄 Workflow
@@ -510,6 +510,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nBelow is the recent conversation:",
         "tool_trimmed": "... [Tool outputs trimmed]\n{content}",
         "content_collapsed": "\n... [Content collapsed] ...\n",
+        "manual_compressed": "✅ Context compressed: {count} messages summarized (boundary {prev} → {new}).",
+        "manual_skipped": "⏭️ Compression skipped: {reason}.",
+        "manual_error": "❌ Compression failed: {error}.",
     },
     "zh-CN": {
         "status_context_usage": "上下文用量 (预估): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -523,6 +526,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下是最近的对话：",
         "tool_trimmed": "... [工具输出已裁剪]\n{content}",
         "content_collapsed": "\n... [内容已折叠] ...\n",
+        "manual_compressed": "✅ 上下文已压缩：{count} 条消息已摘要化（边界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 跳过压缩：{reason}。",
+        "manual_error": "❌ 压缩失败：{error}。",
     },
     "zh-HK": {
         "status_context_usage": "上下文用量 (預估): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -536,6 +542,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下是最近的對話：",
         "tool_trimmed": "... [工具輸出已裁剪]\n{content}",
         "content_collapsed": "\n... [內容已折疊] ...\n",
+        "manual_compressed": "✅ 上下文已壓縮：{count} 條訊息已摘要化（邊界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 跳過壓縮：{reason}。",
+        "manual_error": "❌ 壓縮失敗：{error}。",
     },
     "zh-TW": {
         "status_context_usage": "上下文用量 (預估): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -549,6 +558,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下是最近的對話：",
         "tool_trimmed": "... [工具輸出已裁剪]\n{content}",
         "content_collapsed": "\n... [內容已折疊] ...\n",
+        "manual_compressed": "✅ 上下文已壓縮：{count} 條訊息已摘要化（邊界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 跳過壓縮：{reason}。",
+        "manual_error": "❌ 壓縮失敗：{error}。",
     },
     "ja-JP": {
         "status_context_usage": "コンテキスト使用量 (推定): {tokens} / {max_tokens} トークン ({ratio}%)",
@@ -562,6 +574,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n以下は最近の会話です：",
         "tool_trimmed": "... [ツールの出力をトリミングしました]\n{content}",
         "content_collapsed": "\n... [コンテンツが折りたたまれました] ...\n",
+        "manual_compressed": "✅ コンテキストを圧縮しました：{count} 件のメッセージを要約化（境界 {prev} → {new}）。",
+        "manual_skipped": "⏭️ 圧縮をスキップ：{reason}。",
+        "manual_error": "❌ 圧縮失敗：{error}。",
     },
     "ko-KR": {
         "status_context_usage": "컨텍스트 사용량 (예상): {tokens} / {max_tokens} 토큰 ({ratio}%)",
@@ -575,6 +590,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\n다음은 최근 대화입니다:",
         "tool_trimmed": "... [도구 출력 잘림]\n{content}",
         "content_collapsed": "\n... [내용 접힘] ...\n",
+        "manual_compressed": "✅ 컨텍스트 압축됨: {count}개 메시지 요약화 (경계 {prev} → {new}).",
+        "manual_skipped": "⏭️ 압축 건너뜀: {reason}.",
+        "manual_error": "❌ 압축 실패: {error}.",
     },
     "fr-FR": {
         "status_context_usage": "Utilisation du contexte (estimée) : {tokens} / {max_tokens} jetons ({ratio}%)",
@@ -588,6 +606,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nVoici la conversation récente :",
         "tool_trimmed": "... [Sorties d'outils coupées]\n{content}",
         "content_collapsed": "\n... [Contenu réduit] ...\n",
+        "manual_compressed": "✅ Contexte compressé : {count} messages résumés (limite {prev} → {new}).",
+        "manual_skipped": "⏭️ Compression ignorée : {reason}.",
+        "manual_error": "❌ Échec de la compression : {error}.",
     },
     "de-DE": {
         "status_context_usage": "Kontextnutzung (geschätzt): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -601,6 +622,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nHier ist die jüngste Konversation:",
         "tool_trimmed": "... [Werkzeugausgaben gekürzt]\n{content}",
         "content_collapsed": "\n... [Inhalt ausgeblendet] ...\n",
+        "manual_compressed": "✅ Kontext komprimiert: {count} Nachrichten zusammengefasst (Grenze {prev} → {new}).",
+        "manual_skipped": "⏭️ Komprimierung übersprungen: {reason}.",
+        "manual_error": "❌ Komprimierung fehlgeschlagen: {error}.",
     },
     "es-ES": {
         "status_context_usage": "Uso del contexto (estimado): {tokens} / {max_tokens} Tokens ({ratio}%)",
@@ -614,6 +638,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nA continuación se muestra la conversación reciente:",
         "tool_trimmed": "... [Salidas de herramientas recortadas]\n{content}",
         "content_collapsed": "\n... [Contenido contraído] ...\n",
+        "manual_compressed": "✅ Contexto comprimido: {count} mensajes resumidos (límite {prev} → {new}).",
+        "manual_skipped": "⏭️ Compresión omitida: {reason}.",
+        "manual_error": "❌ Compresión fallida: {error}.",
     },
     "it-IT": {
         "status_context_usage": "Utilizzo contesto (stimato): {tokens} / {max_tokens} Token ({ratio}%)",
@@ -627,6 +654,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nDi seguito è riportata la conversazione recente:",
         "tool_trimmed": "... [Output degli strumenti tagliati]\n{content}",
         "content_collapsed": "\n... [Contenuto compresso] ...\n",
+        "manual_compressed": "✅ Contesto compresso: {count} messaggi riassunti (limite {prev} → {new}).",
+        "manual_skipped": "⏭️ Compressione saltata: {reason}.",
+        "manual_error": "❌ Compressione fallita: {error}.",
     },
     "pl-PL": {
         "status_context_usage": "Zużycie kontekstu (szacowane): {tokens} / {max_tokens} tokenów ({ratio}%)",
@@ -640,6 +670,9 @@ TRANSLATIONS = {
         "summary_prompt_suffix": "\n\n---\nPoniżej znajduje się najnowsza konwersacja:",
         "tool_trimmed": "... [Wyjścia narzędzi przycięte]\n{content}",
         "content_collapsed": "\n... [Treść zwinięta] ...\n",
+        "manual_compressed": "✅ Kontekst skompresowany: {count} wiadomości podsumowano (granica {prev} → {new}).",
+        "manual_skipped": "⏭️ Kompresja pominięta: {reason}.",
+        "manual_error": "❌ Kompresja nie powiodła się: {error}.",
     },
 }
 
@@ -811,17 +844,6 @@ class Filter:
         self._chat_locks = {}
         self._pending_inlet_messages: Dict[str, List[Dict[str, Any]]] = {}
         self._init_database()
-
-        # Expose this instance to the module-level manual-compress endpoint and
-        # ensure the HTTP route is registered (retries are idempotent).
-        global _MANUAL_FILTER_INSTANCE
-        _MANUAL_FILTER_INSTANCE = self
-        try:
-            register_manual_compress_endpoint()
-        except Exception as _init_route_err:  # pragma: no cover - defensive
-            logger.debug(
-                f"[Manual] Deferred endpoint registration in __init__: {_init_route_err}"
-            )
 
     def _resolve_language(self, lang: str) -> str:
         """Resolve the best matching language code from the TRANSLATIONS dict."""
@@ -1689,6 +1711,11 @@ class Filter:
             default=600,
             ge=1,
             description="Trim native tool outputs when their total content length reaches this many characters.",
+        )
+        manual_compress_min_messages: int = Field(
+            default=4,
+            ge=1,
+            description="Minimum number of messages required for the /compact command to trigger compression (ignored when force is used).",
         )
 
     async def _handle_external_chat_references(
@@ -3041,6 +3068,22 @@ class Filter:
         chat_ctx = self._get_chat_context(body, __metadata__)
         chat_id = chat_ctx["chat_id"]
 
+        # --- Manual invoke via /compact command (issue #80) ---
+        # Recognize /compact, /compress, /summary (case-insensitive) in the
+        # latest user message and trigger compression without sending the
+        # command to the LLM. Append " force" or use a trailing "!" (e.g.
+        # /compact!) to bypass threshold/hysteresis guards.
+        manual_result = await self._try_handle_manual_command(
+            body=body,
+            chat_id=chat_id,
+            user_data=__user__,
+            __request__=__request__,
+            __event_call__=__event_call__,
+            lang=lang,
+        )
+        if manual_result is not None:
+            return manual_result
+
         body = await self._handle_external_chat_references(
             body,
             user_data=__user__,
@@ -3912,6 +3955,138 @@ class Filter:
 
         return body
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Manual invoke via /compact command (issue #80)
+    # ─────────────────────────────────────────────────────────────────────
+
+    _MANUAL_COMMANDS = frozenset(["/compact", "/compress", "/summary"])
+
+    async def _try_handle_manual_command(
+        self,
+        body: dict,
+        chat_id: str,
+        user_data: Optional[dict],
+        __request__: Request,
+        __event_call__: Optional[Callable],
+        lang: str,
+    ) -> Optional[dict]:
+        """Detect a manual-compress command in the latest user message.
+
+        Returns a rewritten ``body`` (with the command replaced by a system
+        notice instructing the LLM to relay the compression result) when a
+        command is matched, or ``None`` when the message is not a manual
+        command (so the caller continues the normal inlet flow).
+
+        Supported forms (case-insensitive):
+            /compact            /compress           /summary
+            /compact!           /compress!          /summary!
+            /compact force      /compress force     /summary force
+
+        The trailing ``!`` or the ``force`` argument bypasses the threshold
+        and hysteresis guards.
+        """
+        messages = body.get("messages", [])
+        if not messages:
+            return None
+
+        last_msg = messages[-1]
+        if not isinstance(last_msg, dict) or last_msg.get("role") != "user":
+            return None
+
+        raw_content = last_msg.get("content", "")
+        if not isinstance(raw_content, str):
+            return None
+
+        text = raw_content.strip()
+        if not text:
+            return None
+
+        lowered = text.lower()
+
+        # Detect the command and optional force flag.
+        force = False
+        matched_cmd = None
+        for cmd in self._MANUAL_COMMANDS:
+            if lowered == cmd:
+                matched_cmd = cmd
+                break
+            if lowered == cmd + "!":
+                matched_cmd = cmd
+                force = True
+                break
+            if lowered.startswith(cmd + " "):
+                rest = lowered[len(cmd):].strip()
+                if rest in ("force", "!", "force!"):
+                    matched_cmd = cmd
+                    force = True
+                    break
+
+        if matched_cmd is None:
+            return None
+
+        if self.valves.show_debug_log and __event_call__:
+            await self._log(
+                f"[Manual] Recognized command '{text}' (force={force}) for chat {chat_id}",
+                event_call=__event_call__,
+            )
+
+        # Without a chat_id we cannot load history; relay an error notice.
+        if not chat_id:
+            notice = self._get_translation(
+                lang, "manual_error", error="chat_id unavailable"
+            )
+            body["messages"][-1]["content"] = (
+                f"[System] {notice} Please send this command inside an existing chat."
+            )
+            return body
+
+        # Resolve the model id for threshold lookup.
+        raw_model = body.get("model")
+        if isinstance(raw_model, dict):
+            model_id = raw_model.get("id")
+        else:
+            model_id = raw_model
+
+        try:
+            result = await self.manual_compress(
+                chat_id=chat_id,
+                user_data=user_data,
+                model_id=model_id,
+                force=force,
+                __request__=__request__,
+            )
+        except Exception as exc:
+            logger.exception(f"[Manual] manual_compress failed for chat {chat_id}: {exc}")
+            notice = self._get_translation(lang, "manual_error", error=str(exc))
+            body["messages"][-1]["content"] = (
+                f"[System] {notice}"
+            )
+            return body
+
+        status = result.get("status", "error")
+        if status == "compressed":
+            notice = self._get_translation(
+                lang,
+                "manual_compressed",
+                count=result.get("compressed_count", 0),
+                prev=result.get("previous_compressed_count", 0),
+                new=result.get("compressed_count", 0),
+            )
+        elif status == "skipped":
+            reason = result.get("reason", "unknown")
+            notice = self._get_translation(lang, "manual_skipped", reason=reason)
+        else:
+            notice = self._get_translation(
+                lang, "manual_error", error=result.get("error", "unknown")
+            )
+
+        # Replace the command with a system notice so the LLM relays the
+        # outcome instead of answering the literal "/compact" text.
+        body["messages"][-1]["content"] = (
+            f"[System] {notice} Reply to the user with this notice verbatim."
+        )
+        return body
+
     async def manual_compress(
         self,
         chat_id: str,
@@ -3982,6 +4157,16 @@ class Filter:
                 "reason": "chat_not_found_or_empty",
                 "chat_id": chat_id,
                 "message_count": 0,
+            }
+
+        # Minimum message count guard (skipped unless force is used).
+        if not force and len(messages) < self.valves.manual_compress_min_messages:
+            return {
+                "status": "skipped",
+                "reason": "below_min_messages",
+                "chat_id": chat_id,
+                "message_count": len(messages),
+                "min_messages": self.valves.manual_compress_min_messages,
             }
 
         # Unfold compact tool messages so the boundary math matches inlet/outlet.
@@ -5353,184 +5538,3 @@ Return only the XML working memory:
             if self.valves.summary_fail_mode == "raise":
                 raise wrapped_error
             return ""
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Manual invoke endpoint (issue #80)
-# ─────────────────────────────────────────────────────────────────────────────
-# Registers a POST route on the Open WebUI FastAPI app so users can trigger
-# context compression for a chat without first sending a request to the model.
-# Registration is idempotent: a module-level flag prevents duplicate routes when
-# the filter is re-instantiated or reloaded.
-
-_MANUAL_ROUTE_REGISTERED = False
-_MANUAL_ROUTE_PATH = "/api/v1/filters/async-context-compression/compress"
-
-
-def _get_manual_filter_instance() -> Optional["Filter"]:
-    """Return the most recently instantiated Filter instance, if any.
-
-    Open WebUI instantiates filter functions lazily and keeps the instance for
-    the lifetime of the process. We track the latest instance via a module-level
-    reference set in ``Filter.__init__``.
-    """
-    return _MANUAL_FILTER_INSTANCE
-
-
-# Module-level handle to the active Filter instance (set in Filter.__init__).
-_MANUAL_FILTER_INSTANCE: Optional["Filter"] = None
-
-
-def register_manual_compress_endpoint(app: Any = None) -> bool:
-    """Register the manual-compress HTTP endpoint on the Open WebUI app.
-
-    Returns ``True`` if the route was registered (or was already registered),
-    ``False`` if registration could not be performed (e.g. app unavailable).
-    Safe to call multiple times.
-    """
-    global _MANUAL_ROUTE_REGISTERED
-    if _MANUAL_ROUTE_REGISTERED:
-        return True
-
-    if app is None:
-        app = webui_app
-    if app is None:
-        return False
-
-    try:
-        from fastapi import HTTPException, status
-        from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-        # Open WebUI exposes a verified user dependency. Fall back gracefully if
-        # the import path changes across versions.
-        try:
-            from open_webui.utils.auth import get_current_user  # type: ignore
-        except Exception:  # pragma: no cover - import path varies by version
-            get_current_user = None  # type: ignore
-
-        bearer_scheme = HTTPBearer(auto_error=False)
-
-        async def _resolve_user(
-            credentials: Optional[HTTPAuthorizationCredentials] = None,
-        ) -> Dict[str, Any]:
-            """Resolve the calling user from a bearer token.
-
-            Prefers Open WebUI's ``get_current_user``; otherwise returns an
-            anonymous context so the endpoint still functions in degraded
-            environments (e.g. tests) but does not impersonate anyone.
-            """
-            if get_current_user is not None and credentials is not None:
-                token = getattr(credentials, "credentials", None)
-                if token:
-                    try:
-                        user = get_current_user(token)
-                        if isinstance(user, dict):
-                            return user
-                        if user is not None and hasattr(user, "id"):
-                            return {
-                                "id": getattr(user, "id", "unknown"),
-                                "name": getattr(user, "name", "User"),
-                                "role": getattr(user, "role", "user"),
-                                "email": getattr(user, "email", ""),
-                            }
-                    except Exception as exc:
-                        logger.warning(
-                            f"[Manual] get_current_user failed: {exc}; "
-                            "proceeding with anonymous context"
-                        )
-            return {"id": "unknown", "name": "Anonymous", "role": "user"}
-
-        async def _manual_compress_endpoint(
-            payload: Dict[str, Any],
-            credentials: Optional[HTTPAuthorizationCredentials] = None,
-        ) -> Dict[str, Any]:
-            """POST /api/v1/filters/async-context-compression/compress
-
-            Body:
-                - chat_id (str, required): target chat id
-                - model_id (str, optional): model used for threshold lookup
-                - force (bool, optional, default False): bypass threshold and
-                  hysteresis guards
-
-            Returns the compression outcome dict produced by
-            ``Filter.manual_compress``.
-            """
-            if not isinstance(payload, dict):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Request body must be a JSON object",
-                )
-
-            chat_id = payload.get("chat_id")
-            if not chat_id or not isinstance(chat_id, str):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Field 'chat_id' is required and must be a string",
-                )
-
-            model_id = payload.get("model_id")
-            if model_id is not None and not isinstance(model_id, str):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Field 'model_id' must be a string when provided",
-                )
-
-            force = bool(payload.get("force", False))
-
-            filter_instance = _get_manual_filter_instance()
-            if filter_instance is None:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=(
-                        "Async Context Compression filter is not initialized. "
-                        "Ensure the filter is enabled on a model and at least "
-                        "one request has been processed."
-                    ),
-                )
-
-            user_data = await _resolve_user(credentials)
-
-            try:
-                return await filter_instance.manual_compress(
-                    chat_id=chat_id,
-                    user_data=user_data,
-                    model_id=model_id,
-                    force=force,
-                )
-            except HTTPException:
-                raise
-            except Exception as exc:
-                logger.exception(
-                    f"[Manual] Endpoint failed for chat {chat_id}: {exc}"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Manual compression failed: {exc}",
-                )
-
-        app.add_api_route(
-            _MANUAL_ROUTE_PATH,
-            _manual_compress_endpoint,
-            methods=["POST"],
-            response_model=None,
-            tags=["async-context-compression"],
-            summary="Manually invoke context compression for a chat",
-            dependencies=None,
-        )
-
-        _MANUAL_ROUTE_REGISTERED = True
-        logger.info(
-            f"[Manual] Registered manual compress endpoint at {_MANUAL_ROUTE_PATH}"
-        )
-        return True
-    except Exception as exc:
-        logger.error(f"[Manual] Failed to register endpoint: {exc}")
-        return False
-
-
-# Best-effort registration at import time. If the app is not yet ready (e.g.
-# during early startup), Filter.__init__ will retry via register_manual_compress_endpoint.
-try:
-    register_manual_compress_endpoint()
-except Exception as _route_err:  # pragma: no cover - defensive
-    logger.debug(f"[Manual] Deferred endpoint registration: {_route_err}")

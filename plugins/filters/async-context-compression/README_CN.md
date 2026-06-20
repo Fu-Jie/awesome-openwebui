@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.6 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.7 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -22,6 +22,14 @@
 
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
+
+## 1.6.7 版本更新
+
+- **通过 `/compact` 命令手动触发压缩（issue #80）**：现在你可以在聊天框输入 `/compact`（或 `/compress`、`/summary`）来**无需先向模型发送请求**就为当前会话触发上下文压缩。解决三类常见痛点：
+  - **克隆会话**丢失了压缩（克隆后消息 ID 变化，原摘要不再生效）。
+  - **导入会话 JSON** 没有存储摘要，导致上下文超出模型窗口。
+  - **会话中途切换到小上下文模型** —— 在下一次请求前先压缩一次即可放下。
+  该命令复用与自动 outlet 触发**完全相同**的压缩管线（阈值检查、滞回保护、原子组对齐、乐观锁），因此是幂等的，可安全重复调用。追加 `!` 或 `force`（如 `/compact!` 或 `/compact force`）会跳过阈值与滞回保护，用于调试或救场。详见下文[手动触发](#手动触发issue-80)。
 
 ## 1.6.6 版本更新
 
@@ -69,7 +77,7 @@
 - ✅ **可配置压缩风格**: 可在更省 token、默认平衡和高保真摘要之间切换。
 - ✅ **实时监控**: 实时监控上下文使用情况，超过 90% 发出警告。
 - ✅ **快速预估 + 精确回退**: 提供更快的多语言 Token 预估，并在必要时回退到精确统计，便于调试。
-- ✅ **手动触发 HTTP 端点**: 无需先向模型发送请求即可按需压缩某个会话。
+- ✅ **通过 `/compact` 命令手动触发**: 无需先向模型发送请求即可按需压缩某个会话。
 - ✅ **智能模型匹配**: 自定义模型自动继承基础模型的阈值配置。
 - ⚠ **多模态支持**: 图片内容会被保留，但其 Token **不参与计算**。请相应调整阈值。
 
@@ -213,6 +221,7 @@ flowchart TD
 | :----------------------------- | :------- | :-------------------------------------------------------------------------------------------------------------------------------------- |
 | `enable_tool_output_trimming`  | `true`   | 启用后（仅在 `function_calling: "native"` 下生效）会裁剪过大的本机工具输出，保留工具调用链结构并以简短占位替换冗长内容。             |
 | `tool_trim_threshold_chars`     | `600`    | 当本机工具输出累计字符数达到该值时触发裁剪，适用于包含长文本或表格的工具结果。                                                           |
+| `manual_compress_min_messages`  | `4`      | `/compact` 命令触发压缩所需的最小消息数。使用 `force` 时忽略。                                                                          |
 | `debug_mode`                   | `false`   | 是否在 Open WebUI 的控制台日志中打印详细的调试信息。生产环境默认且建议设为 `false`。 |
 | `show_debug_log`               | `false`  | 是否在浏览器控制台 (F12) 打印调试日志。便于前端调试。                                                                   |
 | `show_token_usage_status`      | `true`   | 是否在对话结束时显示 Token 使用情况的状态通知。                                                                         |
@@ -222,80 +231,53 @@ flowchart TD
 
 ## 手动触发（issue #80）
 
-该过滤器暴露了一个 HTTP 端点，让你可以**无需先向模型发送请求**就为某个会话触发上下文压缩。适用场景：
+该过滤器支持在聊天框输入命令来**无需先向模型发送请求**就为当前会话触发上下文压缩。适用场景：
 
 - **克隆会话**丢失了压缩（克隆后消息 ID 变化，原摘要不再生效）。
 - **导入会话 JSON** 没有存储摘要，导致上下文超出模型窗口。
 - **会话中途切换到小上下文模型** —— 在下一次请求前先压缩一次即可放下。
 - **调试**压缩管线。
 
-### 端点
+### 命令
 
-```
-POST /api/v1/filters/async-context-compression/compress
-```
+在聊天框输入以下命令之一（不区分大小写）：
 
-该路由在过滤器首次实例化时自动注册到 Open WebUI 应用上（注册是幂等的）。使用与 Open WebUI API 相同的 Bearer Token 进行鉴权。
+| 命令            | 别名             | 别称             | 效果 |
+|-----------------|------------------|------------------|------|
+| `/compact`      | `/compress`      | `/summary`       | 触发压缩（遵守阈值）。 |
+| `/compact!`     | `/compress!`     | `/summary!`      | 强制压缩 —— 跳过阈值与滞回保护。 |
+| `/compact force`| `/compress force`| `/summary force` | 等同于 `!` 形式。 |
 
-### 请求体
+命令在**最后一条用户消息**中检测。匹配后，过滤器会：
 
-| 字段        | 类型    | 必填 | 说明 |
-|-------------|---------|------|------|
-| `chat_id`   | string  | 是   | 目标 Open WebUI 会话 ID。 |
-| `model_id`  | string  | 否   | 用于阈值查询和作为摘要模型回退的模型 ID。默认取 `valves.summary_model`。 |
-| `force`     | boolean | 否   | 跳过 token 阈值检查与滞回保护。默认 `false`。乐观锁仍然生效，因此对已压缩且无新消息的会话强制压缩依然是空操作。 |
+1. 对当前会话调用 `manual_compress()`（复用与自动 outlet 触发完全相同的管线）。
+2. 将命令文本替换为描述结果（已压缩 / 跳过 / 错误）的系统通知。
+3. 让 LLM 原样把该通知转达给你。
 
-### 响应
+命令**不会**作为字面提示发送给 LLM。
 
-```json
-{
-  "status": "compressed",
-  "chat_id": "abc123",
-  "message_count": 42,
-  "current_tokens": 71234,
-  "summary_tokens": 1820,
-  "threshold": 64000,
-  "previous_compressed_count": 0,
-  "compressed_count": 36,
-  "forced": false
-}
-```
+### 结果状态
 
-`status` 取值：
+系统通知会报告以下状态之一：
 
 | status        | 含义 |
 |---------------|------|
-| `compressed`  | 生成了新摘要并已持久化。 |
-| `skipped`     | 无需压缩（见 `reason`：`below_threshold`、`hysteresis_guard`、`no_new_messages`、`compression_in_progress`、`chat_not_found_or_empty`）。 |
-| `error`       | 压缩失败；详见 `error` 字段。 |
+| `compressed`  | 生成了新摘要并已持久化。通知中包含已摘要化的消息数和新的边界。 |
+| `skipped`     | 无需压缩（见 `reason`：`below_threshold`、`below_min_messages`、`hysteresis_guard`、`no_new_messages`、`compression_in_progress`、`chat_not_found_or_empty`）。 |
+| `error`       | 压缩失败；通知中包含错误信息。 |
 
-### 示例
+### 配置
 
-```bash
-# 标准手动压缩（遵守阈值）
-curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
-  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": "abc123"}'
-
-# 强制压缩，忽略阈值（调试/救场）
-curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
-  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": "abc123", "force": true}'
-
-# 指定用于阈值查询的模型
-curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
-  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": "abc123", "model_id": "gpt-4o-mini"}'
-```
+| 配置项                          | 默认值 | 说明 |
+|---------------------------------|--------|------|
+| `manual_compress_min_messages`  | `4`    | `/compact` 触发压缩所需的最小消息数。使用 `force` 时忽略。 |
 
 ### 注意事项
 
-- 该端点复用与自动 outlet 触发**完全相同**的压缩管线（阈值检查、滞回保护、原子组对齐、乐观锁），因此是**幂等**的 —— 对已压缩的会话重复调用是空操作。
+- 该命令复用与自动 outlet 触发**完全相同**的压缩管线（阈值检查、滞回保护、原子组对齐、乐观锁），因此是**幂等**的 —— 对已压缩的会话重复调用是空操作。
 - 它与自动后台任务共享按会话维度的锁，不会与正在进行的 outlet 压缩产生竞争。
-- 若过滤器尚未初始化，端点会返回 `503`（请先在某个模型上启用该过滤器并至少处理一次请求）。
+- 命令必须在**已存在的会话中**发送（需要 `chat_id` 才能加载历史）。
+- `force` 标志会跳过阈值、滞回和最小消息数保护，但乐观锁仍然生效 —— 对已压缩且无新消息的会话强制压缩依然是空操作。
 
 ---
 

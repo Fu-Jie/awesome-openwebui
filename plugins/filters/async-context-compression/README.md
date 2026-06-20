@@ -1,6 +1,6 @@
 # Async Context Compression Filter
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v1.6.6 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v1.6.7 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -20,6 +20,14 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
+
+## What's new in 1.6.7
+
+- **Manual invoke via `/compact` command (issue #80)**: You can now trigger context compression for a chat **without first sending a request to the model** by typing `/compact` (or `/compress`, `/summary`) in the chat box. This solves three common pain points:
+  - **Cloned chats** that lost their compression (different message IDs).
+  - **Imported chat JSON** that has no stored summary and exceeds the model window.
+  - **Switching to a smaller-context model mid-chat** — compress once before the next request so it fits.
+  The command reuses the exact same compression pipeline as the automatic outlet trigger (threshold check, hysteresis guard, atomic-group alignment, optimistic lock), so it is idempotent and safe to invoke repeatedly. Append `!` or `force` (e.g. `/compact!` or `/compact force`) to bypass the threshold and hysteresis guards for debugging or rescue scenarios. See [Manual Invoke](#manual-invoke-issue-80) below.
 
 ## What's new in 1.6.6
 
@@ -67,7 +75,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 - ✅ Configurable compression style for token-minimal, balanced, or high-fidelity summaries.
 - ✅ Real-time context usage monitoring with warning notifications (>90%).
 - ✅ Fast multilingual token estimation plus exact token fallback for precise debugging and optimization.
-- ✅ **Manual invoke HTTP endpoint**: compress a chat on demand without sending a request to the model.
+- ✅ **Manual invoke via `/compact` command**: compress a chat on demand without sending a request to the model.
 - ✅ **Smart Model Matching**: Automatically inherits configuration from base models for custom presets.
 - ⚠ **Multimodal Support**: Images are preserved but their tokens are **NOT** calculated. Please adjust thresholds accordingly.
 
@@ -177,6 +185,7 @@ flowchart TD
 | `model_thresholds`             | `{}`     | Per-model overrides for `compression_threshold_tokens` and `max_context_tokens` (useful for mixed models).                                                            |
 | `enable_tool_output_trimming`  | `true`   | When enabled for `function_calling: "native"`, trims oversized native tool outputs while keeping the tool-call chain intact.                                          |
 | `tool_trim_threshold_chars`     | `600`    | Trim native tool output blocks once their total content length reaches this threshold.                                                                                 |
+| `manual_compress_min_messages`  | `4`      | Minimum number of messages required for the `/compact` command to trigger compression. Ignored when `force` is used.                                                   |
 | `debug_mode`                   | `false`  | Log verbose debug info. Set to `false` in production.                                                                                                                 |
 | `show_debug_log`               | `false`  | Print debug logs to browser console (F12). Useful for frontend debugging.                                                                                             |
 | `show_token_usage_status`      | `true`   | Show token usage status notification in the chat interface.                                                                                                           |
@@ -186,80 +195,53 @@ flowchart TD
 
 ## Manual Invoke (issue #80)
 
-The filter exposes an HTTP endpoint that lets you trigger context compression for a chat **without first sending a request to the model**. This is useful for:
+The filter recognizes a chat-box command that lets you trigger context compression for a chat **without first sending a request to the model**. This is useful for:
 
 - **Cloned chats** that lost their compression (the cloned message IDs differ from the originals).
 - **Imported chat JSON** that has no stored summary and is too large for the model window.
 - **Switching to a smaller-context model mid-chat** — compress once before the next request so it fits.
 - **Debugging** the compression pipeline on demand.
 
-### Endpoint
+### Command
 
-```
-POST /api/v1/filters/async-context-compression/compress
-```
+Type one of the following in the chat box (case-insensitive):
 
-The route is registered automatically on the Open WebUI app the first time the filter is instantiated (registration is idempotent). Authenticate with the same bearer token you use for the Open WebUI API.
+| Command          | Alias            | Alias            | Effect |
+|------------------|------------------|------------------|--------|
+| `/compact`       | `/compress`      | `/summary`       | Trigger compression (respects thresholds). |
+| `/compact!`      | `/compress!`     | `/summary!`      | Force compression — bypass threshold and hysteresis guards. |
+| `/compact force` | `/compress force`| `/summary force` | Same as the `!` form. |
 
-### Request body
+The command is detected in the **latest user message**. When matched, the filter:
 
-| Field       | Type    | Required | Description |
-|-------------|---------|----------|-------------|
-| `chat_id`   | string  | yes      | Target Open WebUI chat id. |
-| `model_id`  | string  | no       | Model id used for threshold lookup and as the summary-model fallback. Defaults to `valves.summary_model`. |
-| `force`     | boolean | no       | Bypass the token-threshold check and the hysteresis guard. Default `false`. The optimistic lock still applies, so forcing on an already-compressed chat with no new messages is still a no-op. |
+1. Calls `manual_compress()` on the current chat (reusing the exact same pipeline as the automatic outlet trigger).
+2. Replaces the command text with a system notice describing the outcome (compressed / skipped / error).
+3. Lets the LLM relay that notice back to you verbatim.
 
-### Response
+The command is **never** sent to the LLM as a literal prompt.
 
-```json
-{
-  "status": "compressed",
-  "chat_id": "abc123",
-  "message_count": 42,
-  "current_tokens": 71234,
-  "summary_tokens": 1820,
-  "threshold": 64000,
-  "previous_compressed_count": 0,
-  "compressed_count": 36,
-  "forced": false
-}
-```
+### Outcome statuses
 
-`status` is one of:
+The system notice reports one of the following statuses:
 
 | status        | Meaning |
 |---------------|---------|
-| `compressed`  | A new summary was generated and persisted. |
-| `skipped`     | No compression was needed (see `reason`: `below_threshold`, `hysteresis_guard`, `no_new_messages`, `compression_in_progress`, `chat_not_found_or_empty`). |
-| `error`       | Compression failed; see the `error` field. |
+| `compressed`  | A new summary was generated and persisted. The notice includes the number of summarized messages and the new boundary. |
+| `skipped`     | No compression was needed (see `reason`: `below_threshold`, `below_min_messages`, `hysteresis_guard`, `no_new_messages`, `compression_in_progress`, `chat_not_found_or_empty`). |
+| `error`       | Compression failed; the notice includes the error message. |
 
-### Examples
+### Configuration
 
-```bash
-# Standard manual compression (respects thresholds)
-curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
-  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": "abc123"}'
-
-# Force compression regardless of threshold (debug/rescue)
-curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
-  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": "abc123", "force": true}'
-
-# Use a specific model for threshold lookup
-curl -X POST "http://localhost:8080/api/v1/filters/async-context-compression/compress" \
-  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": "abc123", "model_id": "gpt-4o-mini"}'
-```
+| Valve                          | Default | Description |
+|--------------------------------|---------|-------------|
+| `manual_compress_min_messages` | `4`     | Minimum number of messages required for `/compact` to trigger compression. Ignored when `force` is used. |
 
 ### Notes
 
-- The endpoint reuses the **exact same** compression pipeline as the automatic outlet trigger (threshold check, hysteresis guard, atomic-group alignment, optimistic lock), so it is **idempotent** — calling it repeatedly on an already-compressed chat is a no-op.
+- The command reuses the **exact same** compression pipeline as the automatic outlet trigger (threshold check, hysteresis guard, atomic-group alignment, optimistic lock), so it is **idempotent** — invoking it repeatedly on an already-compressed chat is a no-op.
 - It shares the per-chat lock with the automatic background task, so it will not race with an in-flight outlet compression.
-- The endpoint returns `503` if the filter has not been initialized yet (enable it on a model and process at least one request first).
+- The command must be sent **inside an existing chat** (a `chat_id` is required to load history).
+- The `force` flag bypasses the threshold, hysteresis, and minimum-message guards, but the optimistic lock still applies — forcing on an already-compressed chat with no new messages is still a no-op.
 
 ---
 
