@@ -1,6 +1,6 @@
 # GitHub Copilot Agent Pipe for OpenWebUI
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v0.13.2 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v0.13.3 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -33,12 +33,12 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
 
-## ✨ v0.13.1: OpenWebUI 0.9.x Compatibility
+## ✨ v0.13.3: SDK 1.0.2 API Migration
 
-- **🔌 OpenWebUI 0.9.x Dual Compatibility** (Critical): All OpenWebUI model/config/tool APIs (`Files.get_file_by_id`, `Files.insert_new_file`, `Users.get_user_by_id`, `Tools.get_tools_by_user_id`, `Tools.get_tool_by_id`, `Models.get_model_by_id`, `get_config`, `get_all_models`, `get_openwebui_tools`, `get_builtin_tools`, `search_models`) now transparently support both the sync interface (pre-0.9) and the new async interface (0.9.x). No version branching required; the plugin auto-detects and adapts.
-- **🚀 Internal Methods Promoted to Async**: `_read_tool_server_connections`, `_build_openwebui_request`, and `_parse_mcp_servers` are now `async def`, eliminating the thread-offload pattern that would have broken under 0.9.x async model methods.
-- **🛡️ Sync-Safe Valve Options**: `Valves` and `UserValves` option providers (sync classmethods) now use a compatibility wrapper so `search_models` calls remain safe in both sync and async contexts.
-- **🐛 File Publish Path Fixed**: `publish_file_from_workspace` now uses a typed compatibility layer instead of raw `asyncio.to_thread`, resolving a silent crash when `Files` methods became coroutines in 0.9.x.
+- **📦 github-copilot-sdk 1.0.2**: Migrated to the stable 1.0.2 release. Removed deprecated `SubprocessConfig` and `SessionConfig` wrappers — connection and session options are now passed as plain dicts directly to `CopilotClient` and `create_session`/`resume_session`.
+- **🔄 API Renames**: `Mode` → `SessionMode`, `SessionModeSetParams` → `ModeSetRequest`, `get_messages()` → `get_events()`, `destroy()` → `disconnect()`, `config_dir` → `config_directory`.
+- **🔌 Client Lifecycle**: `CopilotClient` no longer accepts `auto_start`; call `await client.start()` explicitly after construction.
+- **📊 State Access**: Replaced `client.get_state()` with direct `client._state` attribute access (returns `Literal["disconnected", "connecting", "connected", "error"]`).
 
 > [!IMPORTANT]
 > **If the plugin shows errors after an update, restart your OpenWebUI server.** The plugin is cached in memory and old bytecode may cause import errors. Restarting clears the cache and loads the fresh version.

@@ -38,7 +38,7 @@ A collection of enhancements, plugins, and prompts for [open-webui](https://gith
 
 ## 🌟 Star Features
 
-### 1. [GitHub Copilot Official SDK Pipe](https://openwebui.com/posts/github_copilot_official_sdk_pipe_ce96f7b4) ![v0.13.2](https://img.shields.io/badge/v0.13.2-blue?style=flat-square) ![active-dev](https://img.shields.io/badge/active--dev-orange?style=flat-square) ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_post_aef940e01073e811a311c3a443d9c149_dl.json&style=flat-square) ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_post_aef940e01073e811a311c3a443d9c149_vw.json&style=flat-square) ![updated](https://img.shields.io/badge/2026--05--11-gray?style=flat)
+### 1. [GitHub Copilot Official SDK Pipe](https://openwebui.com/posts/github_copilot_official_sdk_pipe_ce96f7b4) ![v0.13.3](https://img.shields.io/badge/v0.13.3-blue?style=flat-square) ![active-dev](https://img.shields.io/badge/active--dev-orange?style=flat-square) ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_post_aef940e01073e811a311c3a443d9c149_dl.json&style=flat-square) ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_post_aef940e01073e811a311c3a443d9c149_vw.json&style=flat-square) ![updated](https://img.shields.io/badge/2026--06--21-gray?style=flat)
 
 **The ultimate autonomous Agent integration for OpenWebUI.** Deeply bridging GitHub Copilot SDK with your OpenWebUI ecosystem. It enables the Agent to autonomously perform **intent recognition**, **web search**, and **context compaction** while reusing your existing tools, skills, and configurations for a professional, full-featured experience.
 
@@ -134,7 +134,7 @@ Located in the `plugins/` directory, containing Python-based enhancements:
 
 ### Pipes
 
-- **GitHub Copilot SDK** (`github-copilot-sdk`): Official GitHub Copilot SDK integration (v0.13.2). Supports OpenWebUI 0.9.x compatibility, BYOK model priority, dynamic models (GPT-4o, Claude 3.7, o1), multi-turn conversation, and high-performance process pooling.
+- **GitHub Copilot SDK** (`github-copilot-sdk`): Official GitHub Copilot SDK integration (v0.13.3). Supports OpenWebUI 0.9.x compatibility, BYOK model priority, dynamic models (GPT-4o, Claude 3.7, o1), multi-turn conversation, and high-performance process pooling.
 
 ### Pipelines
 

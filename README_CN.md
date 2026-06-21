@@ -131,7 +131,7 @@ OpenWebUI 增强功能集合。包含个人开发与收集的插件、提示词�
 
 ### Pipes (模型管道)
 
-- **GitHub Copilot SDK** (`github-copilot-sdk`): 深度集成 GitHub Copilot SDK 的强大 Agent (v0.13.2)。支持 OpenWebUI 0.9.x 全面兼容、BYOK 模型优先级、纯 BYOK 模式、智能意图识别、自主网页搜索与上下文压缩。
+- **GitHub Copilot SDK** (`github-copilot-sdk`): 深度集成 GitHub Copilot SDK 的强大 Agent (v0.13.3)。支持 OpenWebUI 0.9.x 全面兼容、BYOK 模型优先级、纯 BYOK 模式、智能意图识别、自主网页搜索与上下文压缩。
 
 ### Pipelines (工作流管道)
 
