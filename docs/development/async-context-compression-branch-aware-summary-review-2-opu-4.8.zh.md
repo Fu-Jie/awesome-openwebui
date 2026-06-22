@@ -9,7 +9,7 @@ reviewer: opus-4.8 (ce:review, interactive / report-only document)
 
 ## 修复后更新（2026-06-23 ce:work address review）
 
-本轮按本 review 的 actionable findings 修复了安全/可靠性快赢项并补齐相应测试，保留下方原始审查记录作为追踪上下文。测试：`pytest` **58 passed**（原 53 + 新增 5）。
+本轮按本 review 的 actionable findings 修复了安全/可靠性快赢项并补齐相应测试，保留下方原始审查记录作为追踪上下文。测试：`pytest` **62 passed**（原 53 + 新增 9）。已 commit：`feat(...)` snapshot reuse + `test(...)` safety coverage。
 
 | Finding | Status | Resolution |
 |---|---|---|
@@ -18,7 +18,7 @@ reviewer: opus-4.8 (ce:review, interactive / report-only document)
 | P2 #3 retention 驱逐短前缀 | **addressed** | `_summary_snapshots_to_prune` 在 recency+size 截断后无条件保留 `compressed_message_count` 最小的 snapshot。新增 `test_snapshot_retention_protects_stale_shortest_prefix`。 |
 | P2 #4 prune 回滚 save | **addressed** | `_prune_summary_snapshots_async/_sync` 包入 try/except，prune 失败只 warning 不传播，不再回滚已暂存的 snapshot 写入。 |
 | P2 #5 async 未 expunge | **addressed** | `_load_summary_snapshots` async 路径返回前 `session.expunge_all()`，与 sync 对齐，避免会话关闭后属性访问触发 DetachedInstanceError。 |
-| P2 #6 安全不变量测试盲区 | **partially addressed** | 新增 R4 deleted-vs-sibling 双判别（`test_snapshot_selection_discriminates_deleted_vs_sibling`）、R5 image-only 编辑（`test_snapshot_selection_rejects_image_only_edit`）。R7 atomic-group 拒绝、R9 两分支往返、save-path fingerprint 断言等仍未补。 |
+| P2 #6 安全不变量测试盲区 | **addressed** | 新增 R4 deleted-vs-sibling 双判别、R5 image-only 编辑、R7 atomic-group 切割拒绝（含 boundary 接受对照）、R9 两分支 snapshot 往返、corrupted refs JSON 安全跳过、covered refs 携带 fingerprint 断言（`test_snapshot_selection_discriminates_deleted_vs_sibling` / `_rejects_image_only_edit` / `_rejects_coverage_that_splits_tool_group` / `_round_trips_between_branches` / `_skips_corrupted_refs_json`、`test_message_refs_for_prefix_includes_payload_fingerprints`）。 |
 | P3 #7 hash 漏 protected_head_count | **addressed** | snapshot dedup 键改为 `sha256(refs_json)`（含 head count），相同 refs 不同 head count 不再 clobber。新增 `test_save_summary_dedup_hash_differs_for_protected_head_count`。 |
 | P3 #9 fingerprint 漏 images | **addressed** | `_message_fingerprint` payload 加入 `images`，原地改图可被检测。覆盖于 #6 image 测试。 |
 | P3 #8/#10/#11/#12–#16 | **open** | #8 当前 fail-closed 安全、不动；#10 lazy 建表并发/阻塞、#11 跨进程锁、#12–#16 可维护性重构未做（避免在 mid-flight 特性上引入额外 churn），保留为后续项。 |
