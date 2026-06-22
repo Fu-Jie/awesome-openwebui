@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -123,6 +124,49 @@ sys.modules[MODULE_NAME] = module
 assert spec.loader is not None
 spec.loader.exec_module(module)
 module.Filter._init_database = lambda self: None
+
+
+def _messages_with_ids(ids):
+    messages = []
+    for index, message_id in enumerate(ids):
+        numeric_id = "".join(ch for ch in message_id if ch.isdigit())
+        role_index = int(numeric_id) if numeric_id else index
+        messages.append(
+            {
+                "id": message_id,
+                "role": "user" if role_index % 2 == 0 else "assistant",
+                "content": f"message {message_id}",
+            }
+        )
+    return messages
+
+
+def _snapshot(summary, refs, protected_head_count=0):
+    refs_payload = refs
+    if protected_head_count > 0:
+        refs_payload = {
+            "refs": refs,
+            "protected_head_count": protected_head_count,
+        }
+    return types.SimpleNamespace(
+        summary=summary,
+        compressed_message_count=len(refs),
+        covered_message_refs_json=json.dumps(
+            refs_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        covered_refs_hash="hash",
+        branch_tip_id=refs[-1]["id"] if refs else None,
+        updated_at=None,
+        created_at=None,
+    )
+
+
+def _live_refs_by_id(filter_instance, messages):
+    refs = filter_instance._message_refs_for_prefix(messages, len(messages)) or []
+    return {ref["id"]: ref for ref in refs}
 
 
 class TestAsyncContextCompression(unittest.TestCase):
@@ -396,6 +440,837 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertEqual(self.filter._get_original_history_count(messages), 10)
         self.assertEqual(self.filter._calculate_target_compressed_count(messages), 8)
 
+    def test_message_ref_uses_id_and_payload_fingerprint(self):
+        message = {"id": "m1", "role": "user", "content": "hello"}
+        original_ref = self.filter._message_ref(message)
+
+        message["content"] = "edited"
+        edited_ref = self.filter._message_ref(message)
+
+        self.assertEqual(original_ref["id"], "m1")
+        self.assertEqual(edited_ref["id"], "m1")
+        self.assertNotEqual(original_ref["fingerprint"], edited_ref["fingerprint"])
+
+    def test_message_refs_for_prefix_allows_marker_overlap_with_kept_head(self):
+        raw_messages = _messages_with_ids(["m0", "m1", "m2", "m3", "m4"])
+        covered_refs = self.filter._message_refs_for_prefix(raw_messages, 3)
+        summary_message = self.filter._build_summary_message(
+            "older summary",
+            "en-US",
+            3,
+            covered_refs,
+            protected_head_count=1,
+        )
+        summary_view = [raw_messages[0], summary_message] + raw_messages[3:]
+
+        refs = self.filter._message_refs_for_prefix(summary_view, 5)
+
+        self.assertEqual(
+            [ref["id"] for ref in refs],
+            ["m0", "m1", "m2", "m3", "m4"],
+        )
+
+    def test_message_refs_for_prefix_allows_reinjected_marker_after_raw_prefix(self):
+        raw_messages = _messages_with_ids(["m0", "m1", "m2", "m3", "m4", "m5"])
+        covered_refs = self.filter._message_refs_for_prefix(raw_messages, 4)
+        summary_message = self.filter._build_summary_message(
+            "older summary",
+            "en-US",
+            4,
+            covered_refs,
+        )
+        reinjected_view = raw_messages[:4] + [summary_message] + raw_messages[4:]
+
+        refs = self.filter._message_refs_for_prefix(reinjected_view, 6)
+
+        self.assertEqual(
+            [ref["id"] for ref in refs],
+            ["m0", "m1", "m2", "m3", "m4", "m5"],
+        )
+
+    def test_snapshot_selection_rejects_snapshot_when_protected_head_is_not_kept(self):
+        messages = _messages_with_ids(["m0", "m1", "m2"])
+        refs = self.filter._message_refs_for_prefix(messages, 2)
+        self.filter.valves.keep_first = 0
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("summary needs protected head", refs, protected_head_count=1)],
+            messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, messages),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_history_graph_refs_fail_closed_for_malformed_live_node(self):
+        refs = self.filter._history_graph_refs_by_id(
+            {
+                "m1": {"role": "user", "content": "Question"},
+                "m2": "malformed live node",
+            }
+        )
+
+        self.assertIsNone(refs)
+
+    def test_snapshot_selection_rejects_snapshot_with_live_sibling_refs(self):
+        self.filter.valves.keep_last = 0
+        current_messages = _messages_with_ids(
+            [
+                "m0",
+                "m1",
+                "m2",
+                "m3",
+                "m4",
+                "m5",
+                "m6",
+                "m7",
+                "new_m8",
+                "new_m9",
+                "new_m10",
+            ]
+        )
+        old_branch_messages = _messages_with_ids(
+            [
+                "m0",
+                "m1",
+                "m2",
+                "m3",
+                "m4",
+                "m5",
+                "m6",
+                "m7",
+                "old_m8",
+                "old_m9",
+                "old_m10",
+            ]
+        )
+        old_refs = self.filter._message_refs_for_prefix(old_branch_messages, 11)
+        live_messages = current_messages + old_branch_messages[8:]
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("old branch summary", old_refs)],
+            current_messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, live_messages),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_snapshot_selection_rejects_unmatched_refs_without_full_graph(self):
+        self.filter.valves.keep_last = 0
+        current_messages = _messages_with_ids(["m1", "m2", "m3p", "m4p", "m5p"])
+        old_branch_messages = _messages_with_ids(["m1", "m2", "m3", "m4", "m5"])
+        old_refs = self.filter._message_refs_for_prefix(old_branch_messages, 5)
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("old branch summary", old_refs)],
+            current_messages,
+        )
+
+        self.assertIsNone(selected)
+
+    def test_snapshot_selection_uses_matching_common_prefix_snapshot(self):
+        self.filter.valves.keep_last = 0
+        current_messages = _messages_with_ids(
+            [
+                "m0",
+                "m1",
+                "m2",
+                "m3",
+                "m4",
+                "m5",
+                "m6",
+                "m7",
+                "new_m8",
+                "new_m9",
+                "new_m10",
+            ]
+        )
+        old_branch_messages = _messages_with_ids(
+            [
+                "m0",
+                "m1",
+                "m2",
+                "m3",
+                "m4",
+                "m5",
+                "m6",
+                "m7",
+                "old_m8",
+                "old_m9",
+                "old_m10",
+            ]
+        )
+        old_refs = self.filter._message_refs_for_prefix(old_branch_messages, 11)
+        prefix_refs = self.filter._message_refs_for_prefix(current_messages, 8)
+        live_messages = current_messages + old_branch_messages[8:]
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [
+                _snapshot("old branch summary", old_refs),
+                _snapshot("shared prefix summary", prefix_refs),
+            ],
+            current_messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, live_messages),
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.summary, "shared prefix summary")
+
+    def test_snapshot_selection_requires_full_coverage_for_referenced_chat(self):
+        self.filter.valves.keep_last = 1
+        messages = _messages_with_ids(["m0", "m1", "m2"])
+        partial_refs = self.filter._message_refs_for_prefix(messages, 2)
+        full_refs = self.filter._message_refs_for_prefix(messages, 3)
+        full_with_deleted_refs = self.filter._message_refs_for_prefix(
+            _messages_with_ids(["m0", "deleted_m1", "m1", "m2"]),
+            4,
+        )
+        partial_snapshot = _snapshot("partial referenced chat summary", partial_refs)
+        full_snapshot = _snapshot("full referenced chat summary", full_refs)
+        full_with_deleted_snapshot = _snapshot(
+            "full referenced chat summary with deleted message",
+            full_with_deleted_refs,
+        )
+
+        current_chat_selected = self.filter._select_applicable_summary_snapshot(
+            [full_snapshot],
+            messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, messages),
+        )
+        self.assertIsNone(current_chat_selected)
+
+        referenced_chat_selected = self.filter._select_applicable_summary_snapshot(
+            [partial_snapshot, full_with_deleted_snapshot, full_snapshot],
+            messages,
+            require_full_coverage=True,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, messages),
+        )
+
+        self.assertIs(referenced_chat_selected, full_snapshot)
+
+        selected_with_deleted_only = self.filter._select_applicable_summary_snapshot(
+            [partial_snapshot, full_with_deleted_snapshot],
+            messages,
+            require_full_coverage=True,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, messages),
+        )
+        self.assertIs(selected_with_deleted_only, full_with_deleted_snapshot)
+
+    def test_inlet_uses_matching_prefix_snapshot_and_keeps_new_branch_tail(self):
+        self.filter.valves.keep_last = 0
+        current_messages = _messages_with_ids(
+            [
+                "m0",
+                "m1",
+                "m2",
+                "m3",
+                "m4",
+                "m5",
+                "m6",
+                "m7",
+                "new_m8",
+                "new_m9",
+                "new_m10",
+            ]
+        )
+        old_branch_messages = _messages_with_ids(
+            [
+                "m0",
+                "m1",
+                "m2",
+                "m3",
+                "m4",
+                "m5",
+                "m6",
+                "m7",
+                "old_m8",
+                "old_m9",
+                "old_m10",
+            ]
+        )
+        old_refs = self.filter._message_refs_for_prefix(old_branch_messages, 11)
+        prefix_refs = self.filter._message_refs_for_prefix(current_messages, 8)
+        live_messages = current_messages + old_branch_messages[8:]
+        snapshots = [
+            _snapshot("old branch summary", old_refs),
+            _snapshot("shared prefix summary", prefix_refs),
+        ]
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+        ):
+            return self.filter._select_applicable_summary_snapshot(
+                snapshots,
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, live_messages),
+            )
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        body = {
+            "chat_id": "chat-1",
+            "model": "test-model",
+            "messages": current_messages,
+        }
+
+        result = asyncio.run(self.filter.inlet(body))
+        final_messages = result["messages"]
+
+        self.assertEqual(len(final_messages), 4)
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("shared prefix summary", final_messages[0]["content"])
+        self.assertNotIn("old branch summary", final_messages[0]["content"])
+        self.assertEqual(
+            [message["id"] for message in final_messages[1:]],
+            ["new_m8", "new_m9", "new_m10"],
+        )
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"],
+        )
+
+    def test_inlet_allows_deleted_refs_in_snapshot_and_keeps_new_tail(self):
+        self.filter.valves.keep_last = 0
+        snapshot_messages = _messages_with_ids(["m0", "m1", "deleted_m2", "m3", "m4"])
+        current_messages = _messages_with_ids(["m0", "m1", "m3", "m4", "new_m5"])
+        snapshot_refs = self.filter._message_refs_for_prefix(snapshot_messages, 5)
+        snapshots = [_snapshot("summary with deleted message", snapshot_refs)]
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+        ):
+            return self.filter._select_applicable_summary_snapshot(
+                snapshots,
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(
+                    self.filter, current_messages
+                ),
+            )
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        body = {
+            "chat_id": "chat-1",
+            "model": "test-model",
+            "messages": current_messages,
+        }
+
+        result = asyncio.run(self.filter.inlet(body))
+        final_messages = result["messages"]
+
+        self.assertEqual(len(final_messages), 2)
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("summary with deleted message", final_messages[0]["content"])
+        self.assertEqual(final_messages[1]["id"], "new_m5")
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1", "m3", "m4"],
+        )
+
+    def test_outlet_does_not_reinject_live_sibling_snapshot(self):
+        self.filter.valves.keep_last = 0
+        current_messages = _messages_with_ids(["m0", "m1", "new_m2", "new_m3"])
+        old_branch_messages = _messages_with_ids(["m0", "m1", "old_m2", "old_m3"])
+        old_refs = self.filter._message_refs_for_prefix(old_branch_messages, 4)
+        snapshots = [_snapshot("old branch summary", old_refs)]
+        live_messages = current_messages + old_branch_messages[2:]
+        captured = {}
+        scheduled = []
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+        ):
+            return self.filter._select_applicable_summary_snapshot(
+                snapshots,
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, live_messages),
+            )
+
+        async def fake_user_context(__user__, __event_call__):
+            return {"user_language": "en-US"}
+
+        async def fake_locked_summary_task(
+            lock,
+            chat_id,
+            model,
+            body,
+            user_data,
+            target_compressed_count,
+            lang,
+            __event_emitter__,
+            __event_call__,
+            __request__=None,
+        ):
+            captured["messages"] = body["messages"]
+
+        async def noop(*args, **kwargs):
+            return None
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            return None
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._get_user_context = fake_user_context
+        self.filter._get_chat_context = lambda body, metadata=None: {
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+        }
+        self.filter._should_skip_compression = lambda body, model: False
+        self.filter._locked_summary_task = fake_locked_summary_task
+        self.filter._log = noop
+
+        original_create_task = asyncio.create_task
+        asyncio.create_task = fake_create_task
+        try:
+            asyncio.run(
+                self.filter.outlet(
+                    {"model": "test-model", "messages": current_messages},
+                    __event_call__=None,
+                )
+            )
+        finally:
+            asyncio.create_task = original_create_task
+
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled[0])
+
+        self.assertFalse(
+            any(self.filter._is_summary_message(message) for message in captured["messages"])
+        )
+        self.assertEqual(
+            [message["id"] for message in captured["messages"]],
+            ["m0", "m1", "new_m2", "new_m3"],
+        )
+
+    def test_outlet_reinjects_matching_branch_snapshot_with_metadata(self):
+        self.filter.valves.keep_last = 0
+        current_messages = _messages_with_ids(["m0", "m1", "m2", "m3", "m4"])
+        prefix_refs = self.filter._message_refs_for_prefix(current_messages, 3)
+        snapshots = [_snapshot("shared prefix summary", prefix_refs)]
+        captured = {}
+        scheduled = []
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+        ):
+            return self.filter._select_applicable_summary_snapshot(
+                snapshots,
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, current_messages),
+            )
+
+        async def fake_user_context(__user__, __event_call__):
+            return {"user_language": "en-US"}
+
+        async def fake_locked_summary_task(
+            lock,
+            chat_id,
+            model,
+            body,
+            user_data,
+            target_compressed_count,
+            lang,
+            __event_emitter__,
+            __event_call__,
+            __request__=None,
+        ):
+            captured["messages"] = body["messages"]
+
+        async def noop(*args, **kwargs):
+            return None
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            return None
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._get_user_context = fake_user_context
+        self.filter._get_chat_context = lambda body, metadata=None: {
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+        }
+        self.filter._should_skip_compression = lambda body, model: False
+        self.filter._locked_summary_task = fake_locked_summary_task
+        self.filter._log = noop
+
+        original_create_task = asyncio.create_task
+        asyncio.create_task = fake_create_task
+        try:
+            asyncio.run(
+                self.filter.outlet(
+                    {"model": "test-model", "messages": current_messages},
+                    __event_call__=None,
+                )
+            )
+        finally:
+            asyncio.create_task = original_create_task
+
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled[0])
+        final_messages = captured["messages"]
+
+        self.assertEqual(len(final_messages), 6)
+        self.assertTrue(self.filter._is_summary_message(final_messages[3]))
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[3]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1", "m2"],
+        )
+        self.assertEqual(final_messages[4]["id"], "m3")
+        self.assertEqual(final_messages[5]["id"], "m4")
+
+    def test_snapshot_selection_rejects_same_content_different_ids(self):
+        self.filter.valves.keep_last = 0
+        current_messages = [
+            {"id": "new-1", "role": "user", "content": "same"},
+            {"id": "new-2", "role": "assistant", "content": "same"},
+        ]
+        old_messages = [
+            {"id": "old-1", "role": "user", "content": "same"},
+            {"id": "old-2", "role": "assistant", "content": "same"},
+        ]
+        old_refs = self.filter._message_refs_for_prefix(old_messages, 2)
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("old same content", old_refs)],
+            current_messages,
+            live_message_refs_by_id=_live_refs_by_id(
+                self.filter, current_messages + old_messages
+            ),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_snapshot_selection_rejects_same_id_changed_payload(self):
+        self.filter.valves.keep_last = 0
+        original_messages = [
+            {"id": "m1", "role": "user", "content": "original question"},
+            {"id": "m2", "role": "assistant", "content": "original answer"},
+        ]
+        edited_messages = [
+            {"id": "m1", "role": "user", "content": "edited question"},
+            {"id": "m2", "role": "assistant", "content": "original answer"},
+        ]
+        original_refs = self.filter._message_refs_for_prefix(original_messages, 2)
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("old edited content", original_refs)],
+            edited_messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, edited_messages),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_snapshot_retention_keeps_recent_short_prefix(self):
+        old_large = types.SimpleNamespace(
+            compressed_message_count=20,
+            updated_at=module.datetime(2026, 1, 1, tzinfo=module.timezone.utc),
+        )
+        recent_short = types.SimpleNamespace(
+            compressed_message_count=8,
+            updated_at=module.datetime(2026, 1, 3, tzinfo=module.timezone.utc),
+        )
+        middle = types.SimpleNamespace(
+            compressed_message_count=12,
+            updated_at=module.datetime(2026, 1, 2, tzinfo=module.timezone.utc),
+        )
+
+        pruned = self.filter._summary_snapshots_to_prune(
+            [old_large, recent_short, middle],
+            limit=2,
+        )
+
+        self.assertEqual(pruned, [old_large])
+
+    def test_snapshot_retention_protects_stale_shortest_prefix(self):
+        # The shortest-prefix snapshot is the common-ancestor summary a freshly
+        # diverged branch needs. Pure recency/size retention would evict it once
+        # it goes stale; the shortest must survive while a larger stale peer drops.
+        stale_shortest = types.SimpleNamespace(
+            compressed_message_count=4,
+            updated_at=module.datetime(2026, 1, 1, tzinfo=module.timezone.utc),
+        )
+        stale_large = types.SimpleNamespace(
+            compressed_message_count=12,
+            updated_at=module.datetime(2026, 1, 2, tzinfo=module.timezone.utc),
+        )
+        recent_a = types.SimpleNamespace(
+            compressed_message_count=15,
+            updated_at=module.datetime(2026, 1, 4, tzinfo=module.timezone.utc),
+        )
+        recent_b = types.SimpleNamespace(
+            compressed_message_count=18,
+            updated_at=module.datetime(2026, 1, 3, tzinfo=module.timezone.utc),
+        )
+
+        pruned = self.filter._summary_snapshots_to_prune(
+            [stale_shortest, stale_large, recent_a, recent_b],
+            limit=2,
+        )
+
+        self.assertIn(stale_large, pruned)
+        self.assertNotIn(stale_shortest, pruned)
+
+    def test_snapshot_selection_rejects_image_only_edit(self):
+        # A message edited to swap only its attached image keeps identical text;
+        # the fingerprint must still change so the stale summary is rejected (R5).
+        self.filter.valves.keep_last = 0
+        old_messages = [
+            {"id": "m0", "role": "user", "content": "describe this", "images": ["old"]},
+            {"id": "m1", "role": "assistant", "content": "an old picture"},
+            {"id": "m2", "role": "user", "content": "and again"},
+            {"id": "m3", "role": "assistant", "content": "sure"},
+        ]
+        current_messages = [
+            {"id": "m0", "role": "user", "content": "describe this", "images": ["new"]},
+            {"id": "m1", "role": "assistant", "content": "an old picture"},
+            {"id": "m2", "role": "user", "content": "and again"},
+            {"id": "m3", "role": "assistant", "content": "sure"},
+        ]
+        old_refs = self.filter._message_refs_for_prefix(old_messages, 4)
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("stale image summary", old_refs)],
+            current_messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, current_messages),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_snapshot_selection_discriminates_deleted_vs_sibling(self):
+        # A covered ref missing from the current branch may be skipped only when
+        # it is gone from the full graph (deleted). If it still exists off-chain
+        # (live sibling), the snapshot must be rejected (R4 second discrimination).
+        self.filter.valves.keep_last = 0
+        snapshot_source = _messages_with_ids(["m0", "m1", "m2", "m3", "m4"])
+        current_messages = _messages_with_ids(["m0", "m1", "m3", "m4"])
+        snapshot_refs = self.filter._message_refs_for_prefix(snapshot_source, 5)
+        snapshots = [_snapshot("summary covering m2", snapshot_refs)]
+
+        deleted_selected = self.filter._select_applicable_summary_snapshot(
+            list(snapshots),
+            current_messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, current_messages),
+        )
+        self.assertIsNotNone(deleted_selected)
+
+        sibling_graph = _live_refs_by_id(
+            self.filter, current_messages + snapshot_source[2:3]
+        )
+        sibling_selected = self.filter._select_applicable_summary_snapshot(
+            list(snapshots),
+            current_messages,
+            live_message_refs_by_id=sibling_graph,
+        )
+        self.assertIsNone(sibling_selected)
+
+    def test_save_summary_dedup_hash_differs_for_protected_head_count(self):
+        # Same covered refs saved with a different protected_head_count must land
+        # in distinct rows; the dedup hash has to fold in the head count.
+        refs = self.filter._message_refs_for_prefix(
+            _messages_with_ids(["m0", "m1", "m2", "m3"]),
+            4,
+        )
+        added_objects = []
+
+        class FakeChatSummary:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class FakeChatSummarySnapshot:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class FakeQuery:
+            def __init__(self, model):
+                self.model = model
+
+            def filter_by(self, **kwargs):
+                return self
+
+            def first(self):
+                return None
+
+            def all(self):
+                return []
+
+        class FakeSession:
+            def query(self, model):
+                return FakeQuery(model)
+
+            def add(self, obj):
+                added_objects.append(obj)
+
+            def delete(self, obj):
+                pass
+
+            def commit(self):
+                pass
+
+        class FakeAsyncContext:
+            async def __aenter__(self):
+                return FakeSession()
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        original_summary = module.ChatSummary
+        original_snapshot = module.ChatSummarySnapshot
+        module.ChatSummary = FakeChatSummary
+        module.ChatSummarySnapshot = FakeChatSummarySnapshot
+        self.filter._async_db_session = lambda: FakeAsyncContext()
+
+        try:
+            asyncio.run(
+                self.filter._save_summary(
+                    "chat-1", "summary head 0", 4, refs, protected_head_count=0
+                )
+            )
+            asyncio.run(
+                self.filter._save_summary(
+                    "chat-1", "summary head 2", 4, refs, protected_head_count=2
+                )
+            )
+        finally:
+            module.ChatSummary = original_summary
+            module.ChatSummarySnapshot = original_snapshot
+
+        snapshot_rows = [
+            obj for obj in added_objects if isinstance(obj, FakeChatSummarySnapshot)
+        ]
+        self.assertEqual(len(snapshot_rows), 2)
+        self.assertNotEqual(
+            snapshot_rows[0].covered_refs_hash,
+            snapshot_rows[1].covered_refs_hash,
+        )
+
+    def test_save_summary_persists_snapshot_when_legacy_pointer_is_ahead(self):
+        refs = self.filter._message_refs_for_prefix(
+            _messages_with_ids(["m1", "m2"]),
+            2,
+        )
+        legacy_row = types.SimpleNamespace(
+            summary="legacy summary",
+            compressed_message_count=5,
+            updated_at=None,
+        )
+        added_objects = []
+        commits = []
+
+        class FakeChatSummary:
+            pass
+
+        class FakeChatSummarySnapshot:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class FakeQuery:
+            def __init__(self, model):
+                self.model = model
+
+            def filter_by(self, **kwargs):
+                return self
+
+            def first(self):
+                if self.model is FakeChatSummary:
+                    return legacy_row
+                return None
+
+            def all(self):
+                return []
+
+        class FakeSession:
+            def query(self, model):
+                return FakeQuery(model)
+
+            def add(self, obj):
+                added_objects.append(obj)
+
+            def delete(self, obj):
+                raise AssertionError("No snapshots should be pruned in this test")
+
+            def commit(self):
+                commits.append(True)
+
+        class FakeAsyncContext:
+            async def __aenter__(self):
+                return FakeSession()
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        original_summary = module.ChatSummary
+        original_snapshot = module.ChatSummarySnapshot
+        module.ChatSummary = FakeChatSummary
+        module.ChatSummarySnapshot = FakeChatSummarySnapshot
+        self.filter._async_db_session = lambda: FakeAsyncContext()
+
+        try:
+            asyncio.run(
+                self.filter._save_summary(
+                    "chat-1",
+                    "short branch summary",
+                    2,
+                    refs,
+                    source_current_id="m2",
+                )
+            )
+        finally:
+            module.ChatSummary = original_summary
+            module.ChatSummarySnapshot = original_snapshot
+
+        self.assertEqual(legacy_row.summary, "legacy summary")
+        self.assertEqual(legacy_row.compressed_message_count, 5)
+        self.assertEqual(len(added_objects), 1)
+        saved_snapshot = added_objects[0]
+        self.assertEqual(saved_snapshot.summary, "short branch summary")
+        self.assertEqual(saved_snapshot.compressed_message_count, 2)
+        self.assertEqual(saved_snapshot.source_current_id, "m2")
+        self.assertEqual(
+            [ref["id"] for ref in json.loads(saved_snapshot.covered_message_refs_json)],
+            ["m1", "m2"],
+        )
+        self.assertEqual(commits, [True])
+
     def test_load_full_chat_messages_rebuilds_active_history_branch(self):
         class FakeChats:
             @staticmethod
@@ -432,12 +1307,89 @@ class TestAsyncContextCompression(unittest.TestCase):
         original_chats = module.Chats
         module.Chats = FakeChats
         try:
-            messages = self.filter._load_full_chat_messages("chat-1")
+            messages = asyncio.run(self.filter._load_full_chat_messages("chat-1"))
         finally:
             module.Chats = original_chats
 
         self.assertEqual([message["id"] for message in messages], ["m1", "m2", "m3"])
         self.assertEqual(messages[2]["role"], "tool")
+
+    def test_load_chat_history_live_refs_reads_sibling_nodes_from_full_graph(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return types.SimpleNamespace(
+                    chat={
+                        "history": {
+                            "currentId": "new_m4",
+                            "messages": {
+                                "m1": {
+                                    "role": "user",
+                                    "content": "Question",
+                                },
+                                "m2": {
+                                    "role": "assistant",
+                                    "content": "Answer",
+                                    "parentId": "m1",
+                                },
+                                "old_m3": {
+                                    "role": "user",
+                                    "content": "Old branch",
+                                    "parentId": "m2",
+                                },
+                                "new_m3": {
+                                    "role": "user",
+                                    "content": "New branch",
+                                    "parentId": "m2",
+                                },
+                                "new_m4": {
+                                    "role": "assistant",
+                                    "content": "New answer",
+                                    "parentId": "new_m3",
+                                },
+                            },
+                        }
+                    }
+                )
+
+        original_chats = module.Chats
+        module.Chats = FakeChats
+        try:
+            refs_by_id = asyncio.run(
+                self.filter._load_chat_history_live_refs("chat-1")
+            )
+        finally:
+            module.Chats = original_chats
+
+        self.assertIn("old_m3", refs_by_id)
+        self.assertIn("new_m4", refs_by_id)
+        self.assertEqual(refs_by_id["old_m3"]["id"], "old_m3")
+
+    def test_reconstruct_active_history_branch_uses_map_key_when_id_is_missing(self):
+        messages = self.filter._reconstruct_active_history_branch(
+            {
+                "m1": {"role": "user", "content": "Question"},
+                "m2": {
+                    "role": "assistant",
+                    "content": "Answer",
+                    "parentId": "m1",
+                },
+            },
+            "m2",
+        )
+
+        self.assertEqual([message["id"] for message in messages], ["m1", "m2"])
+
+    def test_reconstruct_history_fallback_uses_map_key_when_id_is_missing(self):
+        messages = self.filter._reconstruct_active_history_branch(
+            {
+                "m2": {"role": "assistant", "content": "Answer", "timestamp": 2},
+                "m1": {"role": "user", "content": "Question", "timestamp": 1},
+            },
+            None,
+        )
+
+        self.assertEqual([message["id"] for message in messages], ["m1", "m2"])
 
     def test_outlet_unfolds_compact_tool_details_view(self):
         compact_messages = [
@@ -573,10 +1525,20 @@ class TestAsyncContextCompression(unittest.TestCase):
             captured["conversation_text"] = new_conversation_text
             return "new summary"
 
-        def mock_save_summary(chat_id, summary, compressed_count):
+        async def mock_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
             captured["chat_id"] = chat_id
             captured["summary"] = summary
             captured["compressed_count"] = compressed_count
+            captured["covered_message_refs"] = covered_message_refs
+            captured["source_current_id"] = source_current_id
+            captured["protected_head_count"] = protected_head_count
 
         async def noop_log(*args, **kwargs):
             return None
@@ -596,12 +1558,12 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.filter._count_tokens = lambda text: len(text)
 
         messages = [
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Q" * 100},
-            {"role": "assistant", "content": "A" * 100},
-            {"role": "user", "content": "B" * 100},
-            {"role": "assistant", "content": "C" * 100},
-            {"role": "user", "content": "Question 3"},
+            {"id": "m0", "role": "system", "content": "System prompt"},
+            {"id": "m1", "role": "user", "content": "Q" * 100},
+            {"id": "m2", "role": "assistant", "content": "A" * 100},
+            {"id": "m3", "role": "user", "content": "B" * 100},
+            {"id": "m4", "role": "assistant", "content": "C" * 100},
+            {"id": "m5", "role": "user", "content": "Question 3"},
         ]
 
         asyncio.run(
@@ -619,9 +1581,174 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.assertEqual(captured["chat_id"], "chat-1")
         self.assertEqual(captured["summary"], "new summary")
-        self.assertEqual(captured["compressed_count"], 3)
-        self.assertEqual(captured["conversation_text"], f"{'Q' * 100}\n{'A' * 100}")
+        self.assertEqual(captured["compressed_count"], 4)
+        self.assertEqual(
+            [ref["id"] for ref in captured["covered_message_refs"]],
+            ["m0", "m1", "m2", "m3"],
+        )
+        self.assertEqual(captured["source_current_id"], "m5")
+        self.assertEqual(captured["protected_head_count"], 2)
+        self.assertEqual(captured["conversation_text"], f"{'A' * 100}\n{'B' * 100}")
         self.assertTrue(any(event["type"] == "status" for event in events))
+
+    def test_generate_summary_async_saves_refs_after_reinjected_summary_marker(self):
+        self.filter.valves.keep_first = 0
+        self.filter.valves.keep_last = 0
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 0
+
+        raw_messages = _messages_with_ids(["m0", "m1", "m2", "m3", "m4", "m5"])
+        covered_refs = self.filter._message_refs_for_prefix(raw_messages, 4)
+        summary_message = self.filter._build_summary_message(
+            "older summary",
+            "en-US",
+            4,
+            covered_refs,
+        )
+        reinjected_messages = raw_messages[:4] + [summary_message] + raw_messages[4:]
+        captured = {}
+
+        async def mock_summary_llm(
+            new_conversation_text,
+            body,
+            user_data,
+            __event_call__=None,
+            __request__=None,
+            previous_summary=None,
+        ):
+            captured["conversation_text"] = new_conversation_text
+            captured["previous_summary"] = previous_summary
+            return "new summary"
+
+        async def mock_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
+            captured["chat_id"] = chat_id
+            captured["summary"] = summary
+            captured["compressed_count"] = compressed_count
+            captured["covered_message_refs"] = covered_message_refs
+            captured["source_current_id"] = source_current_id
+            captured["protected_head_count"] = protected_head_count
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._call_summary_llm = mock_summary_llm
+        self.filter._save_summary = mock_save_summary
+        self.filter._format_messages_for_summary = lambda messages: "\n".join(
+            msg["content"] for msg in messages
+        )
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=reinjected_messages,
+                chat_id="chat-1",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=6,
+                lang="en-US",
+                __event_emitter__=None,
+                __event_call__=None,
+            )
+        )
+
+        self.assertEqual(captured["chat_id"], "chat-1")
+        self.assertEqual(captured["summary"], "new summary")
+        self.assertEqual(captured["compressed_count"], 6)
+        self.assertEqual(
+            [ref["id"] for ref in captured["covered_message_refs"]],
+            ["m0", "m1", "m2", "m3", "m4", "m5"],
+        )
+        self.assertEqual(captured["source_current_id"], "m5")
+        self.assertEqual(captured["protected_head_count"], 0)
+        self.assertIn("older summary", captured["conversation_text"])
+        self.assertIsNone(captured["previous_summary"])
+
+    def test_generate_summary_async_skips_snapshot_when_marker_dropped_for_budget(self):
+        # When budgeting forces the embedded summary marker out of the compression
+        # input, the new summary no longer represents the prefix, so no branch-valid
+        # snapshot may be persisted (covered_message_refs must be None).
+        self.filter.valves.keep_first = 0
+        self.filter.valves.keep_last = 0
+        self.filter.valves.summary_model = "fake-summary-model"
+
+        base_messages = _messages_with_ids(["m0", "m1"])
+        marker_refs = self.filter._message_refs_for_prefix(base_messages, 2)
+        marker = self.filter._build_summary_message(
+            "old summary " + "S" * 40, "en-US", 2, marker_refs
+        )
+        messages = [marker] + [
+            {"id": "m2", "role": "user", "content": "aaa"},
+            {"id": "m3", "role": "assistant", "content": "bbb"},
+            {"id": "m4", "role": "user", "content": "ccc"},
+        ]
+        captured = {}
+
+        async def mock_summary_llm(
+            text,
+            body,
+            user_data,
+            __event_call__=None,
+            __request__=None,
+            previous_summary=None,
+        ):
+            return "new summary"
+
+        async def mock_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
+            captured["covered_message_refs"] = covered_message_refs
+            captured["compressed_count"] = compressed_count
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._call_summary_llm = mock_summary_llm
+        self.filter._save_summary = mock_save_summary
+        self.filter._format_messages_for_summary = lambda msgs: "".join(
+            m.get("content", "") for m in msgs
+        )
+        self.filter._build_summary_prompt = (
+            lambda text, previous_summary=None: text
+        )
+        self.filter._count_tokens = len
+        self.filter._get_summary_model_context_limit = lambda model_id: 1000
+        self.filter._compute_summary_request_limits = lambda max_ctx: {
+            "max_input_tokens": 20,
+            "max_output_tokens": 100,
+            "safety_margin_tokens": 10,
+        }
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=messages,
+                chat_id="chat-1",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=5,
+                lang="en-US",
+                __event_emitter__=None,
+                __event_call__=None,
+            )
+        )
+
+        self.assertIn("covered_message_refs", captured)
+        self.assertIsNone(captured["covered_message_refs"])
 
     def test_generate_summary_async_drops_previous_summary_when_prompt_still_oversized(self):
         self.filter.valves.keep_first = 1
@@ -648,7 +1775,10 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.filter._log = noop_log
         self.filter._call_summary_llm = mock_summary_llm
-        self.filter._save_summary = lambda *args: None
+        async def noop_save_summary(*args, **kwargs):
+            return None
+
+        self.filter._save_summary = noop_save_summary
         self.filter._get_model_thresholds = lambda model_id: {
             "max_context_tokens": 1200
         }
@@ -676,14 +1806,14 @@ class TestAsyncContextCompression(unittest.TestCase):
                 chat_id="chat-1",
                 body={"model": "fake-summary-model"},
                 user_data={"id": "user-1"},
-                target_compressed_count=2,
+                target_compressed_count=3,
                 lang="en-US",
                 __event_emitter__=None,
                 __event_call__=None,
             )
         )
 
-        self.assertEqual(captured["conversation_text"], "Q" * 60)
+        self.assertEqual(captured["conversation_text"], "Answer 1")
         self.assertIsNone(captured["previous_summary"])
 
     def test_call_summary_llm_silently_handles_provider_error_dict_by_default(self):
@@ -1046,7 +2176,7 @@ class TestAsyncContextCompression(unittest.TestCase):
                 chat_id="chat-1",
                 body={"model": "fake-summary-model"},
                 user_data={"id": "user-1"},
-                target_compressed_count=2,
+                target_compressed_count=3,
                 lang="en-US",
                 __event_emitter__=fake_emitter,
                 __event_call__=fake_event_call,
@@ -1138,12 +2268,18 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_summary_llm(*args, **kwargs):
             raise Exception("reference summary failed")
 
+        async def no_snapshot(*args, **kwargs):
+            return None
+
+        async def fake_load_full_chat_messages(chat_id):
+            return [
+                {"id": "ref-1", "role": "user", "content": "Referenced question"},
+                {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+            ]
+
         self.filter._call_summary_llm = fake_summary_llm
-        self.filter._load_summary_record = lambda chat_id: None
-        self.filter._load_full_chat_messages = lambda chat_id: [
-            {"role": "user", "content": "Referenced question"},
-            {"role": "assistant", "content": "Referenced answer"},
-        ]
+        self.filter._load_applicable_summary_snapshot = no_snapshot
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
         self.filter._format_messages_for_summary = (
             lambda messages: "Referenced conversation body"
         )
@@ -1179,6 +2315,70 @@ class TestAsyncContextCompression(unittest.TestCase):
             result["__external_references__"]["content"],
         )
 
+    def test_handle_external_chat_references_ignores_partial_cached_summary(self):
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+            {"id": "ref-3", "role": "user", "content": "Referenced follow-up"},
+        ]
+        partial_refs = self.filter._message_refs_for_prefix(ref_messages, 2)
+        partial_snapshot = _snapshot("partial cached summary", partial_refs)
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+        ):
+            self.assertTrue(require_full_coverage)
+            return self.filter._select_applicable_summary_snapshot(
+                [partial_snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+            )
+
+        async def fake_load_full_chat_messages(chat_id):
+            return ref_messages
+
+        async def fail_summary_llm(*args, **kwargs):
+            raise AssertionError("partial cached summary should not force LLM summary")
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._call_summary_llm = fail_summary_llm
+        self.filter._format_messages_for_summary = (
+            lambda messages: "Full referenced conversation body"
+        )
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 10000
+        }
+        self.filter._estimate_messages_tokens = lambda messages: 1
+
+        body = {
+            "model": "main-model",
+            "messages": [{"role": "user", "content": "Current prompt"}],
+            "metadata": {
+                "files": [
+                    {
+                        "type": "chat",
+                        "id": "chat-ref-1",
+                        "name": "Referenced Chat",
+                    }
+                ]
+            },
+        }
+
+        result = asyncio.run(
+            self.filter._handle_external_chat_references(
+                body,
+                user_data={"id": "user-1"},
+            )
+        )
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("Full referenced conversation body", content)
+        self.assertNotIn("partial cached summary", content)
+
     def test_generate_referenced_summaries_background_uses_model_context_window_fallback(
         self,
     ):
@@ -1205,7 +2405,14 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.filter._call_summary_llm = fake_summary_llm
         self.filter._log = noop_log
-        self.filter._save_summary = lambda *args: None
+        async def noop_save_summary(*args, **kwargs):
+            return None
+
+        async def fake_load_full_chat_messages(chat_id):
+            return [{"id": "ref-1", "role": "user", "content": "msg 1"}]
+
+        self.filter._save_summary = noop_save_summary
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
         self.filter._get_model_thresholds = lambda model_id: {
             "max_context_tokens": 5000
         }
@@ -1253,8 +2460,22 @@ class TestAsyncContextCompression(unittest.TestCase):
             captured["previous_summary"] = previous_summary
             return "cached reference summary"
 
-        def fake_save_summary(chat_id, summary, compressed_count):
-            captured["saved"] = (chat_id, summary, compressed_count)
+        async def fake_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
+            captured["saved"] = (
+                chat_id,
+                summary,
+                compressed_count,
+                covered_message_refs,
+                source_current_id,
+                protected_head_count,
+            )
 
         async def noop_log(*args, **kwargs):
             return None
@@ -1262,6 +2483,15 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.filter._call_summary_llm = fake_summary_llm
         self.filter._save_summary = fake_save_summary
         self.filter._log = noop_log
+
+        async def fake_load_full_chat_messages(chat_id):
+            return [
+                {"id": "ref-1", "role": "user", "content": "Referenced question"},
+                {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+                {"id": "ref-3", "role": "user", "content": "Referenced follow-up"},
+            ]
+
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
 
         request = object()
 
@@ -1286,9 +2516,20 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertEqual(captured["user_data"], {"id": "user-1"})
         self.assertIs(captured["request"], request)
         self.assertIsNone(captured["previous_summary"])
-        self.assertEqual(
-            captured["saved"], ("chat-ref-1", "cached reference summary", 3)
-        )
+        (
+            saved_chat_id,
+            saved_summary,
+            saved_count,
+            saved_refs,
+            saved_source_id,
+            saved_protected_head_count,
+        ) = captured["saved"]
+        self.assertEqual(saved_chat_id, "chat-ref-1")
+        self.assertEqual(saved_summary, "cached reference summary")
+        self.assertEqual(saved_count, 3)
+        self.assertEqual([ref["id"] for ref in saved_refs], ["ref-1", "ref-2", "ref-3"])
+        self.assertIsNone(saved_source_id)
+        self.assertEqual(saved_protected_head_count, 0)
 
     def test_generate_referenced_summaries_background_skips_progress_save_for_truncation(self):
         self.filter.valves.summary_model = "fake-summary-model"
@@ -1312,12 +2553,18 @@ class TestAsyncContextCompression(unittest.TestCase):
             return None
 
         self.filter._call_summary_llm = fake_summary_llm
-        self.filter._save_summary = lambda *args: saved_calls.append(args)
+        async def fake_save_summary(*args, **kwargs):
+            saved_calls.append(args)
+
+        self.filter._save_summary = fake_save_summary
         self.filter._log = noop_log
-        self.filter._load_full_chat_messages = lambda chat_id: [
+        async def fake_load_full_chat_messages(chat_id):
+            return [
             {"role": "user", "content": "msg 1"},
             {"role": "assistant", "content": "msg 2"},
-        ]
+            ]
+
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
         self.filter._format_messages_for_summary = lambda messages: "x" * 600
         self.filter._truncate_messages_for_summary = (
             lambda messages, max_tokens: "tail only"

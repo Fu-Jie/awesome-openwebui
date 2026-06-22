@@ -21,6 +21,13 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
 
+## Branch-aware summary reuse
+
+- **Branch-safe cached summaries**: Stored summaries are reused only when every saved message-id + payload-fingerprint ref can be explained as either a current active-branch ancestor or a message proven deleted from the full history graph. Snapshots that still contain live sibling-branch refs are rejected, so new or edited current-branch messages stay in the raw live tail instead of being hidden by an old summary.
+- **Snapshot-based persistence**: The legacy `chat_summary` row remains as a compatibility/current-pointer record, while reusable coverage is stored in branch-specific `chat_summary_snapshot` rows. The filter keeps a bounded set of recent branch checkpoints per chat.
+- **Protected-head tracking**: Snapshots remember how many leading messages were kept outside the summary. If the current `keep_first` policy no longer preserves those messages, the snapshot is not reused as branch-valid coverage.
+- **Safe upgrade behavior**: Legacy summaries without coverage metadata are not trusted as coverage. The first turn after upgrading may send more raw context until a branch-valid snapshot is generated.
+
 ## What's new in 1.6.5
 
 - **Compression style control**: Added a new `compression_style` valve with `aggressive`, `balanced`, and `faithful` modes so you can directly tune summaries for minimum token use or higher context fidelity.
@@ -52,8 +59,8 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 - ✅ Asynchronous summarization that does not block chat responses.
 - ✅ Persistent storage via Open WebUI's shared database connection (PostgreSQL, SQLite, etc.).
 - ✅ Flexible retention policy to keep the first and last N messages.
-- ✅ Smart injection of historical summaries back into the context.
-- ✅ External chat reference summarization with cached-summary reuse, direct injection for small chats, and generated summaries for larger chats.
+- ✅ Branch-aware injection of historical summaries back into the context.
+- ✅ External chat reference summarization with branch-valid cached-summary reuse, direct injection for small chats, and generated summaries for larger chats.
 - ✅ Structure-aware trimming that preserves document structure (headers, intro, conclusion).
 - ✅ Native tool output trimming for cleaner context when using function calling.
 - ✅ Configurable compression style for token-minimal, balanced, or high-fidelity summaries.
@@ -93,7 +100,7 @@ flowchart TD
     C -- No --> D[Load current chat summary if available]
     C -- Yes --> E[Inspect each referenced chat]
 
-    E --> F{Existing cached summary?}
+    E --> F{Branch-valid cached summary?}
     F -- Yes --> G[Reuse cached summary]
     F -- No --> H{Fits direct budget?}
     H -- Yes --> I[Inject full referenced chat text]
@@ -108,7 +115,7 @@ flowchart TD
     L --> D
     M --> D
 
-    D --> N[Build current-chat Head + Summary + Tail]
+    D --> N[Build current-chat Head + validated Summary + Tail]
     N --> O{Over max_context_tokens?}
     O -- Yes --> P[Trim oldest atomic groups]
     O -- No --> Q[Send final context to the model]
@@ -129,7 +136,8 @@ flowchart TD
 
 - `inlet` only injects and trims context. It does not generate the main chat summary.
 - `outlet` performs summary generation asynchronously and does not block the current reply.
-- External chat references may come from an existing persisted summary, a small chat's full text, or a generated/truncated reference summary.
+- External chat references may come from an existing branch-valid persisted summary, a small chat's full text, or a generated/truncated reference summary.
+- Legacy `chat_summary` rows are compatibility records only; current-branch summary coverage is validated through `chat_summary_snapshot` message refs.
 - If a referenced-chat summary call fails, the filter falls back to direct context injection instead of failing the whole request.
 - `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be.
 - Important background summary failures are surfaced to the browser console (`F12`) and the chat status area.
@@ -142,7 +150,7 @@ flowchart TD
 ### 1) Database (automatic)
 
 - Uses Open WebUI's shared database connection; no extra configuration needed.
-- The `chat_summary` table is created on first run.
+- The `chat_summary` and `chat_summary_snapshot` tables are created on first run.
 
 ### 2) Filter order
 

@@ -92,13 +92,21 @@ backend that Open WebUI supports (PostgreSQL, SQLite, etc.).
 No additional database configuration is required - the plugin inherits
 Open WebUI's database settings automatically.
 
-  Table Structure (`chat_summary`):
+  Table Structure (`chat_summary`, compatibility/current pointer):
     - id: Primary Key (auto-increment)
     - chat_id: Unique chat identifier (indexed)
     - summary: The summary content (TEXT)
     - compressed_message_count: The original number of messages
     - created_at: Timestamp of creation
     - updated_at: Timestamp of last update
+
+  Table Structure (`chat_summary_snapshot`, branch-valid reusable coverage):
+    - chat_id: Unique chat identifier (indexed)
+    - summary: The summary content (TEXT)
+    - compressed_message_count: Covered original-history message count
+    - covered_message_refs_json: Ordered message ids + payload fingerprints
+    - covered_refs_hash: Hash of the ordered refs
+    - branch_tip_id/source_current_id: Debugging fields for branch/async saves
 
 ═══════════════════════════════════════════════════════════════════════════════
 📊 Compression Example
@@ -236,13 +244,24 @@ View all summaries:
   FROM chat_summary
   ORDER BY updated_at DESC;
 
+View branch-valid summary snapshots:
+  SELECT
+    chat_id,
+    branch_tip_id,
+    compressed_message_count,
+    updated_at
+  FROM chat_summary_snapshot
+  ORDER BY updated_at DESC;
+
 Query a specific conversation:
   SELECT *
-  FROM chat_summary
+  FROM chat_summary_snapshot
   WHERE chat_id = 'your_chat_id';
 
 Delete old summaries:
   DELETE FROM chat_summary
+  WHERE updated_at < NOW() - INTERVAL '30 days';
+  DELETE FROM chat_summary_snapshot
   WHERE updated_at < NOW() - INTERVAL '30 days';
 
 Statistics:
@@ -259,7 +278,8 @@ Statistics:
 1. Database Connection
    ✓ The plugin uses Open WebUI's shared database connection automatically.
    ✓ No additional configuration is required.
-   ✓ The `chat_summary` table will be created automatically on first run.
+   ✓ The `chat_summary` and `chat_summary_snapshot` tables will be created
+     automatically on first run.
 
 2. Retention Policy
    ⚠ `keep_first` counts only non-system messages. System messages are always
@@ -329,6 +349,7 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 SUMMARY_METADATA_SOURCE = "async_context_compression"
+SUMMARY_SNAPSHOT_RETENTION_LIMIT = 20
 
 # Open WebUI built-in imports
 from open_webui.utils.chat import generate_chat_completion
@@ -488,6 +509,32 @@ class ChatSummary(owui_Base):
     chat_id = Column(String(255), unique=True, nullable=False, index=True)
     summary = Column(Text, nullable=False)
     compressed_message_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class ChatSummarySnapshot(owui_Base):
+    """Branch-aware summary snapshot with exact covered message identity."""
+
+    __tablename__ = "chat_summary_snapshot"
+    __table_args__ = (
+        {"extend_existing": True, "schema": owui_schema}
+        if owui_schema
+        else {"extend_existing": True}
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(String(255), nullable=False, index=True)
+    summary = Column(Text, nullable=False)
+    compressed_message_count = Column(Integer, default=0)
+    covered_message_refs_json = Column(Text, nullable=False)
+    covered_refs_hash = Column(String(64), nullable=True, index=True)
+    branch_tip_id = Column(String(255), nullable=True, index=True)
+    source_current_id = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
@@ -927,7 +974,12 @@ class Filter:
         )
 
     def _build_summary_message(
-        self, summary_text: str, lang: str, covered_until: int
+        self,
+        summary_text: str,
+        lang: str,
+        covered_until: int,
+        covered_message_refs: Optional[List[Dict[str, str]]] = None,
+        protected_head_count: int = 0,
     ) -> Dict[str, Any]:
         """Create a summary marker message with original-history progress metadata."""
         summary_content = (
@@ -935,14 +987,26 @@ class Filter:
             + f"{summary_text}"
             + self._get_translation(lang, "summary_prompt_suffix")
         )
+        metadata = {
+            "is_summary": True,
+            "source": SUMMARY_METADATA_SOURCE,
+            "covered_until": max(0, int(covered_until)),
+        }
+        if covered_message_refs:
+            metadata["covered_message_refs"] = covered_message_refs
+            metadata["covered_refs_hash"] = self._message_refs_hash(
+                covered_message_refs
+            )
+        protected_count = self._normalize_protected_head_count(
+            protected_head_count, max_count=covered_until
+        )
+        if protected_count > 0:
+            metadata["protected_head_count"] = protected_count
+
         return {
             "role": "assistant",
             "content": summary_content,
-            "metadata": {
-                "is_summary": True,
-                "source": SUMMARY_METADATA_SOURCE,
-                "covered_until": max(0, int(covered_until)),
-            },
+            "metadata": metadata,
         }
 
     def _is_external_reference_message(self, message: Dict[str, Any]) -> bool:
@@ -973,6 +1037,515 @@ class Filter:
             }
 
         return {"summary_index": None, "base_progress": 0}
+
+    def _get_message_id(self, message: Dict[str, Any]) -> Optional[str]:
+        """Return the stable OpenWebUI message node id when available."""
+        message_id = message.get("id") or message.get("message_id")
+        return message_id if isinstance(message_id, str) and message_id else None
+
+    def _message_fingerprint(self, message: Dict[str, Any]) -> str:
+        """Fingerprint the model-visible payload to detect in-place edits."""
+        payload = {
+            "role": message.get("role"),
+            "content": message.get("content"),
+            "output": message.get("output"),
+            "tool_calls": message.get("tool_calls"),
+            "tool_call_id": message.get("tool_call_id"),
+            "files": message.get("files"),
+            "sources": message.get("sources"),
+            "images": message.get("images"),
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _message_ref(self, message: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """Return compact branch identity for one original chat message."""
+        message_id = self._get_message_id(message)
+        if not message_id:
+            return None
+        return {"id": message_id, "fingerprint": self._message_fingerprint(message)}
+
+    def _message_refs_hash(self, refs: List[Dict[str, str]]) -> str:
+        encoded = json.dumps(
+            refs,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _normalize_message_refs(
+        self, refs: Any
+    ) -> Optional[List[Dict[str, str]]]:
+        """Validate refs loaded from DB or summary marker metadata."""
+        if not isinstance(refs, list):
+            return None
+
+        normalized: List[Dict[str, str]] = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                return None
+            message_id = ref.get("id")
+            fingerprint = ref.get("fingerprint")
+            if not isinstance(message_id, str) or not message_id:
+                return None
+            if not isinstance(fingerprint, str) or not fingerprint:
+                return None
+            normalized.append({"id": message_id, "fingerprint": fingerprint})
+
+        return normalized
+
+    def _normalize_protected_head_count(
+        self, value: Any, max_count: Optional[int] = None
+    ) -> int:
+        try:
+            count = int(value)
+        except Exception:
+            count = 0
+        count = max(0, count)
+        if max_count is not None:
+            count = min(count, max(0, int(max_count)))
+        return count
+
+    def _snapshot_refs_json(
+        self, refs: List[Dict[str, str]], protected_head_count: int = 0
+    ) -> str:
+        protected_count = self._normalize_protected_head_count(
+            protected_head_count, max_count=len(refs)
+        )
+        payload: Any = refs
+        if protected_count > 0:
+            payload = {
+                "refs": refs,
+                "protected_head_count": protected_count,
+            }
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _parse_message_refs_json(
+        self, refs_json: Any
+    ) -> Optional[List[Dict[str, str]]]:
+        if not isinstance(refs_json, str) or not refs_json:
+            return None
+        try:
+            payload = json.loads(refs_json)
+            if isinstance(payload, dict):
+                payload = payload.get("refs")
+            return self._normalize_message_refs(payload)
+        except Exception:
+            return None
+
+    def _parse_protected_head_count_json(self, refs_json: Any) -> int:
+        if not isinstance(refs_json, str) or not refs_json:
+            return 0
+        try:
+            payload = json.loads(refs_json)
+        except Exception:
+            return 0
+        if not isinstance(payload, dict):
+            return 0
+        refs = self._normalize_message_refs(payload.get("refs")) or []
+        return self._normalize_protected_head_count(
+            payload.get("protected_head_count"), max_count=len(refs)
+        )
+
+    def _summary_marker_refs(
+        self, message: Dict[str, Any]
+    ) -> Optional[List[Dict[str, str]]]:
+        if not self._is_summary_message(message):
+            return None
+        metadata = message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return None
+        return self._normalize_message_refs(metadata.get("covered_message_refs"))
+
+    def _summary_marker_protected_head_count(self, message: Dict[str, Any]) -> int:
+        if not self._is_summary_message(message):
+            return 0
+        metadata = message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return 0
+        refs = self._summary_marker_refs(message) or []
+        return self._normalize_protected_head_count(
+            metadata.get("protected_head_count"), max_count=len(refs)
+        )
+
+    def _message_refs_for_prefix(
+        self, messages: List[Dict], covered_count: int
+    ) -> Optional[List[Dict[str, str]]]:
+        """Return refs for the first covered_count original-history messages.
+
+        A summary marker can stand in for an already-validated prefix only when
+        its metadata carries the exact refs selected by inlet. Legacy markers do
+        not provide that proof, so callers must treat them as untrusted coverage.
+        """
+        if covered_count < 0:
+            return None
+        if covered_count == 0:
+            return []
+
+        refs: List[Dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                return None
+
+            marker_refs = self._summary_marker_refs(message)
+            if marker_refs is not None:
+                overlap_count = min(len(refs), len(marker_refs))
+                if refs[:overlap_count] != marker_refs[:overlap_count]:
+                    return None
+                if len(refs) < len(marker_refs):
+                    missing_marker_refs = marker_refs[len(refs) :]
+                    if len(refs) + len(missing_marker_refs) > covered_count:
+                        return None
+                    refs.extend(missing_marker_refs)
+            else:
+                message_ref = self._message_ref(message)
+                if message_ref is None:
+                    return None
+                refs.append(message_ref)
+
+            if len(refs) == covered_count:
+                return refs
+            if len(refs) > covered_count:
+                return None
+
+        return None
+
+    def _current_branch_refs(
+        self, messages: List[Dict]
+    ) -> Optional[List[Dict[str, str]]]:
+        return self._message_refs_for_prefix(
+            messages,
+            self._get_original_history_count(messages),
+        )
+
+    def _history_graph_refs_by_id(
+        self, history_messages: Any
+    ) -> Optional[Dict[str, Dict[str, str]]]:
+        """Return live refs for every node in OpenWebUI's full history graph."""
+        if not isinstance(history_messages, dict):
+            return None
+
+        refs: Dict[str, Dict[str, str]] = {}
+        for message_id, node in history_messages.items():
+            if not isinstance(node, dict):
+                return None
+            message = deepcopy(node)
+            if isinstance(message_id, str):
+                message.setdefault("id", message_id)
+            message_ref = self._message_ref(message)
+            if message_ref is None:
+                return None
+            refs[message_ref["id"]] = message_ref
+
+        return refs
+
+    def _refs_common_prefix_length(
+        self,
+        left: List[Dict[str, str]],
+        right: List[Dict[str, str]],
+    ) -> int:
+        count = 0
+        for left_ref, right_ref in zip(left, right):
+            if left_ref != right_ref:
+                break
+            count += 1
+        return count
+
+    def _snapshot_coverage_for_current_branch(
+        self,
+        snapshot_refs: List[Dict[str, str]],
+        current_refs: List[Dict[str, str]],
+        max_current_count: int,
+        live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> tuple[int, int, Optional[str]]:
+        """Validate a snapshot against the current branch and full history graph.
+
+        A summary is indivisible text: every stored ref in the snapshot must be
+        explained. It can match the next current-branch ref, or it can be skipped
+        only when the full history graph proves that ref no longer exists. A ref
+        that still exists outside the current ancestor chain is a live sibling
+        branch and makes the snapshot unsafe for this branch.
+        """
+        matched_current_count = 0
+        skipped_deleted_count = 0
+        target_count = min(len(current_refs), max(0, max_current_count))
+        current_refs_by_id = {ref["id"]: ref for ref in current_refs}
+
+        for snapshot_ref in snapshot_refs:
+            snapshot_id = snapshot_ref["id"]
+
+            if matched_current_count < target_count:
+                expected_current_ref = current_refs[matched_current_count]
+                if snapshot_ref == expected_current_ref:
+                    matched_current_count += 1
+                    continue
+                if snapshot_id == expected_current_ref["id"]:
+                    return (
+                        matched_current_count,
+                        skipped_deleted_count,
+                        f"edited current ref at position {matched_current_count}",
+                    )
+
+            current_ref = current_refs_by_id.get(snapshot_id)
+            if current_ref is not None:
+                if current_ref == snapshot_ref:
+                    reason = (
+                        "snapshot covers live current ref beyond safe boundary"
+                        if matched_current_count >= target_count
+                        else "snapshot ref is out of current branch order"
+                    )
+                else:
+                    reason = "snapshot ref matches a current id with old payload"
+                return matched_current_count, skipped_deleted_count, reason
+
+            if live_message_refs_by_id is None:
+                return (
+                    matched_current_count,
+                    skipped_deleted_count,
+                    "unmatched snapshot ref without complete history graph",
+                )
+
+            live_ref = live_message_refs_by_id.get(snapshot_id)
+            if live_ref is not None:
+                reason = (
+                    "snapshot contains live sibling branch ref"
+                    if live_ref == snapshot_ref
+                    else "snapshot contains live ref with stale payload"
+                )
+                return matched_current_count, skipped_deleted_count, reason
+
+            skipped_deleted_count += 1
+
+        return matched_current_count, skipped_deleted_count, None
+
+    def _summary_snapshot_updated_timestamp(self, snapshot: Any) -> float:
+        updated_at = getattr(snapshot, "updated_at", None) or getattr(
+            snapshot, "created_at", None
+        )
+        if not isinstance(updated_at, datetime):
+            return 0.0
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        return updated_at.timestamp()
+
+    def _summary_snapshot_selection_key(self, snapshot: Any) -> tuple[int, float]:
+        return (
+            int(getattr(snapshot, "compressed_message_count", 0) or 0),
+            self._summary_snapshot_updated_timestamp(snapshot),
+        )
+
+    def _summary_snapshots_to_prune(
+        self,
+        snapshots: List[Any],
+        limit: int = SUMMARY_SNAPSHOT_RETENTION_LIMIT,
+    ) -> List[Any]:
+        if limit <= 0 or len(snapshots) <= limit:
+            return []
+
+        # Retention favors recent checkpoints first, then larger coverage. A
+        # shorter recent prefix may be the only reusable summary after branching.
+        keep = set(
+            id(snapshot)
+            for snapshot in sorted(
+                snapshots,
+                key=lambda snapshot: (
+                    self._summary_snapshot_updated_timestamp(snapshot),
+                    int(getattr(snapshot, "compressed_message_count", 0) or 0),
+                ),
+                reverse=True,
+            )[:limit]
+        )
+        # Always keep the snapshot covering the smallest prefix: after an early
+        # branch divergence it is the most general (most likely common-ancestor)
+        # summary, and pure recency/size retention is exactly what evicts it.
+        shortest = min(
+            snapshots,
+            key=lambda snapshot: (
+                int(getattr(snapshot, "compressed_message_count", 0) or 0),
+                -self._summary_snapshot_updated_timestamp(snapshot),
+            ),
+        )
+        keep.add(id(shortest))
+        return [snapshot for snapshot in snapshots if id(snapshot) not in keep]
+
+    def _annotate_summary_snapshot_selection(
+        self,
+        snapshot: Any,
+        current_coverage_count: int,
+        current_coverage_refs: List[Dict[str, str]],
+        protected_head_count: int,
+    ) -> Any:
+        """Attach current-branch coverage metadata to the selected snapshot."""
+        setattr(snapshot, "_current_coverage_count", current_coverage_count)
+        setattr(snapshot, "_current_coverage_refs", current_coverage_refs)
+        setattr(snapshot, "_current_protected_head_count", protected_head_count)
+        return snapshot
+
+    def _summary_snapshot_current_coverage_count(self, snapshot: Any) -> int:
+        return int(
+            getattr(
+                snapshot,
+                "_current_coverage_count",
+                getattr(snapshot, "compressed_message_count", 0),
+            )
+            or 0
+        )
+
+    def _summary_snapshot_current_coverage_refs(
+        self, snapshot: Any
+    ) -> Optional[List[Dict[str, str]]]:
+        current_refs = self._normalize_message_refs(
+            getattr(snapshot, "_current_coverage_refs", None)
+        )
+        if current_refs is not None:
+            return current_refs
+        return self._parse_message_refs_json(
+            getattr(snapshot, "covered_message_refs_json", None)
+        )
+
+    def _summary_snapshot_current_protected_head_count(self, snapshot: Any) -> int:
+        current_count = getattr(snapshot, "_current_protected_head_count", None)
+        if current_count is not None:
+            return self._normalize_protected_head_count(
+                current_count,
+                max_count=self._summary_snapshot_current_coverage_count(snapshot),
+            )
+        return self._parse_protected_head_count_json(
+            getattr(snapshot, "covered_message_refs_json", None)
+        )
+
+    def _select_applicable_summary_snapshot(
+        self,
+        snapshots: List[Any],
+        messages: List[Dict],
+        require_full_coverage: bool = False,
+        live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> Optional[Any]:
+        """Choose the best snapshot that is safe for the current active branch."""
+        current_refs = self._current_branch_refs(messages)
+        if current_refs is None:
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Summary Snapshot] Current messages do not expose stable refs; "
+                    "skipping validated summary reuse."
+                )
+            return None
+
+        if require_full_coverage:
+            safe_boundary = len(current_refs)
+        else:
+            safe_boundary = min(
+                len(current_refs),
+                max(0, self._calculate_target_compressed_count(messages)),
+            )
+        effective_keep_first = self._get_effective_keep_first(messages)
+        best_snapshot = None
+        best_score = None
+
+        for snapshot in sorted(
+            snapshots,
+            key=self._summary_snapshot_selection_key,
+            reverse=True,
+        ):
+            snapshot_refs = self._parse_message_refs_json(
+                getattr(snapshot, "covered_message_refs_json", None)
+            )
+            if not snapshot_refs:
+                continue
+
+            count = int(getattr(snapshot, "compressed_message_count", 0) or 0)
+            if count <= 0 or count != len(snapshot_refs):
+                continue
+            protected_head_count = self._parse_protected_head_count_json(
+                getattr(snapshot, "covered_message_refs_json", None)
+            )
+            if protected_head_count > effective_keep_first:
+                if self.valves.debug_mode:
+                    logger.info(
+                        "[Summary Snapshot] Rejecting snapshot because it depends "
+                        f"on {protected_head_count} protected head messages but "
+                        f"current keep-first only preserves {effective_keep_first}."
+                    )
+                continue
+
+            (
+                matched_current_count,
+                skipped_deleted_count,
+                rejection_reason,
+            ) = self._snapshot_coverage_for_current_branch(
+                snapshot_refs,
+                current_refs,
+                safe_boundary,
+                live_message_refs_by_id=live_message_refs_by_id,
+            )
+            if rejection_reason:
+                if self.valves.debug_mode:
+                    logger.info(
+                        "[Summary Snapshot] Rejecting snapshot: "
+                        f"{rejection_reason}; matched_current_prefix={matched_current_count}, "
+                        f"skipped_deleted_refs={skipped_deleted_count}, "
+                        f"snapshot_tip={getattr(snapshot, 'branch_tip_id', None)}"
+                    )
+                continue
+            if require_full_coverage and matched_current_count != len(current_refs):
+                continue
+            if matched_current_count <= 0:
+                continue
+            if matched_current_count < effective_keep_first:
+                continue
+
+            aligned_count = self._align_tail_start_to_atomic_boundary(
+                messages, matched_current_count, effective_keep_first
+            )
+            if aligned_count != matched_current_count:
+                if self.valves.debug_mode:
+                    logger.info(
+                        "[Summary Snapshot] Rejecting snapshot because coverage "
+                        f"{matched_current_count} cuts an atomic group "
+                        f"(aligned={aligned_count})."
+                    )
+                continue
+
+            score = (
+                matched_current_count,
+                -skipped_deleted_count,
+                self._summary_snapshot_updated_timestamp(snapshot),
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_snapshot = self._annotate_summary_snapshot_selection(
+                    snapshot,
+                    matched_current_count,
+                    current_refs[:matched_current_count],
+                    protected_head_count,
+                )
+                continue
+
+            if self.valves.debug_mode:
+                common = self._refs_common_prefix_length(
+                    snapshot_refs,
+                    current_refs[: min(len(snapshot_refs), len(current_refs))],
+                )
+                logger.info(
+                    "[Summary Snapshot] Skipping lower-ranked/stale snapshot: "
+                    f"count={count}, matched_current_prefix={matched_current_count}, "
+                    f"common_prefix={common}, "
+                    f"snapshot_tip={getattr(snapshot, 'branch_tip_id', None)}"
+                )
+
+        return best_snapshot
 
     def _get_original_history_count(self, messages: List[Dict]) -> int:
         """Map the current visible message list back to original-history size."""
@@ -1028,7 +1601,9 @@ class Filter:
                 if not isinstance(node, dict):
                     break
 
-                ordered_messages.append(deepcopy(node))
+                message = deepcopy(node)
+                message.setdefault("id", cursor)
+                ordered_messages.append(message)
                 cursor = node.get("parentId") or node.get("parent_id")
 
             if ordered_messages:
@@ -1036,7 +1611,7 @@ class Filter:
                 return ordered_messages
 
         sortable_messages = []
-        for index, node in enumerate(history_messages.values()):
+        for index, (message_id, node) in enumerate(history_messages.items()):
             if not isinstance(node, dict):
                 continue
 
@@ -1046,7 +1621,10 @@ class Filter:
             if not isinstance(timestamp, (int, float)):
                 timestamp = index
 
-            sortable_messages.append((float(timestamp), index, deepcopy(node)))
+            message = deepcopy(node)
+            if isinstance(message_id, str):
+                message.setdefault("id", message_id)
+            sortable_messages.append((float(timestamp), index, message))
 
         sortable_messages.sort(key=lambda item: (item[0], item[1]))
         return [message for _, _, message in sortable_messages]
@@ -1080,6 +1658,33 @@ class Filter:
 
         current_id = history.get("currentId") or history.get("current_id")
         return self._reconstruct_active_history_branch(history_messages, current_id)
+
+    async def _load_chat_history_live_refs(
+        self, chat_id: str
+    ) -> Optional[Dict[str, Dict[str, str]]]:
+        """Load refs for all live nodes in a chat's full OpenWebUI history graph."""
+        if not chat_id or Chats is None:
+            return None
+
+        try:
+            chat_record = await _call_db(Chats.get_chat_by_id, chat_id)
+        except Exception as exc:
+            logger.warning(f"[Chat Load] Failed to fetch chat graph {chat_id}: {exc}")
+            return None
+
+        chat_payload = getattr(chat_record, "chat", None)
+        if not isinstance(chat_payload, dict):
+            return None
+
+        history = chat_payload.get("history")
+        if not isinstance(history, dict):
+            return None
+
+        history_messages = history.get("messages")
+        if not isinstance(history_messages, dict) or not history_messages:
+            return None
+
+        return self._history_graph_refs_by_id(history_messages)
 
     def _shorten_tool_call_id(self, tool_call_id: str, max_length: int = 40) -> str:
         """Keep tool call IDs within provider limits while staying deterministic."""
@@ -1569,16 +2174,21 @@ class Filter:
                     "Open WebUI database engine is unavailable. Ensure Open WebUI is configured with a valid DATABASE_URL."
                 )
 
-            # Check if table exists using SQLAlchemy inspect
+            # Check if tables exist using SQLAlchemy inspect
             inspector = inspect(self._db_engine)
             # Support schema if configured
-            has_table = (
+            has_summary_table = (
                 inspector.has_table("chat_summary", schema=owui_schema)
                 if owui_schema
                 else inspector.has_table("chat_summary")
             )
+            has_snapshot_table = (
+                inspector.has_table("chat_summary_snapshot", schema=owui_schema)
+                if owui_schema
+                else inspector.has_table("chat_summary_snapshot")
+            )
 
-            if not has_table:
+            if not has_summary_table:
                 # Create the chat_summary table if it doesn't exist
                 ChatSummary.__table__.create(bind=self._db_engine, checkfirst=True)
                 logger.info(
@@ -1587,6 +2197,18 @@ class Filter:
             else:
                 logger.info(
                     "[Database] ✅ Using Open WebUI's shared database connection. chat_summary table already exists."
+                )
+
+            if not has_snapshot_table:
+                ChatSummarySnapshot.__table__.create(
+                    bind=self._db_engine, checkfirst=True
+                )
+                logger.info(
+                    "[Database] ✅ Successfully created chat_summary_snapshot table using Open WebUI's shared database connection."
+                )
+            else:
+                logger.info(
+                    "[Database] ✅ Using Open WebUI's shared database connection. chat_summary_snapshot table already exists."
                 )
 
         except Exception as e:
@@ -1734,37 +2356,41 @@ class Filter:
             if not ref_chat_id:
                 continue
 
-            summary_record = await self._load_summary_record(ref_chat_id)
+            chat_messages = await self._load_full_chat_messages(ref_chat_id)
+            if not chat_messages:
+                if __event_call__:
+                    await self._log(
+                        f"[Inlet] ⚠️ No messages found for '{ref_chat_title}', skipping",
+                        event_call=__event_call__,
+                    )
+                continue
 
-            if summary_record and summary_record.summary:
+            summary_snapshot = await self._load_applicable_summary_snapshot(
+                ref_chat_id,
+                chat_messages,
+                require_full_coverage=True,
+            )
+
+            if summary_snapshot and summary_snapshot.summary:
                 remaining_direct_budget = max(
                     0,
                     remaining_direct_budget
-                    - _estimate_text_tokens(summary_record.summary),
+                    - _estimate_text_tokens(summary_snapshot.summary),
                 )
                 referenced_summaries.append(
                     {
                         "chat_id": ref_chat_id,
                         "title": ref_chat_title,
-                        "summary": summary_record.summary,
+                        "summary": summary_snapshot.summary,
                         "type": "existing",
                     }
                 )
                 if __event_call__:
                     await self._log(
-                        f"[Inlet] ✅ Found existing summary for referenced chat '{ref_chat_title}' ({len(summary_record.summary)} chars)",
+                        f"[Inlet] ✅ Found branch-valid summary for referenced chat '{ref_chat_title}' ({len(summary_snapshot.summary)} chars)",
                         event_call=__event_call__,
                     )
             else:
-                chat_messages = await self._load_full_chat_messages(ref_chat_id)
-                if not chat_messages:
-                    if __event_call__:
-                        await self._log(
-                            f"[Inlet] ⚠️ No messages found for '{ref_chat_title}', skipping",
-                            event_call=__event_call__,
-                        )
-                    continue
-
                 conversation_text = self._format_messages_for_summary(chat_messages)
                 estimated_tokens = _estimate_text_tokens(conversation_text)
                 inject_full_chat = estimated_tokens <= max(0, remaining_direct_budget)
@@ -1888,10 +2514,16 @@ class Filter:
                         and covers_full_history
                         and covered_message_count > 0
                     ):
+                        covered_refs = self._message_refs_for_prefix(
+                            chat_messages,
+                            covered_message_count,
+                        )
                         await self._save_summary(
                             ref_chat_id,
                             summary,
                             covered_message_count,
+                            covered_refs,
+                            protected_head_count=0,
                         )
                         if __event_call__:
                             await self._log(
@@ -1952,6 +2584,7 @@ class Filter:
             if not ref_chat_id:
                 continue
 
+            chat_messages: Optional[List[Dict[str, Any]]] = None
             summary_input_text = referenced_chat.get("conversation_text", "")
             covers_full_history = bool(referenced_chat.get("covers_full_history", True))
             covered_message_count = int(
@@ -2008,16 +2641,82 @@ class Filter:
             )
 
             if covers_full_history and covered_message_count > 0:
+                if chat_messages is None:
+                    chat_messages = await self._load_full_chat_messages(ref_chat_id)
+                covered_refs = self._message_refs_for_prefix(
+                    chat_messages or [],
+                    covered_message_count,
+                )
                 await self._save_summary(
                     ref_chat_id,
                     summary,
                     covered_message_count,
+                    covered_refs,
+                    protected_head_count=0,
                 )
 
         return generated_summaries
 
-    async def _save_summary(self, chat_id: str, summary: str, compressed_count: int):
-        """Saves the summary to the database (async, compatible with 0.9.0 async sessions)."""
+    async def _prune_summary_snapshots_async(
+        self,
+        session: Any,
+        select_fn: Callable,
+        chat_id: str,
+    ) -> None:
+        # Pruning is best-effort maintenance. A failure here (lock timeout,
+        # serialization error) must never abort the enclosing snapshot save, so
+        # swallow and log instead of letting it propagate and roll back the write.
+        try:
+            result = await session.execute(
+                select_fn(ChatSummarySnapshot).filter_by(chat_id=chat_id)
+            )
+            snapshots = list(result.scalars().all())
+            for snapshot in self._summary_snapshots_to_prune(snapshots):
+                await session.delete(snapshot)
+        except Exception as exc:
+            logger.warning(f"[Storage] Snapshot prune skipped (non-fatal): {exc}")
+
+    def _prune_summary_snapshots_sync(self, session: Any, chat_id: str) -> None:
+        try:
+            snapshots = (
+                session.query(ChatSummarySnapshot).filter_by(chat_id=chat_id).all()
+            )
+            for snapshot in self._summary_snapshots_to_prune(list(snapshots)):
+                session.delete(snapshot)
+        except Exception as exc:
+            logger.warning(f"[Storage] Snapshot prune skipped (non-fatal): {exc}")
+
+    async def _save_summary(
+        self,
+        chat_id: str,
+        summary: str,
+        compressed_count: int,
+        covered_message_refs: Optional[List[Dict[str, str]]] = None,
+        source_current_id: Optional[str] = None,
+        protected_head_count: int = 0,
+    ):
+        """Save summary text.
+
+        Branch-valid coverage is stored in chat_summary_snapshot when exact refs
+        are available. chat_summary remains a compatibility/current-pointer row
+        and must not be trusted by inlet as coverage proof.
+        """
+        normalized_refs = self._normalize_message_refs(covered_message_refs)
+        refs_json = (
+            self._snapshot_refs_json(normalized_refs, protected_head_count)
+            if normalized_refs
+            else None
+        )
+        # Dedup key must distinguish snapshots that share the same refs but were
+        # saved with a different protected_head_count; hashing refs_json (which
+        # embeds the head count when non-zero) keeps those as separate rows.
+        refs_hash = (
+            hashlib.sha256(refs_json.encode("utf-8")).hexdigest()
+            if refs_json
+            else None
+        )
+        branch_tip_id = normalized_refs[-1]["id"] if normalized_refs else None
+
         try:
             async with self._async_db_session() as session:
                 # Detect session type: async sessions expose execute as a coroutinefunction
@@ -2031,17 +2730,18 @@ class Filter:
                     existing = result.scalars().first()
 
                     if existing:
-                        # Optimistic lock: skip if progress hasn't advanced
-                        if compressed_count <= existing.compressed_message_count:
-                            if self.valves.debug_mode:
-                                logger.info(
-                                    f"[Storage] Skipping update: New progress ({compressed_count}) "
-                                    f"<= existing ({existing.compressed_message_count})"
-                                )
-                            return
-                        existing.summary = summary
-                        existing.compressed_message_count = compressed_count
-                        existing.updated_at = datetime.now(timezone.utc)
+                        # chat_summary is only a legacy/current-pointer row. If a
+                        # smaller branch-valid checkpoint arrives late, keep the
+                        # pointer as-is but still persist the snapshot below.
+                        if compressed_count > existing.compressed_message_count:
+                            existing.summary = summary
+                            existing.compressed_message_count = compressed_count
+                            existing.updated_at = datetime.now(timezone.utc)
+                        elif self.valves.debug_mode:
+                            logger.info(
+                                f"[Storage] Keeping legacy summary pointer: New progress ({compressed_count}) "
+                                f"<= existing ({existing.compressed_message_count})"
+                            )
                     else:
                         new_summary = ChatSummary(
                             chat_id=chat_id,
@@ -2049,6 +2749,41 @@ class Filter:
                             compressed_message_count=compressed_count,
                         )
                         session.add(new_summary)
+
+                    if normalized_refs and refs_json and refs_hash:
+                        result = await session.execute(
+                            select(ChatSummarySnapshot).filter_by(
+                                chat_id=chat_id,
+                                covered_refs_hash=refs_hash,
+                            )
+                        )
+                        existing_snapshot = result.scalars().first()
+                        if existing_snapshot:
+                            existing_snapshot.summary = summary
+                            existing_snapshot.compressed_message_count = (
+                                compressed_count
+                            )
+                            existing_snapshot.covered_message_refs_json = refs_json
+                            existing_snapshot.branch_tip_id = branch_tip_id
+                            existing_snapshot.source_current_id = source_current_id
+                            existing_snapshot.updated_at = datetime.now(timezone.utc)
+                        else:
+                            session.add(
+                                ChatSummarySnapshot(
+                                    chat_id=chat_id,
+                                    summary=summary,
+                                    compressed_message_count=compressed_count,
+                                    covered_message_refs_json=refs_json,
+                                    covered_refs_hash=refs_hash,
+                                    branch_tip_id=branch_tip_id,
+                                    source_current_id=source_current_id,
+                                )
+                            )
+                        await self._prune_summary_snapshots_async(
+                            session,
+                            select,
+                            chat_id,
+                        )
 
                     await session.commit()
 
@@ -2064,16 +2799,15 @@ class Filter:
                     )
 
                     if existing:
-                        if compressed_count <= existing.compressed_message_count:
-                            if self.valves.debug_mode:
-                                logger.info(
-                                    f"[Storage] Skipping update: New progress ({compressed_count}) "
-                                    f"<= existing ({existing.compressed_message_count})"
-                                )
-                            return
-                        existing.summary = summary
-                        existing.compressed_message_count = compressed_count
-                        existing.updated_at = datetime.now(timezone.utc)
+                        if compressed_count > existing.compressed_message_count:
+                            existing.summary = summary
+                            existing.compressed_message_count = compressed_count
+                            existing.updated_at = datetime.now(timezone.utc)
+                        elif self.valves.debug_mode:
+                            logger.info(
+                                f"[Storage] Keeping legacy summary pointer: New progress ({compressed_count}) "
+                                f"<= existing ({existing.compressed_message_count})"
+                            )
                     else:
                         new_summary = ChatSummary(
                             chat_id=chat_id,
@@ -2081,6 +2815,35 @@ class Filter:
                             compressed_message_count=compressed_count,
                         )
                         session.add(new_summary)
+
+                    if normalized_refs and refs_json and refs_hash:
+                        existing_snapshot = (
+                            session.query(ChatSummarySnapshot)
+                            .filter_by(chat_id=chat_id, covered_refs_hash=refs_hash)
+                            .first()
+                        )
+                        if existing_snapshot:
+                            existing_snapshot.summary = summary
+                            existing_snapshot.compressed_message_count = (
+                                compressed_count
+                            )
+                            existing_snapshot.covered_message_refs_json = refs_json
+                            existing_snapshot.branch_tip_id = branch_tip_id
+                            existing_snapshot.source_current_id = source_current_id
+                            existing_snapshot.updated_at = datetime.now(timezone.utc)
+                        else:
+                            session.add(
+                                ChatSummarySnapshot(
+                                    chat_id=chat_id,
+                                    summary=summary,
+                                    compressed_message_count=compressed_count,
+                                    covered_message_refs_json=refs_json,
+                                    covered_refs_hash=refs_hash,
+                                    branch_tip_id=branch_tip_id,
+                                    source_current_id=source_current_id,
+                                )
+                            )
+                        self._prune_summary_snapshots_sync(session, chat_id)
 
                     session.commit()
 
@@ -2092,6 +2855,57 @@ class Filter:
 
         except Exception as e:
             logger.error(f"[Storage] ❌ Database save failed: {str(e)}")
+
+    async def _load_summary_snapshots(self, chat_id: str) -> List[ChatSummarySnapshot]:
+        """Load branch-aware summary snapshots for a chat."""
+        try:
+            async with self._async_db_session() as session:
+                if iscoroutinefunction(getattr(session, "execute", None)):
+                    from sqlalchemy import select
+
+                    result = await session.execute(
+                        select(ChatSummarySnapshot).filter_by(chat_id=chat_id)
+                    )
+                    snapshots = list(result.scalars().all())
+                    # Detach so attribute access in the selector (after the
+                    # session closes) cannot raise DetachedInstanceError.
+                    try:
+                        session.expunge_all()
+                    except Exception:
+                        pass
+                    return snapshots
+
+                snapshots = (
+                    session.query(ChatSummarySnapshot).filter_by(chat_id=chat_id).all()
+                )
+                for snapshot in snapshots:
+                    try:
+                        session.expunge(snapshot)
+                    except Exception:
+                        pass
+                return list(snapshots)
+        except Exception as e:
+            logger.error(f"[Load] ❌ Snapshot read failed: {str(e)}")
+            return []
+
+    async def _load_applicable_summary_snapshot(
+        self,
+        chat_id: str,
+        messages: List[Dict],
+        require_full_coverage: bool = False,
+        live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> Optional[ChatSummarySnapshot]:
+        snapshots = await self._load_summary_snapshots(chat_id)
+        if not snapshots:
+            return None
+        if live_message_refs_by_id is None:
+            live_message_refs_by_id = await self._load_chat_history_live_refs(chat_id)
+        return self._select_applicable_summary_snapshot(
+            snapshots,
+            messages,
+            require_full_coverage=require_full_coverage,
+            live_message_refs_by_id=live_message_refs_by_id,
+        )
 
     async def _load_summary_record(self, chat_id: str) -> Optional[ChatSummary]:
         """Loads the summary record object from the database (async, compatible with 0.9.0)."""
@@ -3221,8 +4035,13 @@ class Filter:
             event_call=__event_call__,
         )
 
-        # Load summary record
-        summary_record = await self._load_summary_record(chat_id)
+        # Load only branch-valid snapshots. The legacy chat_summary row is kept
+        # for compatibility/current-pointer storage, but its count cannot prove
+        # that the summary covers this active OpenWebUI branch.
+        summary_snapshot = await self._load_applicable_summary_snapshot(
+            chat_id,
+            messages,
+        )
 
         # Calculate effective_keep_first to ensure all system messages are protected
         effective_keep_first = self._get_effective_keep_first(messages)
@@ -3230,10 +4049,15 @@ class Filter:
         final_messages = []
         external_refs_injected_count = 0
 
-        if summary_record:
+        if summary_snapshot:
             # Summary exists, build view: [Head] + [Summary Message] + [Tail]
             # Tail is all messages after the last compression point
-            compressed_count = summary_record.compressed_message_count
+            compressed_count = self._summary_snapshot_current_coverage_count(
+                summary_snapshot
+            )
+            covered_refs = self._summary_snapshot_current_coverage_refs(
+                summary_snapshot
+            )
 
             # Ensure compressed_count is reasonable
             if compressed_count > len(messages):
@@ -3265,9 +4089,13 @@ class Filter:
             # 3. Summary message (Inserted as Assistant message)
             external_refs = body.pop("__external_references__", None)
             summary_msg = self._build_summary_message(
-                summary_record.summary,
+                summary_snapshot.summary,
                 lang,
                 start_index,
+                covered_refs,
+                self._summary_snapshot_current_protected_head_count(
+                    summary_snapshot
+                ),
             )
 
             if external_refs:
@@ -3520,7 +4348,7 @@ class Filter:
                 chat_id,
                 len(messages),
                 len(final_messages),
-                len(summary_record.summary),
+                len(summary_snapshot.summary),
                 self.valves.keep_first,
                 self.valves.keep_last,
             )
@@ -3830,13 +4658,26 @@ class Filter:
         # Fix: when the placeholder is absent, reload it from the DB and reinsert
         # it at the correct position so the alignment only scans the NEW tail.
         if not any(self._is_summary_message(m) for m in summary_messages):
-            existing_record = await self._load_summary_record(chat_id)
-            if existing_record and existing_record.compressed_message_count > 0:
+            existing_snapshot = await self._load_applicable_summary_snapshot(
+                chat_id,
+                summary_messages,
+            )
+            if existing_snapshot and existing_snapshot.compressed_message_count > 0:
+                covered_refs = self._summary_snapshot_current_coverage_refs(
+                    existing_snapshot
+                )
                 boundary = min(
-                    existing_record.compressed_message_count, len(summary_messages)
+                    self._summary_snapshot_current_coverage_count(existing_snapshot),
+                    len(summary_messages),
                 )
                 injected_summary_msg = self._build_summary_message(
-                    existing_record.summary, lang, existing_record.compressed_message_count
+                    existing_snapshot.summary,
+                    lang,
+                    boundary,
+                    covered_refs,
+                    self._summary_snapshot_current_protected_head_count(
+                        existing_snapshot
+                    ),
                 )
                 summary_messages = (
                     summary_messages[:boundary]
@@ -3847,7 +4688,7 @@ class Filter:
                 if self.valves.debug_mode:
                     logger.info(
                         f"[Outlet] Reinjected summary placeholder at boundary={boundary} "
-                        f"(compressed_message_count={existing_record.compressed_message_count})"
+                        f"(snapshot_compressed_message_count={existing_snapshot.compressed_message_count})"
                     )
 
         if self.valves.show_debug_log and __event_call__:
@@ -4292,10 +5133,14 @@ class Filter:
             # When summary_index is None the outlet messages come from raw DB history that
             # has never had the summary injected, so we must load it from DB explicitly.
             if summary_index is None:
-                previous_summary = await self._load_summary(chat_id, body)
+                previous_snapshot = await self._load_applicable_summary_snapshot(
+                    chat_id,
+                    messages,
+                )
+                previous_summary = previous_snapshot.summary if previous_snapshot else None
                 if previous_summary:
                     await self._log(
-                        "[🤖 Async Summary Task] Loaded previous summary from DB to pass as context (summary not in messages)",
+                        "[🤖 Async Summary Task] Loaded branch-valid previous summary from DB to pass as context (summary not in messages)",
                         event_call=__event_call__,
                     )
             else:
@@ -4308,6 +5153,11 @@ class Filter:
                 )
             # Fit the exact final request prompt, not just middle-message heuristics.
             prompt_tokens = 0
+            # If budgeting forces us to drop the embedded previous-summary marker,
+            # the new summary no longer represents the base_progress prefix, so it
+            # cannot honestly stand in for the [0:saved_compressed_count] range and
+            # must not be persisted as a branch-valid snapshot.
+            summary_marker_dropped = False
             while max_context_tokens > 0:
                 if not middle_messages:
                     await self._log(
@@ -4359,6 +5209,7 @@ class Filter:
                 if protected_prefix > 0:
                     middle_messages = middle_messages[1:]
                     protected_prefix = 0
+                    summary_marker_dropped = True
                     await self._log(
                         "[🤖 Async Summary Task] Dropped embedded previous summary marker from compression input to fit final request payload",
                         log_type="warning",
@@ -4432,9 +5283,19 @@ class Filter:
 
             if summary_index is None:
                 saved_compressed_count = start_index + len(middle_messages)
+                protected_head_count = min(
+                    saved_compressed_count,
+                    self._get_effective_keep_first(messages),
+                )
             else:
                 saved_compressed_count = base_progress + max(
                     0, len(middle_messages) - protected_prefix
+                )
+                protected_head_count = min(
+                    saved_compressed_count,
+                    self._summary_marker_protected_head_count(
+                        messages[summary_index]
+                    ),
                 )
 
             # 6. Save new summary
@@ -4443,7 +5304,41 @@ class Filter:
                 event_call=__event_call__,
             )
 
-            await self._save_summary(chat_id, new_summary, saved_compressed_count)
+            if summary_marker_dropped:
+                # The old summary context was dropped to fit the budget, so this
+                # summary only describes the new tail. It cannot represent the
+                # base_progress prefix; persist a compatibility pointer only.
+                covered_refs = None
+                await self._log(
+                    "[🤖 Async Summary Task] ⚠️ Previous-summary marker was dropped during "
+                    "budgeting; summary no longer covers the prefix, saving compatibility "
+                    "summary only, not branch-valid snapshot",
+                    log_type="warning",
+                    event_call=__event_call__,
+                )
+            else:
+                covered_refs = self._message_refs_for_prefix(
+                    messages,
+                    saved_compressed_count,
+                )
+            if covered_refs is None and not summary_marker_dropped:
+                await self._log(
+                    "[🤖 Async Summary Task] ⚠️ Covered range lacks stable message refs; "
+                    "saving compatibility summary only, not branch-valid snapshot",
+                    log_type="warning",
+                    event_call=__event_call__,
+                )
+
+            source_refs = self._current_branch_refs(messages) or []
+            source_current_id = source_refs[-1]["id"] if source_refs else None
+            await self._save_summary(
+                chat_id,
+                new_summary,
+                saved_compressed_count,
+                covered_refs,
+                source_current_id,
+                protected_head_count,
+            )
 
             # Send completion status notification
             if __event_emitter__:
