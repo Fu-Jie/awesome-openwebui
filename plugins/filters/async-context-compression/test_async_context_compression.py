@@ -1182,6 +1182,107 @@ class TestAsyncContextCompression(unittest.TestCase):
             snapshot_rows[1].covered_refs_hash,
         )
 
+    def test_snapshot_selection_rejects_coverage_that_splits_tool_group(self):
+        # Coverage may not end inside a native [assistant(tool_calls), tool,
+        # assistant] block; selection must reject a mid-group boundary and accept
+        # one that aligns to the group edge (R7).
+        self.filter.valves.keep_first = 0
+        self.filter.valves.keep_last = 0
+        messages = [
+            {"id": "m0", "role": "user", "content": "ask"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "type": "function"}],
+            },
+            {"id": "m2", "role": "tool", "tool_call_id": "call_1", "content": "result"},
+            {"id": "m3", "role": "assistant", "content": "final"},
+            {"id": "m4", "role": "user", "content": "next"},
+        ]
+        live = _live_refs_by_id(self.filter, messages)
+        mid_group_refs = self.filter._message_refs_for_prefix(messages, 2)
+        boundary_refs = self.filter._message_refs_for_prefix(messages, 4)
+
+        rejected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("cuts tool group", mid_group_refs)],
+            messages,
+            live_message_refs_by_id=live,
+        )
+        self.assertIsNone(rejected)
+
+        accepted = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("aligned to boundary", boundary_refs)],
+            messages,
+            live_message_refs_by_id=live,
+        )
+        self.assertIsNotNone(accepted)
+        self.assertEqual(accepted.summary, "aligned to boundary")
+
+    def test_snapshot_selection_round_trips_between_branches(self):
+        # Each branch keeps its own snapshot; switching back must select the
+        # snapshot that matches the active branch and reject the sibling's (R9).
+        self.filter.valves.keep_first = 0
+        self.filter.valves.keep_last = 0
+        branch_a = _messages_with_ids(["m0", "m1", "m2", "m3", "a4", "a5"])
+        branch_b = _messages_with_ids(["m0", "m1", "m2", "m3", "b4", "b5"])
+        snap_a = _snapshot(
+            "branch A summary", self.filter._message_refs_for_prefix(branch_a, 6)
+        )
+        snap_b = _snapshot(
+            "branch B summary", self.filter._message_refs_for_prefix(branch_b, 6)
+        )
+        live = _live_refs_by_id(self.filter, branch_a + branch_b[4:])
+
+        selected_a = self.filter._select_applicable_summary_snapshot(
+            [snap_a, snap_b], branch_a, live_message_refs_by_id=live
+        )
+        self.assertIsNotNone(selected_a)
+        self.assertEqual(selected_a.summary, "branch A summary")
+
+        selected_b = self.filter._select_applicable_summary_snapshot(
+            [snap_a, snap_b], branch_b, live_message_refs_by_id=live
+        )
+        self.assertIsNotNone(selected_b)
+        self.assertEqual(selected_b.summary, "branch B summary")
+
+    def test_snapshot_selection_skips_corrupted_refs_json(self):
+        # A snapshot row with unparsable refs JSON must be ignored as invalid
+        # coverage without breaking the chat.
+        self.filter.valves.keep_last = 0
+        messages = _messages_with_ids(["m0", "m1", "m2"])
+        bad_snapshot = types.SimpleNamespace(
+            summary="corrupted",
+            compressed_message_count=3,
+            covered_message_refs_json="{not valid json",
+            covered_refs_hash="hash",
+            branch_tip_id="m2",
+            updated_at=None,
+            created_at=None,
+        )
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [bad_snapshot],
+            messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, messages),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_message_refs_for_prefix_includes_payload_fingerprints(self):
+        # Covered refs must carry a fingerprint (not just an id) so in-place edits
+        # invalidate the snapshot; a blank fingerprint would silently break reuse.
+        messages = _messages_with_ids(["m0", "m1", "m2"])
+        refs = self.filter._message_refs_for_prefix(messages, 3)
+
+        self.assertEqual(len(refs), 3)
+        for message, ref in zip(messages, refs):
+            self.assertEqual(ref["id"], message["id"])
+            self.assertTrue(ref["fingerprint"])
+            self.assertEqual(
+                ref["fingerprint"], self.filter._message_fingerprint(message)
+            )
+
     def test_save_summary_persists_snapshot_when_legacy_pointer_is_ahead(self):
         refs = self.filter._message_refs_for_prefix(
             _messages_with_ids(["m1", "m2"]),
