@@ -1443,6 +1443,13 @@ class TestAsyncContextCompression(unittest.TestCase):
             def get_chat_by_id(chat_id):
                 return types.SimpleNamespace(
                     chat={
+                        "messages": [
+                            {
+                                "id": "stale-direct",
+                                "role": "user",
+                                "content": "Stale direct fallback",
+                            }
+                        ],
                         "history": {
                             "currentId": "m3",
                             "messages": {
@@ -1624,6 +1631,165 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.assertTrue(create_task_called)
 
+    def test_outlet_keeps_native_output_messages_folded_for_summary_refs(self):
+        messages = [
+            {"id": "m0", "role": "user", "content": "search notes"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": "I searched.",
+                "output": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "folded tool result",
+                    }
+                ],
+            },
+        ]
+        captured = {}
+
+        async def fake_user_context(__user__, __event_call__):
+            return {"user_language": "en-US"}
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        async def fake_load_full_chat_messages(chat_id):
+            return []
+
+        def fake_locked_summary_task(
+            lock,
+            chat_id,
+            model,
+            body,
+            user_data,
+            target_compressed_count,
+            lang,
+            __event_emitter__,
+            __event_call__,
+            __request__=None,
+        ):
+            captured["messages"] = body["messages"]
+            captured["target_compressed_count"] = target_compressed_count
+
+            async def noop_task():
+                return None
+
+            return noop_task()
+
+        def fake_create_task(coro):
+            coro.close()
+            return None
+
+        self.filter._get_user_context = fake_user_context
+        self.filter._get_chat_context = lambda body, metadata=None: {
+            "chat_id": "chat-1",
+            "message_id": "m1",
+        }
+        self.filter._should_skip_compression = lambda body, model: False
+        self.filter._log = noop_log
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._locked_summary_task = fake_locked_summary_task
+        self.filter.valves.keep_last = 0
+
+        original_create_task = asyncio.create_task
+        asyncio.create_task = fake_create_task
+        try:
+            asyncio.run(
+                self.filter.outlet(
+                    {
+                        "model": "test-model",
+                        "messages": messages,
+                        "params": {"function_calling": "native"},
+                    },
+                    __event_call__=None,
+                )
+            )
+        finally:
+            asyncio.create_task = original_create_task
+
+        self.assertEqual(captured["messages"], messages)
+        self.assertIn("output", captured["messages"][1])
+        captured_refs = self.filter._message_refs_for_prefix(
+            captured["messages"],
+            2,
+        )
+        self.assertEqual(
+            [ref["id"] for ref in captured_refs],
+            ["m0", "m1"],
+        )
+        self.assertEqual(captured["target_compressed_count"], 2)
+
+    def test_select_native_summary_messages_uses_db_only_when_body_overlap_matches(self):
+        body_messages = _messages_with_ids(["m0", "m1"])
+        db_messages = body_messages + [
+            {"id": "m2", "role": "user", "content": "persisted next turn"}
+        ]
+
+        selected, source = self.filter._select_native_summary_messages(
+            body_messages, db_messages
+        )
+
+        self.assertIs(selected, db_messages)
+        self.assertEqual(source, "outlet-db-native-folded")
+
+        mismatched_db_messages = [
+            {"id": "m0", "role": "user", "content": "search notes"},
+            {"id": "m1", "role": "assistant", "content": "different answer"},
+            {"id": "m2", "role": "user", "content": "persisted next turn"},
+        ]
+
+        selected, source = self.filter._select_native_summary_messages(
+            body_messages, mismatched_db_messages
+        )
+
+        self.assertIs(selected, body_messages)
+        self.assertEqual(source, "outlet-body-native-folded")
+
+    def test_select_native_summary_messages_rejects_unprovable_body_overlap(self):
+        body_messages = [
+            {"role": "user", "content": "id-less outlet body"},
+            {"role": "assistant", "content": "no stable id"},
+        ]
+        db_messages = _messages_with_ids(["m0", "m1", "m2"])
+
+        selected, source = self.filter._select_native_summary_messages(
+            body_messages, db_messages
+        )
+
+        self.assertIs(selected, body_messages)
+        self.assertEqual(source, "outlet-body-native-folded")
+
+    def test_select_native_summary_messages_accepts_db_hidden_output_superset(self):
+        body_messages = [
+            {"id": "m0", "role": "user", "content": "search notes"},
+            {"id": "m1", "role": "assistant", "content": "I searched."},
+        ]
+        db_messages = [
+            {"id": "m0", "role": "user", "content": "search notes"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": "I searched.",
+                "output": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "complete DB tool result",
+                    }
+                ],
+            },
+            {"id": "m2", "role": "user", "content": "persisted next turn"},
+        ]
+
+        selected, source = self.filter._select_native_summary_messages(
+            body_messages, db_messages
+        )
+
+        self.assertIs(selected, db_messages)
+        self.assertEqual(source, "outlet-db-native-folded")
+
     def test_estimate_messages_tokens_counts_output_text_parts(self):
         messages = [
             {
@@ -1667,6 +1833,166 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertEqual(unfolded[0]["id"], "assistant-1")
         self.assertEqual(unfolded[0]["content"], "Plain reply")
         self.assertNotIn("output", unfolded[0])
+
+    def test_format_messages_for_summary_includes_folded_native_output(self):
+        messages = [
+            {
+                "id": "assistant-1",
+                "role": "assistant",
+                "content": "I searched the notes.",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "search_notes",
+                        "arguments": {"query": "branch refs"},
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "Found canonical folded refs.",
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Use folded ids for snapshots.",
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+
+        formatted = self.filter._format_messages_for_summary(messages)
+
+        self.assertIn("I searched the notes.", formatted)
+        self.assertIn("function_call", formatted)
+        self.assertIn("search_notes", formatted)
+        self.assertIn("Found canonical folded refs.", formatted)
+        self.assertIn("Use folded ids for snapshots.", formatted)
+
+    def test_generate_summary_async_native_output_saves_folded_refs(self):
+        misc_module = _ensure_module("open_webui.utils.misc")
+        misc_module.convert_output_to_messages = lambda output, raw=True: [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call-1", "function": {"name": "search"}}],
+                "content": "",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "tool result from id-less unfolded child",
+            },
+            {
+                "role": "assistant",
+                "content": "final answer from id-less unfolded child",
+            },
+        ]
+
+        self.filter.valves.keep_first = 0
+        self.filter.valves.keep_last = 0
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 0
+        captured = {}
+
+        messages = [
+            {"id": "m0", "role": "user", "content": "search notes"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": "I searched.",
+                "output": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "tool result from folded output",
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "final answer from folded output",
+                            }
+                        ],
+                    },
+                ],
+            },
+            {"id": "m2", "role": "user", "content": "next question"},
+        ]
+
+        self.assertIsNone(
+            self.filter._message_refs_for_prefix(
+                self.filter._unfold_messages(messages),
+                2,
+            )
+        )
+
+        async def mock_summary_llm(
+            conversation_text,
+            body,
+            user_data,
+            __event_call__=None,
+            __request__=None,
+            previous_summary=None,
+        ):
+            captured["conversation_text"] = conversation_text
+            captured["previous_summary"] = previous_summary
+            return "new native summary"
+
+        async def mock_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
+            captured["chat_id"] = chat_id
+            captured["summary"] = summary
+            captured["compressed_count"] = compressed_count
+            captured["covered_message_refs"] = covered_message_refs
+            captured["source_current_id"] = source_current_id
+            captured["protected_head_count"] = protected_head_count
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._call_summary_llm = mock_summary_llm
+        self.filter._save_summary = mock_save_summary
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=messages,
+                chat_id="chat-1",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=2,
+                lang="en-US",
+                __event_emitter__=None,
+                __event_call__=None,
+            )
+        )
+
+        self.assertEqual(captured["chat_id"], "chat-1")
+        self.assertEqual(captured["summary"], "new native summary")
+        self.assertEqual(captured["compressed_count"], 2)
+        self.assertEqual(
+            [ref["id"] for ref in captured["covered_message_refs"]],
+            ["m0", "m1"],
+        )
+        self.assertTrue(
+            all(ref["fingerprint"] for ref in captured["covered_message_refs"])
+        )
+        self.assertEqual(captured["source_current_id"], "m2")
+        self.assertIn("tool result from folded output", captured["conversation_text"])
+        self.assertIn("final answer from folded output", captured["conversation_text"])
+        self.assertNotIn("id-less unfolded child", captured["conversation_text"])
 
     def test_summary_save_progress_matches_final_prompt_shrink(self):
         self.filter.valves.keep_first = 1

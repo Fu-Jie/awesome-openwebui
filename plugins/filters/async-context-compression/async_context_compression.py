@@ -1044,16 +1044,7 @@ class Filter:
 
     def _message_fingerprint(self, message: Dict[str, Any]) -> str:
         """Fingerprint the model-visible payload to detect in-place edits."""
-        payload = {
-            "role": message.get("role"),
-            "content": message.get("content"),
-            "output": message.get("output"),
-            "tool_calls": message.get("tool_calls"),
-            "tool_call_id": message.get("tool_call_id"),
-            "files": message.get("files"),
-            "sources": message.get("sources"),
-            "images": message.get("images"),
-        }
+        payload = self._message_fingerprint_payload(message)
         encoded = json.dumps(
             payload,
             ensure_ascii=False,
@@ -1062,6 +1053,22 @@ class Filter:
             separators=(",", ":"),
         )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _message_fingerprint_payload(
+        self, message: Dict[str, Any], include_output: bool = True
+    ) -> Dict[str, Any]:
+        payload = {
+            "role": message.get("role"),
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls"),
+            "tool_call_id": message.get("tool_call_id"),
+            "files": message.get("files"),
+            "sources": message.get("sources"),
+            "images": message.get("images"),
+        }
+        if include_output:
+            payload["output"] = message.get("output")
+        return payload
 
     def _message_ref(self, message: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """Return compact branch identity for one original chat message."""
@@ -1609,20 +1616,112 @@ class Filter:
         if not isinstance(chat_payload, dict):
             return []
 
+        history = chat_payload.get("history")
+        if isinstance(history, dict):
+            history_messages = history.get("messages")
+            if isinstance(history_messages, dict) and history_messages:
+                current_id = history.get("currentId") or history.get("current_id")
+                branch_messages = self._reconstruct_active_history_branch(
+                    history_messages, current_id
+                )
+                if branch_messages:
+                    return branch_messages
+
         direct_messages = chat_payload.get("messages")
         if isinstance(direct_messages, list) and direct_messages:
             return deepcopy(direct_messages)
 
-        history = chat_payload.get("history")
-        if not isinstance(history, dict):
-            return []
+        return []
 
-        history_messages = history.get("messages")
-        if not isinstance(history_messages, dict) or not history_messages:
-            return []
+    def _select_native_summary_messages(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], str]:
+        """Choose a folded native source without mixing mismatched histories."""
+        if not db_messages or len(db_messages) < len(body_messages):
+            return body_messages, "outlet-body-native-folded"
 
-        current_id = history.get("currentId") or history.get("current_id")
-        return self._reconstruct_active_history_branch(history_messages, current_id)
+        body_refs = self._current_branch_refs(body_messages)
+        if body_refs is None:
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Outlet] Body native history lacks stable refs; "
+                    "using body messages so snapshot save can fail closed."
+                )
+            return body_messages, "outlet-body-native-folded"
+
+        db_refs = self._message_refs_for_prefix(db_messages, len(body_refs))
+        if db_refs is None:
+            return body_messages, "outlet-body-native-folded"
+
+        if db_refs == body_refs or self._native_db_overlap_is_body_compatible(
+            body_messages, db_messages, body_refs, db_refs
+        ):
+            return db_messages, "outlet-db-native-folded"
+
+        if self.valves.debug_mode:
+            logger.info(
+                "[Outlet] DB native history does not match body refs; "
+                "using folded body messages as canonical source."
+            )
+        return body_messages, "outlet-body-native-folded"
+
+    def _native_db_overlap_is_body_compatible(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+        body_refs: List[Dict[str, str]],
+        db_refs: List[Dict[str, str]],
+    ) -> bool:
+        """Allow DB as a native source only when it is a body-proven superset."""
+        if len(body_refs) != len(db_refs):
+            return False
+        if [ref["id"] for ref in body_refs] != [ref["id"] for ref in db_refs]:
+            return False
+
+        ref_index = 0
+        for body_message in body_messages:
+            marker_refs = self._summary_marker_refs(body_message)
+            if marker_refs is not None:
+                marker_count = min(len(marker_refs), len(body_refs) - ref_index)
+                if marker_count <= 0:
+                    continue
+                if (
+                    db_refs[ref_index : ref_index + marker_count]
+                    != body_refs[ref_index : ref_index + marker_count]
+                ):
+                    return False
+                ref_index += marker_count
+                if ref_index >= len(body_refs):
+                    return True
+                continue
+
+            body_ref = self._message_ref(body_message)
+            if body_ref is None:
+                return False
+            if ref_index >= len(db_messages):
+                return False
+            db_message = db_messages[ref_index]
+            db_ref = self._message_ref(db_message)
+            if db_ref is None or db_ref["id"] != body_ref["id"]:
+                return False
+            if db_ref == body_ref:
+                ref_index += 1
+                if ref_index >= len(body_refs):
+                    return True
+                continue
+            if body_message.get("output") not in (None, "", []):
+                return False
+            if self._message_fingerprint_payload(
+                body_message, include_output=False
+            ) != self._message_fingerprint_payload(db_message, include_output=False):
+                return False
+            ref_index += 1
+            if ref_index >= len(body_refs):
+                return True
+
+        return ref_index == len(body_refs)
 
     async def _load_chat_history_live_refs(
         self, chat_id: str
@@ -2967,6 +3066,82 @@ class Filter:
 
         return str(content) if content is not None else ""
 
+    def _extract_output_text_content(self, output: Any) -> str:
+        """Extract durable text from folded native assistant output payloads."""
+        if output in (None, "", []):
+            return ""
+
+        if isinstance(output, str):
+            return output
+
+        if isinstance(output, (int, float, bool)):
+            return str(output)
+
+        if isinstance(output, list):
+            return "\n".join(
+                part
+                for part in (
+                    self._extract_output_text_content(item) for item in output
+                )
+                if part
+            )
+
+        if isinstance(output, dict):
+            parts = []
+            item_type = output.get("type")
+            if isinstance(item_type, str) and item_type:
+                parts.append(item_type)
+
+            role = output.get("role")
+            if isinstance(role, str) and role:
+                parts.append(f"role={role}")
+
+            name = output.get("name")
+            if isinstance(name, str) and name:
+                parts.append(f"name={name}")
+
+            call_id = output.get("call_id") or output.get("tool_call_id")
+            if isinstance(call_id, str) and call_id:
+                parts.append(f"call_id={call_id}")
+
+            for key in (
+                "content",
+                "text",
+                "output_text",
+                "output",
+                "result",
+                "arguments",
+                "input",
+            ):
+                if key not in output:
+                    continue
+                value = output.get(key)
+                if value in (None, "", []):
+                    continue
+                text = (
+                    self._extract_text_content(value)
+                    if key == "content"
+                    else self._extract_output_text_content(value)
+                )
+                if not text and isinstance(value, (dict, list)):
+                    text = json.dumps(value, ensure_ascii=False, default=str)
+                if text:
+                    parts.append(f"{key}={text}" if key != "content" else text)
+
+            return "\n".join(parts)
+
+        return str(output)
+
+    def _message_text_for_summary(self, message: Dict[str, Any]) -> str:
+        """Return the text represented by a folded message for summary/accounting."""
+        content = self._extract_text_content(message.get("content", ""))
+        output_text = self._extract_output_text_content(message.get("output"))
+        if output_text:
+            if content:
+                return f"{content}\n\n[Native assistant output]\n{output_text}"
+            return output_text
+        return content
+
     def _message_content_char_length(self, content: Any) -> int:
         return len(self._extract_text_content(content))
 
@@ -2978,7 +3153,7 @@ class Filter:
         start_time = time.time()
         total_tokens = 0
         for msg in messages:
-            content = self._extract_text_content(msg.get("content", ""))
+            content = self._message_text_for_summary(msg)
             total_tokens += self._count_tokens(content)
 
         duration = (time.time() - start_time) * 1000
@@ -2993,7 +3168,7 @@ class Filter:
         """Fast estimation of tokens using mixed-script heuristics."""
         total_tokens = 0
         for msg in messages:
-            total_tokens += self._estimate_content_tokens(msg.get("content", ""))
+            total_tokens += _estimate_text_tokens(self._message_text_for_summary(msg))
 
         return total_tokens
 
@@ -3111,6 +3286,13 @@ class Filter:
 
             tool_calls = message.get("tool_calls")
             if isinstance(tool_calls, list) and tool_calls:
+                return True
+
+            if (
+                message.get("role") == "assistant"
+                and isinstance(message.get("output"), list)
+                and message.get("output")
+            ):
                 return True
 
             if message.get("role") == "tool":
@@ -4207,12 +4389,12 @@ class Filter:
                     for _ in range(len(dropped_group_indices)):
                         dropped = tail_messages.pop(0)
                         if total_tokens == estimated_tokens:
-                            dropped_tokens += self._estimate_content_tokens(
-                                dropped.get("content", "")
+                            dropped_tokens += _estimate_text_tokens(
+                                self._message_text_for_summary(dropped)
                             )
                         else:
                             dropped_tokens += self._count_tokens(
-                                str(dropped.get("content", ""))
+                                self._message_text_for_summary(dropped)
                             )
 
                     total_tokens -= dropped_tokens
@@ -4454,12 +4636,12 @@ class Filter:
                             continue
 
                         if total_tokens == estimated_tokens:
-                            dropped_tokens += self._estimate_content_tokens(
-                                dropped.get("content", "")
+                            dropped_tokens += _estimate_text_tokens(
+                                self._message_text_for_summary(dropped)
                             )
                         else:
                             dropped_tokens += self._count_tokens(
-                                str(dropped.get("content", ""))
+                                self._message_text_for_summary(dropped)
                             )
                     total_tokens -= dropped_tokens
 
@@ -4596,30 +4778,16 @@ class Filter:
                 event_call=__event_call__,
             )
 
-        # Unfold compact tool messages to align with inlet's exact coordinate system.
-        # Native tool-calling payloads in outlet can miss hidden `output` fields, so
-        # preserve the older DB fallback there only.
+        # Native folded messages carry OpenWebUI history ids; unfolded tool-child
+        # messages created from assistant `output` do not.  Keep native summary
+        # sources folded for branch refs and let the formatter include output
+        # details in the summary prompt.
         function_calling_mode = self._get_function_calling_mode(body)
         if function_calling_mode == "native":
             db_messages = await self._load_full_chat_messages(chat_id)
-            messages_to_unfold = (
-                db_messages
-                if (db_messages and len(db_messages) >= len(messages))
-                else messages
+            summary_messages, message_source = self._select_native_summary_messages(
+                messages, db_messages
             )
-            summary_messages = self._unfold_messages(messages_to_unfold)
-            if messages_to_unfold is db_messages:
-                message_source = (
-                    "outlet-db-unfolded"
-                    if len(summary_messages) != len(db_messages)
-                    else "outlet-db"
-                )
-            else:
-                message_source = (
-                    "outlet-body-unfolded"
-                    if len(summary_messages) != len(messages)
-                    else "outlet-body"
-                )
         else:
             summary_messages = self._unfold_messages(messages)
             message_source = (
@@ -5563,7 +5731,7 @@ class Filter:
         formatted = []
         for i, msg in enumerate(messages, 1):
             role = msg.get("role", "unknown")
-            content = self._extract_text_content(msg.get("content", ""))
+            content = self._message_text_for_summary(msg)
 
             # Extract Identity Metadata
             msg_id = msg.get("id", "N/A")

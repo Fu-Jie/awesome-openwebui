@@ -23,6 +23,7 @@ reviewer: opus-4.8 (ce:review, interactive / report-only document)
 
 | Finding | Status | Resolution |
 |---|---|---|
+| P1 #1 native tool-call ref 身份 | **addressed** | native outlet 不再把带 `output` 的 assistant folded 消息展开成无 `id` 的 assistant/tool/assistant 子消息作为 snapshot 身份源；branch refs、`compressed_message_count`、`source_current_id` 继续使用 folded OpenWebUI history ids。summary formatter / token accounting 改为从 folded `output` 提取工具调用与工具结果文本，因此 summary LLM 仍能看到 native tool-call 细节。DB history loader 优先 `history.messages/currentId` 重建 active branch；native DB source 必须有 body original-history refs 作为 overlap proof，允许“body 缺 hidden `output`、DB 是同 id/order 的 payload superset”，但 body 无稳定 refs 或非-output payload 不匹配时回退 body/compatibility-only，避免 DB/body 混源。review/autofix 后同步修正 inlet trimming 的 dropped-token 计算，使 native output 被计入后也能被正确扣除。新增 `test_outlet_keeps_native_output_messages_folded_for_summary_refs`、`test_select_native_summary_messages_uses_db_only_when_body_overlap_matches`、`test_select_native_summary_messages_rejects_unprovable_body_overlap`、`test_select_native_summary_messages_accepts_db_hidden_output_superset`、`test_format_messages_for_summary_includes_folded_native_output`、`test_generate_summary_async_native_output_saves_folded_refs`。 |
 | P2 #17 DB-backed `previous_summary` fallback 没有使用 previous snapshot 覆盖边界 | **addressed** | `_generate_summary_async` 在 `summary_index is None` 且加载到 branch-valid previous snapshot 时，记录 previous coverage/protected-head，并把 `middle_messages` 调整为 previous coverage 之后到 target 的新消息。若 previous snapshot 已覆盖 target，直接跳过；保存时以 previous coverage + fitted new groups 计算 `saved_compressed_count`。新增 `test_generate_summary_async_db_previous_summary_starts_after_previous_coverage`，覆盖 raw messages + DB snapshot + oversized prompt 只推进一个新 group。 |
 | P2 #18 `Valves` 构造期和运行期 80/20 校验路径漂移、测试不足 | **addressed** | `Valves` 抽出 `_summary_window_from_values` 与 `_validate_summary_budget_values`，构造期复用同一解析/校验 helper，运行期 `_validate_summary_budget_configuration` 复用同一 80/20 校验 helper。`test_valves_reject_summary_budget_without_new_message_space` 补充 `summary_model_max_context` 与 `model_thresholds` 两种窗口来源的拒绝/接受断言。 |
 | P3 #19 retain-all 后 prune helper/save 后 prune 查询是 no-op | **addressed** | 删除 `_summary_snapshots_to_prune`、`_prune_summary_snapshots_async`、`_prune_summary_snapshots_sync` 以及 `_save_summary` 后的 prune 调用；retain-all 现在没有误导性的 retention cap 入口，也不会在每次保存后额外加载全部 snapshots。 |
@@ -54,13 +55,13 @@ reviewer: opus-4.8 (ce:review, interactive / report-only document)
 
 ### Verification
 
-- `python -m pytest plugins/filters/async-context-compression/test_async_context_compression.py -q` -> **65 passed**。
+- `python -m pytest plugins/filters/async-context-compression/test_async_context_compression.py -q` -> **71 passed**。
 - `git diff --check` -> pass。
 - 手工复核 `test_inlet_uses_only_latest_matching_snapshot_for_current_branch`：当历史中保留 `1-5`、`1-10`、`1-15` 三个 snapshot 时，`inlet` 最终只注入一个包含 `summary 1-15` 的 summary marker，并从 `m15` 开始保留 live tail；不会把多个历史 summary 一起发给主模型。
 
 | Finding | Status | Resolution |
 |---|---|---|
-| P1 #1 native tool-call ref 身份 | **deferred（已验证为真，析因完成）** | 复核 OpenWebUI `utils/misc.py:convert_output_to_messages`，确认展开消息无 `id`；并确认 inlet 用 folded 消息（真实 id）、outlet 用 unfolded 消息选/存 refs，是 folded↔unfolded 表征不一致问题。证明「合成 id」方案会破坏 sibling/deleted 判别（不安全），正确修法须用与 history graph 对齐的 folded refs 并打通坐标，属设计级改动；当前行为安全降级（不注入错误摘要），建议用 /ce:plan 在真实 native 运行态下专项落地。 |
+| P1 #1 native tool-call ref 身份 | **addressed** | 已按专项 plan `docs/plans/2026-06-23-001-fix-native-tool-call-summary-refs-plan.md` 修复。native outlet 保留 folded messages 作为 canonical ref source，不再用 id-less unfolded children 选/存 refs；formatter/计数改为读取 folded `output`，保证工具细节仍进入 summary prompt；DB/body canonical source 需通过 body refs overlap proof，且只允许 DB hidden `output` superset，不允许 body 无 refs 或非-output payload 不匹配时信任 DB。 |
 | P2 #2 marker-drop overclaim | **addressed（revised）** | 不再允许 budgeting 丢弃内嵌 summary marker 或 DB-backed `previous_summary`。`Valves` 构造和运行时 request limit 计算均校验 `max_summary_tokens` 必须严格小于 summary model input window 的 80%，为新消息预留至少 20%；prompt fitting 只裁剪较新的 atomic groups，且至少保留一个新消息 atomic group，必要时强行提交「旧 summary + 1 个新 group」。新增/更新 `test_generate_summary_async_keeps_marker_and_one_new_message_when_oversized`、`test_generate_summary_async_keeps_previous_summary_when_prompt_still_oversized`、`test_summary_budget_validation_requires_20_percent_new_message_space`、`test_valves_reject_summary_budget_without_new_message_space`。 |
 | P2 #3 retention 驱逐短前缀 | **addressed（revised）** | `_summary_snapshots_to_prune` 不再按 recency/size/最短前缀裁剪 branch-valid snapshots，保留所有历史 coverage；任意历史深度分叉时，下次压缩由 `_select_applicable_summary_snapshot` 选择当前分支上 matched coverage 最深、最接近的祖先 summary。新增/更新 `test_snapshot_retention_preserves_all_historical_prefixes`、`test_snapshot_selection_uses_nearest_available_ancestor_summary`。 |
 | P2 #4 prune 回滚 save | **addressed** | `_prune_summary_snapshots_async/_sync` 包入 try/except，prune 失败只 warning 不传播，不再回滚已暂存的 snapshot 写入。 |
@@ -182,7 +183,7 @@ Plan source: **explicit**（用户显式指向 `...-plan.zh.md`）。
 
 | # | 关联 | Issue | Route | 下一步 |
 |---|------|-------|-------|--------|
-| 1 | #1 | native tool-call 链无 snapshot | `manual -> downstream-resolver` | 先验证 `convert_output_to_messages(raw=True)` 是否丢 `id`；若是，展开时把原 `id` 赋给首个展开消息，或对 covered_refs 用 pre-unfold 原始消息。补 native 链能存且能选中 snapshot 的回归。 |
+| 1 | #1 | native tool-call 链无 snapshot | `closed` | 已采用 folded history refs 作为 canonical identity，避免合成 id；native folded `output` 由 formatter/token accounting 提取进 summary prompt。新增 native outlet folded source、DB/body overlap 校验、folded output formatter、branch-valid snapshot save 回归。 |
 | 2 | #2 | marker-drop 后 overclaim | `closed` | 已放弃“marker 被丢弃后降级保存”的方案，改为禁止裁剪旧 summary；通过 80/20 valve 校验和“至少保留 1 个新 atomic group”保证再次压缩有意义且覆盖语义正确。 |
 | 3 | #3/#16 | retention 驱逐任意分叉点祖先 summary | `closed` | 已放弃 recency/size/最短前缀裁剪，保留所有历史 branch-valid snapshots；#16 的选择/prune 排序不一致不再适用，因为 prune 不再删除 branch-valid snapshots。 |
 | 4 | #4 | prune 回滚 save | `gated_auto -> downstream-resolver` | 把 `_prune_summary_snapshots_*` 包进独立 try/except 并 log，确保 prune 失败不阻断主写入；或移出保存事务。 |
