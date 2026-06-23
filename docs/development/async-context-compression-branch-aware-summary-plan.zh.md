@@ -303,7 +303,7 @@ flowchart TD
 - 新增 lazy-created snapshot table，而不是继续把唯一 `chat_summary.chat_id` 行当作唯一真相。
 - 每个 snapshot 保存 ordered refs JSON 和 hash。
 - 保持现有 `chat_summary` 兼容，避免已安装环境启动失败。
-- 增加 retention 逻辑，限制每个 chat 保存的 snapshot 数量，优先保留更新、更大、可精确复用的前缀 snapshots。
+- 保留所有 branch-valid historical snapshots。用户可能在任意历史深度分叉，任一旧 snapshot 都可能成为该分支下次压缩时最接近的祖先摘要；只通过 covered refs hash 去重完全相同的覆盖范围，不按 recency/size/最短前缀驱逐。
 
 **参考模式：**
 - `_init_database` 里的 lazy database initialization 与兼容行为。
@@ -370,15 +370,21 @@ flowchart TD
 - `_generate_summary_async` 选出 `middle_messages` 后，计算新摘要实际覆盖的原始活跃分支范围。
 - 保存该范围的 ordered refs 和 `compressed_message_count`。
 - 如果 summary input 为适配 summary model 上下文窗口而丢弃了最新 atomic groups，保存 refs 时必须排除这些被丢弃的 groups。
+- 旧 summary 是压缩链的语义根，prompt fitting 不得裁剪或丢弃已验证的旧 summary marker，也不得丢弃从 DB 加载的 `previous_summary`。旧 summary 过大应在 valve 配置校验阶段阻止，而不是在运行时牺牲覆盖语义。
+- Valve 配置必须保证 `max_summary_tokens` 小于 summary model 输入窗口的 80%，为后续再次压缩至少预留 20% 输入空间容纳新消息。summary model 输入窗口优先取 `summary_model_max_context`，否则取 `summary_model` 在 `model_thresholds` 中的 `max_context`，再否则取全局 `max_context_tokens`；窗口为 0 表示无法校验。
+- 通过旧 summary 生成新 summary 时，最终 prompt 至少保留一条新消息（一个 atomic group）。如果“旧 summary + 一条新消息”仍超过 safe input budget，也必须强行提交给 summary model；此时失败应由 provider/现有失败策略处理，但不能通过丢弃旧 summary 获得一个语义错误的摘要。
 - late async result 保存为它自己的 snapshot，不假设它仍然是当前分支。
 
 **参考模式：**
 - 现有 target compressed count 计算和 prompt fitting loops。
-- 现有 summary model 上下文过小时从 summary input 丢弃最新 atomic groups 的行为。
+- 现有 summary model 上下文过小时从 summary input 丢弃最新 atomic groups 的行为，但只允许丢弃新消息 atomic groups，不允许丢弃旧 summary。
 
 **测试场景：**
 - Happy path：正常 outlet 保存的 summary 包含实际 summarized messages 的 refs。
 - Edge case：prompt fitting 丢弃最新 atomic group -> saved refs 排除被丢弃 group，之后该 group 保持 live tail。
+- Edge case：prompt fitting 预算不足时仍保留 embedded summary marker，并至少带一条新消息；保存的 snapshot 覆盖旧 summary 的 prefix + 该新消息。
+- Edge case：DB-backed `previous_summary` 预算不足时仍传给 summary LLM，并至少带一条新消息。
+- Error path：`max_summary_tokens` 大于或等于 summary model 输入窗口 80% 时，valve 配置校验失败。
 - Edge case：outlet 收到不含 summary marker 的 body，并在计算新进度前 reinject 一个 validated snapshot。
 - Edge case：两个不同分支的 async tasks 保存独立 snapshots，切回旧分支时旧 snapshot 仍被选中。
 - Error path：summarized range 缺少稳定 ids -> 不保存为 branch-valid coverage。
@@ -432,7 +438,7 @@ flowchart TD
 
 | 风险 | 缓解 |
 |------|------|
-| snapshot table 增加存储量 | 增加每 chat retention 上限，refs 保持 compact。 |
+| snapshot table 增加存储量 | 保留所有历史 branch-valid snapshots 以支持任意深度分叉；通过 covered refs hash 去重相同覆盖范围，refs 保持 compact，并在后续需要时再设计显式归档/清理策略。 |
 | legacy summaries 被复用得更保守 | 优先正确性；升级后为当前分支重新生成 branch-valid snapshots。 |
 | 无法拿到完整 `history.messages` graph | 不把 unmatched refs 当作删除跳过；拒绝 candidate 并保留原始当前分支消息。 |
 | 非标准 OpenWebUI 流程里的 body messages 缺少 ids | 能 DB reconstruction 就用 DB；不能就不声明 validated coverage。 |

@@ -349,7 +349,6 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 SUMMARY_METADATA_SOURCE = "async_context_compression"
-SUMMARY_SNAPSHOT_RETENTION_LIMIT = 20
 
 # Open WebUI built-in imports
 from open_webui.utils.chat import generate_chat_completion
@@ -1346,40 +1345,6 @@ class Filter:
             self._summary_snapshot_updated_timestamp(snapshot),
         )
 
-    def _summary_snapshots_to_prune(
-        self,
-        snapshots: List[Any],
-        limit: int = SUMMARY_SNAPSHOT_RETENTION_LIMIT,
-    ) -> List[Any]:
-        if limit <= 0 or len(snapshots) <= limit:
-            return []
-
-        # Retention favors recent checkpoints first, then larger coverage. A
-        # shorter recent prefix may be the only reusable summary after branching.
-        keep = set(
-            id(snapshot)
-            for snapshot in sorted(
-                snapshots,
-                key=lambda snapshot: (
-                    self._summary_snapshot_updated_timestamp(snapshot),
-                    int(getattr(snapshot, "compressed_message_count", 0) or 0),
-                ),
-                reverse=True,
-            )[:limit]
-        )
-        # Always keep the snapshot covering the smallest prefix: after an early
-        # branch divergence it is the most general (most likely common-ancestor)
-        # summary, and pure recency/size retention is exactly what evicts it.
-        shortest = min(
-            snapshots,
-            key=lambda snapshot: (
-                int(getattr(snapshot, "compressed_message_count", 0) or 0),
-                -self._summary_snapshot_updated_timestamp(snapshot),
-            ),
-        )
-        keep.add(id(shortest))
-        return [snapshot for snapshot in snapshots if id(snapshot) not in keep]
-
     def _annotate_summary_snapshot_selection(
         self,
         snapshot: Any,
@@ -2254,8 +2219,66 @@ class Filter:
         max_summary_tokens: int = Field(
             default=16384,
             ge=1,
-            description="The maximum number of tokens for the summary.",
+            description="The maximum number of tokens for the summary. Must be less than 80% of the summary model input window so at least 20% remains for new messages during follow-up compression.",
         )
+
+        def __init__(self, **data):
+            super().__init__(**data)
+            self.validate_summary_budget()
+
+        @staticmethod
+        def _summary_window_from_values(
+            summary_model: Optional[str],
+            summary_model_max_context: int,
+            model_thresholds: str,
+            max_context_tokens: int,
+        ) -> int:
+            if summary_model_max_context > 0:
+                return summary_model_max_context
+
+            if summary_model:
+                for raw_config in model_thresholds.split(","):
+                    parts = raw_config.strip().split(":")
+                    if len(parts) != 3:
+                        continue
+                    if parts[0].strip() != summary_model:
+                        continue
+                    try:
+                        return int(parts[2].strip())
+                    except ValueError:
+                        break
+
+            return max_context_tokens
+
+        @staticmethod
+        def _validate_summary_budget_values(
+            max_summary_tokens: int,
+            summary_window: int,
+            model_label: str = "summary model",
+        ) -> None:
+            if summary_window <= 0:
+                return
+            if int(max_summary_tokens) * 5 >= int(summary_window) * 4:
+                raise ValueError(
+                    "max_summary_tokens must be less than 80% of the summary "
+                    f"model input window ({summary_window}) for '{model_label}', "
+                    "leaving at least 20% for new messages."
+                )
+
+        def validate_summary_budget(self):
+            summary_window = self._summary_window_from_values(
+                self.summary_model,
+                self.summary_model_max_context,
+                self.model_thresholds,
+                self.max_context_tokens,
+            )
+            self._validate_summary_budget_values(
+                self.max_summary_tokens,
+                summary_window,
+                self.summary_model or "summary model",
+            )
+            return self
+
         summary_temperature: float = Field(
             default=0.1,
             ge=0.0,
@@ -2657,35 +2680,6 @@ class Filter:
 
         return generated_summaries
 
-    async def _prune_summary_snapshots_async(
-        self,
-        session: Any,
-        select_fn: Callable,
-        chat_id: str,
-    ) -> None:
-        # Pruning is best-effort maintenance. A failure here (lock timeout,
-        # serialization error) must never abort the enclosing snapshot save, so
-        # swallow and log instead of letting it propagate and roll back the write.
-        try:
-            result = await session.execute(
-                select_fn(ChatSummarySnapshot).filter_by(chat_id=chat_id)
-            )
-            snapshots = list(result.scalars().all())
-            for snapshot in self._summary_snapshots_to_prune(snapshots):
-                await session.delete(snapshot)
-        except Exception as exc:
-            logger.warning(f"[Storage] Snapshot prune skipped (non-fatal): {exc}")
-
-    def _prune_summary_snapshots_sync(self, session: Any, chat_id: str) -> None:
-        try:
-            snapshots = (
-                session.query(ChatSummarySnapshot).filter_by(chat_id=chat_id).all()
-            )
-            for snapshot in self._summary_snapshots_to_prune(list(snapshots)):
-                session.delete(snapshot)
-        except Exception as exc:
-            logger.warning(f"[Storage] Snapshot prune skipped (non-fatal): {exc}")
-
     async def _save_summary(
         self,
         chat_id: str,
@@ -2779,12 +2773,6 @@ class Filter:
                                     source_current_id=source_current_id,
                                 )
                             )
-                        await self._prune_summary_snapshots_async(
-                            session,
-                            select,
-                            chat_id,
-                        )
-
                     await session.commit()
 
                     if self.valves.debug_mode:
@@ -2843,8 +2831,6 @@ class Filter:
                                     source_current_id=source_current_id,
                                 )
                             )
-                        self._prune_summary_snapshots_sync(session, chat_id)
-
                     session.commit()
 
                     if self.valves.debug_mode:
@@ -5111,7 +5097,9 @@ class Filter:
                 return
 
             max_context_tokens = self._get_summary_model_context_limit(summary_model_id)
-            request_limits = self._compute_summary_request_limits(max_context_tokens)
+            request_limits = self._compute_summary_request_limits(
+                max_context_tokens, summary_model_id
+            )
 
             await self._log(
                 f"[🤖 Async Summary Task] Using max limit for model {summary_model_id}: {max_context_tokens} Tokens",
@@ -5132,6 +5120,8 @@ class Filter:
             # conversation_text — no need to inject separately.
             # When summary_index is None the outlet messages come from raw DB history that
             # has never had the summary injected, so we must load it from DB explicitly.
+            previous_summary_base_progress = 0
+            previous_summary_protected_head_count = 0
             if summary_index is None:
                 previous_snapshot = await self._load_applicable_summary_snapshot(
                     chat_id,
@@ -5139,8 +5129,27 @@ class Filter:
                 )
                 previous_summary = previous_snapshot.summary if previous_snapshot else None
                 if previous_summary:
+                    previous_summary_base_progress = (
+                        self._summary_snapshot_current_coverage_count(previous_snapshot)
+                    )
+                    previous_summary_protected_head_count = (
+                        self._summary_snapshot_current_protected_head_count(
+                            previous_snapshot
+                        )
+                    )
+                    if previous_summary_base_progress >= end_index:
+                        await self._log(
+                            "[🤖 Async Summary Task] DB-backed previous summary already "
+                            "covers the target compression boundary, skipping",
+                            event_call=__event_call__,
+                        )
+                        return
+                    if previous_summary_base_progress > start_index:
+                        start_index = previous_summary_base_progress
+                        middle_messages = messages[start_index:end_index]
                     await self._log(
-                        "[🤖 Async Summary Task] Loaded branch-valid previous summary from DB to pass as context (summary not in messages)",
+                        "[🤖 Async Summary Task] Loaded branch-valid previous summary "
+                        "from DB to pass as context (summary not in messages)",
                         event_call=__event_call__,
                     )
             else:
@@ -5153,11 +5162,6 @@ class Filter:
                 )
             # Fit the exact final request prompt, not just middle-message heuristics.
             prompt_tokens = 0
-            # If budgeting forces us to drop the embedded previous-summary marker,
-            # the new summary no longer represents the base_progress prefix, so it
-            # cannot honestly stand in for the [0:saved_compressed_count] range and
-            # must not be persisted as a branch-valid snapshot.
-            summary_marker_dropped = False
             while max_context_tokens > 0:
                 if not middle_messages:
                     await self._log(
@@ -5206,25 +5210,15 @@ class Filter:
                     )
                     continue
 
-                if protected_prefix > 0:
-                    middle_messages = middle_messages[1:]
-                    protected_prefix = 0
-                    summary_marker_dropped = True
+                if (protected_prefix > 0 or previous_summary) and summary_atomic_groups:
                     await self._log(
-                        "[🤖 Async Summary Task] Dropped embedded previous summary marker from compression input to fit final request payload",
+                        "[🤖 Async Summary Task] Final summary request still exceeds safe "
+                        "budget after trimming to one new atomic group; keeping previous "
+                        "summary and one new group to preserve compression semantics",
                         log_type="warning",
                         event_call=__event_call__,
                     )
-                    continue
-
-                if previous_summary:
-                    previous_summary = None
-                    await self._log(
-                        "[🤖 Async Summary Task] Dropped DB-backed previous summary from prompt to fit final request payload",
-                        log_type="warning",
-                        event_call=__event_call__,
-                    )
-                    continue
+                    break
 
                 await self._log(
                     "[🤖 Async Summary Task] Unable to fit final summary request within model budget after shrinking. Skipping summary generation.",
@@ -5282,11 +5276,20 @@ class Filter:
                 return
 
             if summary_index is None:
-                saved_compressed_count = start_index + len(middle_messages)
-                protected_head_count = min(
-                    saved_compressed_count,
-                    self._get_effective_keep_first(messages),
-                )
+                if previous_summary_base_progress > 0:
+                    saved_compressed_count = previous_summary_base_progress + len(
+                        middle_messages
+                    )
+                    protected_head_count = min(
+                        saved_compressed_count,
+                        previous_summary_protected_head_count,
+                    )
+                else:
+                    saved_compressed_count = start_index + len(middle_messages)
+                    protected_head_count = min(
+                        saved_compressed_count,
+                        self._get_effective_keep_first(messages),
+                    )
             else:
                 saved_compressed_count = base_progress + max(
                     0, len(middle_messages) - protected_prefix
@@ -5304,24 +5307,11 @@ class Filter:
                 event_call=__event_call__,
             )
 
-            if summary_marker_dropped:
-                # The old summary context was dropped to fit the budget, so this
-                # summary only describes the new tail. It cannot represent the
-                # base_progress prefix; persist a compatibility pointer only.
-                covered_refs = None
-                await self._log(
-                    "[🤖 Async Summary Task] ⚠️ Previous-summary marker was dropped during "
-                    "budgeting; summary no longer covers the prefix, saving compatibility "
-                    "summary only, not branch-valid snapshot",
-                    log_type="warning",
-                    event_call=__event_call__,
-                )
-            else:
-                covered_refs = self._message_refs_for_prefix(
-                    messages,
-                    saved_compressed_count,
-                )
-            if covered_refs is None and not summary_marker_dropped:
+            covered_refs = self._message_refs_for_prefix(
+                messages,
+                saved_compressed_count,
+            )
+            if covered_refs is None:
                 await self._log(
                     "[🤖 Async Summary Task] ⚠️ Covered range lacks stable message refs; "
                     "saving compatibility summary only, not branch-valid snapshot",
@@ -5520,8 +5510,22 @@ class Filter:
         formatted.reverse()
         return "\n".join(formatted)
 
+    def _validate_summary_budget_configuration(
+        self, model_id: Optional[str], max_context_tokens: int
+    ) -> None:
+        """Ensure a saved summary cannot consume the whole next summary input."""
+        if max_context_tokens <= 0:
+            return
+
+        max_summary_tokens = max(1, int(self.valves.max_summary_tokens or 1))
+        self.valves._validate_summary_budget_values(
+            max_summary_tokens,
+            max_context_tokens,
+            model_id or "summary model",
+        )
+
     def _compute_summary_request_limits(
-        self, max_context_tokens: int
+        self, max_context_tokens: int, model_id: Optional[str] = None
     ) -> Dict[str, int]:
         """Reserve conservative input/output budgets for summary requests."""
         desired_output_tokens = max(1, int(self.valves.max_summary_tokens or 1))
@@ -5532,6 +5536,8 @@ class Filter:
                 "max_output_tokens": desired_output_tokens,
                 "safety_margin_tokens": 0,
             }
+
+        self._validate_summary_budget_configuration(model_id, max_context_tokens)
 
         safety_margin_tokens = min(4096, max(512, max_context_tokens // 20))
         available_after_margin = max(512, max_context_tokens - safety_margin_tokens)
@@ -5856,7 +5862,7 @@ Return only the XML working memory:
         await self._log(f"[🤖 LLM Call] Model: {model}", event_call=__event_call__)
 
         max_context_tokens = self._get_summary_model_context_limit(model)
-        request_limits = self._compute_summary_request_limits(max_context_tokens)
+        request_limits = self._compute_summary_request_limits(max_context_tokens, model)
         max_output_tokens = request_limits["max_output_tokens"]
 
         # Build payload

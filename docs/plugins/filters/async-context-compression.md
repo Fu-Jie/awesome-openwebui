@@ -58,8 +58,8 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 - ✅ Asynchronous summarization that does not block chat responses.
 - ✅ Persistent storage via Open WebUI's shared database connection (PostgreSQL, SQLite, etc.).
 - ✅ Flexible retention policy to keep the first and last N messages.
-- ✅ Smart injection of historical summaries back into the context.
-- ✅ External chat reference summarization with cached-summary reuse, direct injection for small chats, and generated summaries for larger chats.
+- ✅ Branch-aware injection of historical summaries back into the context.
+- ✅ External chat reference summarization with branch-valid cached-summary reuse, direct injection for small chats, and generated summaries for larger chats.
 - ✅ Structure-aware trimming that preserves document structure (headers, intro, conclusion).
 - ✅ Native tool output trimming for cleaner context when using function calling.
 - ✅ Configurable compression style for token-minimal, balanced, or high-fidelity summaries.
@@ -137,7 +137,8 @@ flowchart TD
 - `outlet` performs summary generation asynchronously and does not block the current reply.
 - External chat references may come from an existing persisted summary, a small chat's full text, or a generated/truncated reference summary.
 - If a referenced-chat summary call fails, the filter falls back to direct context injection instead of failing the whole request.
-- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be.
+- Branch-valid historical summary snapshots are retained so a future branch can reuse the nearest matching ancestor summary, even when the user forks at an arbitrary earlier point.
+- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be, and it must be less than 80% of the summary model input window so at least 20% remains for new messages during follow-up compression. Invalid settings raise a configuration error; the filter does not silently lower the value.
 - Important background summary failures are surfaced to the browser console (`F12`) and the chat status area.
 - External reference messages are protected during trimming so they are not discarded first.
 
@@ -148,7 +149,7 @@ flowchart TD
 ### 1) Database (automatic)
 
 - Uses Open WebUI's shared database connection; no extra configuration needed.
-- The `chat_summary` table is created on first run.
+- The `chat_summary` and `chat_summary_snapshot` tables are created on first run.
 
 ### 2) Filter order
 
@@ -167,7 +168,7 @@ flowchart TD
 | `keep_last`                    | `6`      | Always keep the last N messages to preserve recent context.                                                                                                           |
 | `summary_model`                | `None`   | Model for summaries. Strongly recommended to set a fast, economical model (e.g., `gemini-2.5-flash`, `deepseek-v3`). Falls back to the current chat model when empty. |
 | `summary_model_max_context`    | `0`      | Input context window used to fit summary requests. If `0`, falls back to `model_thresholds` or global `max_context_tokens`.                                          |
-| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit.                                                                         |
+| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit, and must be strictly less than 80% of the effective summary input window (`summary_model_max_context`, or its fallback from `model_thresholds` / `max_context_tokens`). Invalid settings raise an error instead of being auto-adjusted. |
 | `summary_temperature`          | `0.1`    | Randomness for summary generation. Lower is more deterministic.                                                                                                       |
 | `summary_fail_mode`            | `silent` | Controls what happens when the summary LLM call fails. `silent` logs the error and skips summary generation for that turn; `raise` preserves the previous hard-failure behavior. |
 | `compression_style`            | `balanced` | Controls summary compactness. `aggressive` minimizes tokens, `balanced` keeps key context with moderate detail, and `faithful` preserves more nuance and reasoning context. |

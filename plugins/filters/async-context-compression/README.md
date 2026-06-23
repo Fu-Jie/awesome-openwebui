@@ -24,7 +24,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 ## Branch-aware summary reuse
 
 - **Branch-safe cached summaries**: Stored summaries are reused only when every saved message-id + payload-fingerprint ref can be explained as either a current active-branch ancestor or a message proven deleted from the full history graph. Snapshots that still contain live sibling-branch refs are rejected, so new or edited current-branch messages stay in the raw live tail instead of being hidden by an old summary.
-- **Snapshot-based persistence**: The legacy `chat_summary` row remains as a compatibility/current-pointer record, while reusable coverage is stored in branch-specific `chat_summary_snapshot` rows. The filter keeps a bounded set of recent branch checkpoints per chat.
+- **Snapshot-based persistence**: The legacy `chat_summary` row remains as a compatibility/current-pointer record, while reusable coverage is stored in branch-specific `chat_summary_snapshot` rows. Branch-valid historical snapshots are retained so a future fork can reuse the nearest matching ancestor, even when the user branches from an older point.
 - **Protected-head tracking**: Snapshots remember how many leading messages were kept outside the summary. If the current `keep_first` policy no longer preserves those messages, the snapshot is not reused as branch-valid coverage.
 - **Safe upgrade behavior**: Legacy summaries without coverage metadata are not trusted as coverage. The first turn after upgrading may send more raw context until a branch-valid snapshot is generated.
 
@@ -139,7 +139,8 @@ flowchart TD
 - External chat references may come from an existing branch-valid persisted summary, a small chat's full text, or a generated/truncated reference summary.
 - Legacy `chat_summary` rows are compatibility records only; current-branch summary coverage is validated through `chat_summary_snapshot` message refs.
 - If a referenced-chat summary call fails, the filter falls back to direct context injection instead of failing the whole request.
-- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be.
+- Branch-valid historical summary snapshots are retained so a future branch can reuse the nearest matching ancestor summary, even when the user forks at an arbitrary earlier point.
+- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be, and it must be less than 80% of the summary model input window so at least 20% remains for new messages during follow-up compression. Invalid settings raise a configuration error; the filter does not silently lower the value.
 - Important background summary failures are surfaced to the browser console (`F12`) and the chat status area.
 - External reference messages are protected during trimming so they are not discarded first.
 
@@ -169,7 +170,7 @@ flowchart TD
 | `keep_last`                    | `6`      | Always keep the last N messages to preserve recent context.                                                                                                           |
 | `summary_model`                | `None`   | Model for summaries. Strongly recommended to set a fast, economical model (e.g., `gemini-2.5-flash`, `deepseek-v3`). Falls back to the current chat model when empty. |
 | `summary_model_max_context`    | `0`      | Input context window used to fit summary requests. If `0`, falls back to `model_thresholds` or global `max_context_tokens`.                                          |
-| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit.                                                                         |
+| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit, and must be strictly less than 80% of the effective summary input window (`summary_model_max_context`, or its fallback from `model_thresholds` / `max_context_tokens`). Invalid settings raise an error instead of being auto-adjusted. |
 | `summary_temperature`          | `0.1`    | Randomness for summary generation. Lower is more deterministic.                                                                                                       |
 | `summary_fail_mode`            | `silent` | Controls what happens when the summary LLM call fails. `silent` logs the error and skips summary generation for that turn; `raise` preserves the previous hard-failure behavior. |
 | `compression_style`            | `balanced` | Controls summary compactness. `aggressive` minimizes tokens, `balanced` keeps key context with moderate detail, and `faithful` preserves more nuance and reasoning context. |

@@ -11,11 +11,58 @@ reviewer: opus-4.8 (ce:review, interactive / report-only document)
 
 本轮按本 review 的 actionable findings 修复了安全/可靠性快赢项并补齐相应测试，保留下方原始审查记录作为追踪上下文。测试：`pytest` **62 passed**（原 53 + 新增 9）。已 commit：`feat(...)` snapshot reuse + `test(...)` safety coverage。
 
+后续根据人工复核调整 #2 / #3 的修法：旧 summary 是压缩链的语义根，运行时不得通过裁剪旧 summary 来适配预算；改为在 valve 配置和 summary request limit 计算阶段校验 `max_summary_tokens < summary_model_input_window * 80%`，并在再次压缩时至少保留一个新消息 atomic group。snapshot retention 也改为保留所有历史 branch-valid snapshots，因为用户可能在任意历史深度分叉。更新后 targeted plugin 测试：`pytest` **65 passed**。
+
+## 复审更新（2026-06-23 ce:review after revised #2/#3）
+
+本轮复审只覆盖 staged diff 中 async-context-compression 的实现、测试和文档更新，排除 `docs/zh/future_plugin_development_roadmap_cn.md`。并行只读 reviewer：correctness、testing、maintainability、reliability、kieran-python；主审查复核 `_generate_summary_async`、`Valves` 校验、snapshot selection / retention、inlet 注入路径和新增测试。
+
+结论：#2 的“不得裁剪旧 summary / 至少保留一个新 atomic group / 80% valve 校验”和 #3 的“保留所有历史 branch-valid snapshots / 当前分支只注入覆盖最深的一个 summary”方向正确；新增测试也验证了当前分支最终只包含一个 summary marker。本轮发现两条 P2 和一条 P3，后续 ce:work 已处理，保留 findings 原文作为审查追踪。无需更新 `async-context-compression-branch-aware-summary-review-1-gpt-5.5.zh.md`，本轮发现都针对 review-2 后续 revised 实现。
+
+### ce:work 修复状态（2026-06-23）
+
+| Finding | Status | Resolution |
+|---|---|---|
+| P2 #17 DB-backed `previous_summary` fallback 没有使用 previous snapshot 覆盖边界 | **addressed** | `_generate_summary_async` 在 `summary_index is None` 且加载到 branch-valid previous snapshot 时，记录 previous coverage/protected-head，并把 `middle_messages` 调整为 previous coverage 之后到 target 的新消息。若 previous snapshot 已覆盖 target，直接跳过；保存时以 previous coverage + fitted new groups 计算 `saved_compressed_count`。新增 `test_generate_summary_async_db_previous_summary_starts_after_previous_coverage`，覆盖 raw messages + DB snapshot + oversized prompt 只推进一个新 group。 |
+| P2 #18 `Valves` 构造期和运行期 80/20 校验路径漂移、测试不足 | **addressed** | `Valves` 抽出 `_summary_window_from_values` 与 `_validate_summary_budget_values`，构造期复用同一解析/校验 helper，运行期 `_validate_summary_budget_configuration` 复用同一 80/20 校验 helper。`test_valves_reject_summary_budget_without_new_message_space` 补充 `summary_model_max_context` 与 `model_thresholds` 两种窗口来源的拒绝/接受断言。 |
+| P3 #19 retain-all 后 prune helper/save 后 prune 查询是 no-op | **addressed** | 删除 `_summary_snapshots_to_prune`、`_prune_summary_snapshots_async`、`_prune_summary_snapshots_sync` 以及 `_save_summary` 后的 prune 调用；retain-all 现在没有误导性的 retention cap 入口，也不会在每次保存后额外加载全部 snapshots。 |
+
+### P2
+
+| # | File | Issue | Reviewer | Confidence | Route |
+|---|------|-------|----------|------------|-------|
+| 17 | `plugins/filters/async-context-compression/async_context_compression.py:5063` / `:5146` / `:5215` | **DB-backed `previous_summary` fallback 没有使用 previous snapshot 的覆盖边界，可能无法保证“多压缩一条新消息”。** 正常 outlet 会在 `_generate_summary_async` 前把 applicable snapshot reinject 成 summary marker，此时走 marker 路径是安全的。但 `_generate_summary_async` 自身仍保留 `summary_index is None` 时从 DB 加载 `previous_summary` 的 fallback：它只取 `previous_snapshot.summary`，没有把 `previous_snapshot` 的 current coverage count 作为 base boundary。于是 prompt fitting 被迫保留一个 atomic group 时，该 group 可能来自 previous summary 已覆盖过的 raw prefix，而不是旧 summary 之后的第一条新消息；保存时 `saved_compressed_count = start_index + len(middle_messages)` 也可能没有推进到 previous snapshot 之后。 | correctness + 主审查 | 0.84 | `manual -> downstream-resolver`（requires-verification） |
+| 18 | `plugins/filters/async-context-compression/async_context_compression.py:2240` / `:5506` | **`Valves` 构造期和运行期 80/20 校验使用两套有效窗口解析逻辑，且测试只覆盖全局 fallback。** `Valves.validate_summary_budget()` 手写解析 `summary_model_max_context` / `model_thresholds` / `max_context_tokens`，运行期 `_compute_summary_request_limits()` 走 `_get_summary_model_context_limit()` + `_validate_summary_budget_configuration()`。这两条路径未来可能在 model id 清洗、custom/base model 解析或 fallback 规则上漂移，导致配置保存时通过、后台压缩时才报错，削弱“过 valve 配置校验”的承诺。当前测试只覆盖 `max_context_tokens` fallback，未覆盖 `summary_model_max_context` 和 `model_thresholds` 两个主要来源。 | testing + maintainability | 0.83 | `manual -> downstream-resolver`（requires-verification） |
+
+建议修法：
+
+- #17：在 DB-backed fallback 中保留 `previous_snapshot` 对象和它的 `_summary_snapshot_current_coverage_count()`，要么先构造/插入等价 summary marker 后统一走 marker 路径，要么把 `middle_messages` 直接设为 `messages[previous_coverage:target]` 并以 previous coverage 计算 `saved_compressed_count`。补一个 raw messages + DB snapshot + oversized prompt 的回归，断言输入是旧 summary + previous coverage 之后的第一组新消息，并且 saved refs 至少推进一组。
+- #18：抽出单一有效 summary window 解析/校验契约，或至少让构造期和运行期共享同一 helper 规则。补 `Valves(summary_model_max_context=1000, max_summary_tokens=800)` 拒绝 / `799` 接受，以及 `summary_model="s", model_thresholds="s:100:1000"` 下同样的拒绝/接受。
+
+### P3
+
+| # | File | Issue | Reviewer | Confidence | Route |
+|---|------|-------|----------|------------|-------|
+| 19 | `plugins/filters/async-context-compression/async_context_compression.py:1348` / `:2669` | **retain-all 成为契约后，prune helper 和每次 save 后的 prune 查询已经是误导性的 no-op。** `_summary_snapshots_to_prune()` 忽略 `snapshots` / `limit` 并始终返回 `[]`，但 `_prune_summary_snapshots_async/_sync` 仍在保存后加载 chat 的所有 snapshots 再调用它。当前不影响正确性，但随着 retained snapshots 增长，会增加一次无收益 DB 查询，也容易让后续维护者误以为仍有 retention cap。 | maintainability | 0.93 | `safe_auto -> review-fixer` |
+
+### Suppressed / Not Findings
+
+| Claim | Disposition |
+|---|---|
+| “保留所有历史 snapshots 会导致无界增长，应恢复 hard cap。” | 不作为本轮 finding。用户明确要求支持任意历史深度分叉，保留所有 branch-valid snapshots 是当前正确性约束。记录为残余运维风险：后续可以设计显式归档/清理策略，但不能在本轮重新按 recency/size 剪掉旧 summary。 |
+| “旧 summary + 一条新消息超过 safe input budget 时应 skip 或 fail before provider。” | 不作为 finding。用户明确要求即使超过 input 窗口也强行输入，失败交给 provider / 现有 `summary_fail_mode` 处理；这是本轮 revised #2 的预期行为。 |
+
+### Verification
+
+- `python -m pytest plugins/filters/async-context-compression/test_async_context_compression.py -q` -> **65 passed**。
+- `git diff --check` -> pass。
+- 手工复核 `test_inlet_uses_only_latest_matching_snapshot_for_current_branch`：当历史中保留 `1-5`、`1-10`、`1-15` 三个 snapshot 时，`inlet` 最终只注入一个包含 `summary 1-15` 的 summary marker，并从 `m15` 开始保留 live tail；不会把多个历史 summary 一起发给主模型。
+
 | Finding | Status | Resolution |
 |---|---|---|
 | P1 #1 native tool-call ref 身份 | **deferred（已验证为真，析因完成）** | 复核 OpenWebUI `utils/misc.py:convert_output_to_messages`，确认展开消息无 `id`；并确认 inlet 用 folded 消息（真实 id）、outlet 用 unfolded 消息选/存 refs，是 folded↔unfolded 表征不一致问题。证明「合成 id」方案会破坏 sibling/deleted 判别（不安全），正确修法须用与 history graph 对齐的 folded refs 并打通坐标，属设计级改动；当前行为安全降级（不注入错误摘要），建议用 /ce:plan 在真实 native 运行态下专项落地。 |
-| P2 #2 marker-drop overclaim | **addressed** | budgeting 丢弃内嵌 summary marker 时置 `summary_marker_dropped`，保存阶段强制 `covered_refs=None`，只落 compatibility pointer，不再固化越界覆盖。新增 `test_generate_summary_async_skips_snapshot_when_marker_dropped_for_budget`。 |
-| P2 #3 retention 驱逐短前缀 | **addressed** | `_summary_snapshots_to_prune` 在 recency+size 截断后无条件保留 `compressed_message_count` 最小的 snapshot。新增 `test_snapshot_retention_protects_stale_shortest_prefix`。 |
+| P2 #2 marker-drop overclaim | **addressed（revised）** | 不再允许 budgeting 丢弃内嵌 summary marker 或 DB-backed `previous_summary`。`Valves` 构造和运行时 request limit 计算均校验 `max_summary_tokens` 必须严格小于 summary model input window 的 80%，为新消息预留至少 20%；prompt fitting 只裁剪较新的 atomic groups，且至少保留一个新消息 atomic group，必要时强行提交「旧 summary + 1 个新 group」。新增/更新 `test_generate_summary_async_keeps_marker_and_one_new_message_when_oversized`、`test_generate_summary_async_keeps_previous_summary_when_prompt_still_oversized`、`test_summary_budget_validation_requires_20_percent_new_message_space`、`test_valves_reject_summary_budget_without_new_message_space`。 |
+| P2 #3 retention 驱逐短前缀 | **addressed（revised）** | `_summary_snapshots_to_prune` 不再按 recency/size/最短前缀裁剪 branch-valid snapshots，保留所有历史 coverage；任意历史深度分叉时，下次压缩由 `_select_applicable_summary_snapshot` 选择当前分支上 matched coverage 最深、最接近的祖先 summary。新增/更新 `test_snapshot_retention_preserves_all_historical_prefixes`、`test_snapshot_selection_uses_nearest_available_ancestor_summary`。 |
 | P2 #4 prune 回滚 save | **addressed** | `_prune_summary_snapshots_async/_sync` 包入 try/except，prune 失败只 warning 不传播，不再回滚已暂存的 snapshot 写入。 |
 | P2 #5 async 未 expunge | **addressed** | `_load_summary_snapshots` async 路径返回前 `session.expunge_all()`，与 sync 对齐，避免会话关闭后属性访问触发 DetachedInstanceError。 |
 | P2 #6 安全不变量测试盲区 | **addressed** | 新增 R4 deleted-vs-sibling 双判别、R5 image-only 编辑、R7 atomic-group 切割拒绝（含 boundary 接受对照）、R9 两分支 snapshot 往返、corrupted refs JSON 安全跳过、covered refs 携带 fingerprint 断言（`test_snapshot_selection_discriminates_deleted_vs_sibling` / `_rejects_image_only_edit` / `_rejects_coverage_that_splits_tool_group` / `_round_trips_between_branches` / `_skips_corrupted_refs_json`、`test_message_refs_for_prefix_includes_payload_fingerprints`）。 |
@@ -100,11 +147,11 @@ OpenWebUI 的聊天历史是消息图（`history.messages` 映射 + `currentId` 
 计划质量很高：准确刻画了 count-only 的根因（数组坐标 ≠ 分支身份）、R1–R10 完整且自洽、mismatch 三场景（分叉 / 原地编辑 / 删除）推理严谨、「被考虑但不采用」与「延后到实现」分区合理。以下是计划自身的盲点 —— 它们直接传导成了上面的实现缺口：
 
 - **未协调既有 `_unfold_messages` 与新 ref 身份要求（→ 对应 P1 #1）。** Unit 2 写「history map value 缺少嵌入 `id` 时，refs 使用 map key」，但 native 工具调用展开出的合成子消息**既无 `id` 也无 map key**。计划没有把「展开后子消息如何获得稳定身份」这一关键路径纳入设计，是最大盲点。
-- **retention 规则只实现了一半（→ 对应 P2 #3 / P3 #16）。** Unit 3 要求「优先保留更新、更大、**可精确复用的前缀** snapshots」，但实现只做了 recency+size，丢掉了「保护短公共前缀」语义，恰好破坏分支切换复用——而这正是计划成功标准的核心场景之一。
-- **prompt-fitting 改变覆盖范围只覆盖了一个子情形（→ 对应 P2 #2）。** Unit 5 正确指出「fitting 丢弃最新 atomic groups 时 refs 必须排除」，但漏掉了「丢弃内嵌 previous-summary marker」这个子情形下 `saved_compressed_count` 仍含 `base_progress` 的 overclaim。
+- **retention 规则只实现了一半（→ 对应 P2 #3 / P3 #16，后续已补计划）。** Unit 3 原本要求「优先保留更新、更大、**可精确复用的前缀** snapshots」，但用户可以在任意历史长度分叉，保留最短公共前缀仍不充分。后续计划已改为保留所有 historical branch-valid snapshots，并通过 refs hash 去重相同覆盖范围；选择阶段使用当前分支上覆盖最深的可用祖先 summary。
+- **prompt-fitting 改变覆盖范围只覆盖了一个子情形（→ 对应 P2 #2，后续已补计划）。** Unit 5 正确指出「fitting 丢弃最新 atomic groups 时 refs 必须排除」，但漏掉了「丢弃内嵌 previous-summary marker」这个子情形下 `saved_compressed_count` 仍含 `base_progress` 的 overclaim。后续计划已改为：旧 summary 不得被裁剪，配置需保证 summary 最大输出小于 summary model 输入窗口的 80%，再次压缩至少保留一个新消息 atomic group。
 - 「完整 history graph 获取路径」作为延后问题处理得当；实现确实加载了完整 graph 并在缺失时 fail-closed。这点计划与实现一致且正确。
 
-结论：计划作为技术方向文档是 **可靠的**，但应补一节明确「native 工具调用展开消息的身份策略」与「retention 必须显式保护最短可复用前缀」，否则实现会继续踩这两个坑。
+结论：计划作为技术方向文档是 **可靠的**，但应补一节明确「native 工具调用展开消息的身份策略」；retention 后续已从“保护最短前缀”修正为“保留全部历史 branch-valid snapshots”。
 
 ## 既有 review 文档审查（`...-review-1-gpt-5.5.zh.md`）
 
@@ -128,7 +175,7 @@ Plan source: **explicit**（用户显式指向 `...-plan.zh.md`）。
 | R6 切换/编辑/重生/删除后 live tail 原文保留 | met / 断言弱 | 行为正确，但测试只断言 tail 的 id 不断言 content（#6）。 |
 | R7 system / external ref / atomic tool group 不变量 | **at risk** | atomic-group 切割拒绝逻辑（1497-1507）存在但**零测试**；更严重的是 native tool-call 链根本进不了 snapshot（P1 #1），与 R7 精神冲突；gap 内 system 消息保留无测试（#6）。 |
 | R8 legacy summary 安全降级、不隐藏 live tail | partially | 写侧不信任 legacy pointer；但选择侧拒绝 null-refs/超长 count 的 legacy snapshot 无测试（#6③）。 |
-| R9 每分支各持 snapshot、切回可复用 | **at risk** | 选择支持，但 retention 会驱逐切回所需短前缀（P2 #3），两分支往返无测试（#6⑥）。 |
+| R9 每分支各持 snapshot、切回可复用 | partially addressed | 选择支持；retention 后续改为保留所有历史 snapshots，并补 nearest-ancestor 选择测试。两分支完整往返仍由 #6⑥ 覆盖。 |
 | R10 late async 任务不破坏其他分支状态 | partially | hash 隔离基本成立；但多进程锁失效（#11）+ 非 clobber 无测试（#6）。 |
 
 ## 残余可执行项（Residual Actionable Work）
@@ -136,8 +183,8 @@ Plan source: **explicit**（用户显式指向 `...-plan.zh.md`）。
 | # | 关联 | Issue | Route | 下一步 |
 |---|------|-------|-------|--------|
 | 1 | #1 | native tool-call 链无 snapshot | `manual -> downstream-resolver` | 先验证 `convert_output_to_messages(raw=True)` 是否丢 `id`；若是，展开时把原 `id` 赋给首个展开消息，或对 covered_refs 用 pre-unfold 原始消息。补 native 链能存且能选中 snapshot 的回归。 |
-| 2 | #2 | marker-drop 后 overclaim | `manual -> downstream-resolver` | marker 被丢弃（5170）时置标志，`saved_compressed_count` 用 `len(new_tail)`，covered_refs 仅取新 tail。 |
-| 3 | #3/#16 | retention 驱逐短前缀 | `gated_auto -> downstream-resolver` | recency 截断后，无条件保留 `compressed_message_count` 最小的 snapshot；或按前缀长度分桶各留一个。对齐选择/prune 排序语义。 |
+| 2 | #2 | marker-drop 后 overclaim | `closed` | 已放弃“marker 被丢弃后降级保存”的方案，改为禁止裁剪旧 summary；通过 80/20 valve 校验和“至少保留 1 个新 atomic group”保证再次压缩有意义且覆盖语义正确。 |
+| 3 | #3/#16 | retention 驱逐任意分叉点祖先 summary | `closed` | 已放弃 recency/size/最短前缀裁剪，保留所有历史 branch-valid snapshots；#16 的选择/prune 排序不一致不再适用，因为 prune 不再删除 branch-valid snapshots。 |
 | 4 | #4 | prune 回滚 save | `gated_auto -> downstream-resolver` | 把 `_prune_summary_snapshots_*` 包进独立 try/except 并 log，确保 prune 失败不阻断主写入；或移出保存事务。 |
 | 5 | #5 | async 未 expunge | `gated_auto -> downstream-resolver` | async 路径 `session.expunge_all()`（或 `noload('*')`），与 sync 对齐；加真实 AsyncSession 测试。 |
 | 6 | #6 | 安全不变量测试盲区 | `manual -> downstream-resolver` | 按 #6 ①–⑦ 逐项补测，重点 R4 sibling 判别、atomic-group 拒绝、save-path fingerprint 断言、token-fit-shrink 边界。 |
@@ -156,4 +203,4 @@ Plan source: **explicit**（用户显式指向 `...-plan.zh.md`）。
 >
 > **Reasoning:** 核心分支安全逻辑（snapshot + 全 refs 验证）方向正确、关键判定经验证无误，gpt-5.5 的两处保存语义修复也属实。但本次独立审查发现 **native tool-calling 聊天会让整个特性静默失效（P1 #1）**——这是一类核心用例，且与 R7 及计划手工验证场景直接冲突；同时 prune 事务回滚（#4）、retention 驱逐短前缀（#3）、async 会话 expunge（#5）会侵蚀长期复用率与可靠性。这些都不会注入错误摘要（安全降级），但会让特性「对该用 case 不工作」或「越用越退化」。
 >
-> **Fix order:** 先确认并修 #1（native tool-call ref 身份，决定特性是否真正可用）→ #4（prune 不得回滚主写入）→ #2（marker-drop overclaim）/ #3（retention 保护短前缀）→ #5（async expunge）→ #7（hash 去重键）→ #6 补齐安全不变量测试 → #9–#16 可维护性整改。
+> **Fix order:** 先确认并修 #1（native tool-call ref 身份，决定特性是否真正可用）→ #4（prune 不得回滚主写入）→ #5（async expunge）→ #7（hash 去重键）→ #6 补齐安全不变量测试 → #9–#15 可维护性整改。#2 已按 no-trim old summary + 80/20 valve 校验方案闭环；#3/#16 已按 retain-all historical snapshots 方案闭环。

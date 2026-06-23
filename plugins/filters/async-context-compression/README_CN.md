@@ -26,7 +26,7 @@
 ## 分支感知摘要复用
 
 - **分支安全的缓存摘要**：只有当已保存 snapshot 里的每个 message id + payload fingerprint ref 都能解释为当前活跃分支祖先，或能从完整 history graph 证明已经删除时，缓存摘要才会被复用。仍包含 live sibling 分支 refs 的 snapshot 会被拒绝，因此新增或编辑后的当前分支消息必须留在原文 live tail 里，不能被旧摘要隐藏。
-- **基于 snapshot 的持久化**：旧的 `chat_summary` 行继续作为兼容/current pointer 记录；真正可复用的覆盖范围写入分支专属的 `chat_summary_snapshot` 行。插件会为每个聊天保留有上限的近期分支 checkpoint。
+- **基于 snapshot 的持久化**：旧的 `chat_summary` 行继续作为兼容/current pointer 记录；真正可复用的覆盖范围写入分支专属的 `chat_summary_snapshot` 行。插件会保留 branch-valid 历史 snapshot，使用户从更早位置分叉时仍能复用当前分支上最接近的祖先摘要。
 - **受保护头部追踪**：snapshot 会记录有多少开头消息是在摘要之外按原文保留的。如果当前 `keep_first` 策略已经不再保留这些消息，该 snapshot 不会作为 branch-valid 覆盖范围复用。
 - **安全升级行为**：没有覆盖范围元数据的 legacy summary 不再被当成可信覆盖。升级后的第一轮对话可能会发送更多原始上下文，直到生成 branch-valid snapshot。
 
@@ -141,7 +141,8 @@ flowchart TD
 - 外部聊天引用可以来自已有 branch-valid 持久化摘要、小聊天的完整文本，或动态生成/截断后的引用摘要。
 - 旧的 `chat_summary` 行只作为兼容记录；当前分支摘要覆盖范围通过 `chat_summary_snapshot` 里的 message refs 验证。
 - 如果引用聊天摘要失败，会自动回退为直接注入上下文，而不是让当前请求失败。
-- `summary_model_max_context` 控制摘要输入窗口；`max_summary_tokens` 只控制生成摘要的输出长度。
+- 会保留所有 branch-valid 历史摘要快照；用户在任意更早位置分叉后，下次压缩会复用当前分支上最接近的祖先摘要。
+- `summary_model_max_context` 控制摘要输入窗口；`max_summary_tokens` 只控制生成摘要的输出长度，并且必须严格小于摘要模型输入窗口的 80%，为后续再次压缩的新消息至少预留 20% 空间。不满足要求会报配置错误，过滤器不会静默改小该值。
 - 重要的后台摘要失败会显示到浏览器控制台 (`F12`) 和聊天状态提示里。
 - 外部引用消息在裁剪阶段会被特殊保护，避免被最先删除。
 
@@ -180,7 +181,7 @@ flowchart TD
 | :-------------------- | :------ | :------------------------------------------------------------------------------------------------------------------------------------------ |
 | `summary_model`       | `None`  | 用于生成摘要的模型 ID。**强烈建议**配置快速、经济、上下文窗口大的模型（如 `gemini-2.5-flash`、`deepseek-v3`）。留空则尝试复用当前对话模型。 |
 | `summary_model_max_context` | `0`     | 摘要请求可使用的输入上下文窗口。如果为 0，则回退到 `model_thresholds` 或全局 `max_context_tokens`。                                          |
-| `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限。                                                                                 |
+| `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限，并且必须严格小于有效摘要输入窗口（`summary_model_max_context`，或从 `model_thresholds` / `max_context_tokens` 回退得到的窗口）的 80%。不满足要求会报错，不会自动调整。 |
 | `summary_temperature` | `0.1`   | 控制摘要生成的随机性，较低的值结果更稳定。                                                                                                  |
 | `summary_fail_mode`   | `silent` | 控制摘要 LLM 调用失败时的行为。`silent` 会记录错误并跳过本轮摘要；`raise` 会保留之前的硬抛错行为。                                         |
 | `compression_style`   | `balanced` | 控制摘要压缩风格。`aggressive` 更省 token，`balanced` 在紧凑和保真之间取中间值，`faithful` 会尽量保留更多细节、论证和上下文层次。 |
