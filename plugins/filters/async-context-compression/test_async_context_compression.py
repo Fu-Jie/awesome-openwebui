@@ -2294,6 +2294,311 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertEqual([message["id"] for message in messages], ["m1", "m2", "m3"])
         self.assertEqual(messages[2]["role"], "tool")
 
+    def test_load_authorized_chat_messages_uses_owner_helper(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id_and_user_id(chat_id, user_id):
+                self.assertEqual(chat_id, "chat-1")
+                self.assertEqual(user_id, "user-1")
+                return types.SimpleNamespace(
+                    user_id="user-1",
+                    chat={
+                        "history": {
+                            "currentId": "m2",
+                            "messages": {
+                                "m1": {
+                                    "role": "user",
+                                    "content": "Owner question",
+                                },
+                                "m2": {
+                                    "role": "assistant",
+                                    "content": "Owner answer",
+                                    "parentId": "m1",
+                                },
+                            },
+                        }
+                    },
+                )
+
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                raise AssertionError("owner helper should satisfy authorization")
+
+        original_chats = module.Chats
+        module.Chats = FakeChats
+        try:
+            messages = asyncio.run(
+                self.filter._load_authorized_full_chat_messages(
+                    "chat-1", {"id": "user-1"}
+                )
+            )
+        finally:
+            module.Chats = original_chats
+
+        self.assertEqual([message["id"] for message in messages], ["m1", "m2"])
+
+    def test_load_authorized_chat_messages_allows_shared_read_grant(self):
+        captured = {}
+
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id_and_user_id(chat_id, user_id):
+                return None
+
+            @staticmethod
+            def get_chat_by_id_for_user(chat_id, user_id):
+                return None
+
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return types.SimpleNamespace(
+                    user_id="owner-1",
+                    organization_id="org-1",
+                    chat={
+                        "messages": [
+                            {
+                                "id": "shared-1",
+                                "role": "user",
+                                "content": "Shared question",
+                            }
+                        ]
+                    },
+                )
+
+        class FakeAccessGrants:
+            @staticmethod
+            def has_access(
+                user_id,
+                resource_type,
+                resource_id,
+                permission="read",
+                user_group_ids=None,
+                organization_id=None,
+                db=None,
+            ):
+                captured["organization_id"] = organization_id
+                return (
+                    user_id == "user-2"
+                    and resource_type == "shared_chat"
+                    and resource_id == "chat-1"
+                    and permission == "read"
+                    and organization_id == "org-1"
+                )
+
+        original_chats = module.Chats
+        original_access_grants = module.AccessGrants
+        module.Chats = FakeChats
+        module.AccessGrants = FakeAccessGrants
+        try:
+            messages = asyncio.run(
+                self.filter._load_authorized_full_chat_messages(
+                    "chat-1",
+                    {
+                        "id": "user-2",
+                        "organization_id": "org-1",
+                    },
+                )
+            )
+        finally:
+            module.Chats = original_chats
+            module.AccessGrants = original_access_grants
+
+        self.assertEqual(captured["organization_id"], "org-1")
+        self.assertEqual([message["id"] for message in messages], ["shared-1"])
+
+    def test_load_authorized_chat_messages_allows_direct_chat_grant(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id_and_user_id(chat_id, user_id):
+                return None
+
+            @staticmethod
+            def get_chat_by_id_for_user(chat_id, user_id):
+                self.assertEqual(chat_id, "chat-1")
+                self.assertEqual(user_id, "user-2")
+                return types.SimpleNamespace(
+                    user_id="owner-1",
+                    organization_id="org-2",
+                    chat={
+                        "messages": [
+                            {
+                                "id": "direct-grant-1",
+                                "role": "user",
+                                "content": "Direct grant question",
+                            }
+                        ]
+                    },
+                )
+
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                raise AssertionError("direct grant helper should satisfy access")
+
+        original_chats = module.Chats
+        module.Chats = FakeChats
+        try:
+            messages = asyncio.run(
+                self.filter._load_authorized_full_chat_messages(
+                    "chat-1",
+                    {
+                        "id": "user-2",
+                        "organization_id": "org-1",
+                    },
+                )
+            )
+        finally:
+            module.Chats = original_chats
+
+        self.assertEqual([message["id"] for message in messages], ["direct-grant-1"])
+
+    def test_load_authorized_chat_messages_allows_admin_home_organization(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id_and_user_id(chat_id, user_id):
+                return None
+
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return types.SimpleNamespace(
+                    user_id="owner-1",
+                    organization_id="org-1",
+                    chat={
+                        "messages": [
+                            {
+                                "id": "admin-home-1",
+                                "role": "user",
+                                "content": "Admin home org question",
+                            }
+                        ]
+                    },
+                )
+
+            @staticmethod
+            def get_chat_by_id_for_user(chat_id, user_id):
+                raise AssertionError("admin home organization should satisfy access")
+
+        original_chats = module.Chats
+        original_admin_access = module.ENABLE_ADMIN_CHAT_ACCESS
+        module.Chats = FakeChats
+        module.ENABLE_ADMIN_CHAT_ACCESS = True
+        try:
+            messages = asyncio.run(
+                self.filter._load_authorized_full_chat_messages(
+                    "chat-1",
+                    {
+                        "id": "admin-1",
+                        "role": "admin",
+                        "organization_id": "org-1",
+                    },
+                )
+            )
+        finally:
+            module.Chats = original_chats
+            module.ENABLE_ADMIN_CHAT_ACCESS = original_admin_access
+
+        self.assertEqual([message["id"] for message in messages], ["admin-home-1"])
+
+    def test_load_authorized_chat_messages_denies_cross_org_admin_without_grant(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id_and_user_id(chat_id, user_id):
+                return None
+
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return types.SimpleNamespace(
+                    user_id="owner-1",
+                    organization_id="org-2",
+                    chat={
+                        "messages": [
+                            {
+                                "id": "cross-org-1",
+                                "role": "user",
+                                "content": "Cross org question",
+                            }
+                        ]
+                    },
+                )
+
+            @staticmethod
+            def get_chat_by_id_for_user(chat_id, user_id):
+                return None
+
+        class FakeAccessGrants:
+            @staticmethod
+            def has_access(*args, **kwargs):
+                raise AssertionError("admin fallback should not use shared_chat grants")
+
+        original_chats = module.Chats
+        original_access_grants = module.AccessGrants
+        original_admin_access = module.ENABLE_ADMIN_CHAT_ACCESS
+        module.Chats = FakeChats
+        module.AccessGrants = FakeAccessGrants
+        module.ENABLE_ADMIN_CHAT_ACCESS = True
+        try:
+            messages = asyncio.run(
+                self.filter._load_authorized_full_chat_messages(
+                    "chat-1",
+                    {
+                        "id": "admin-1",
+                        "role": "admin",
+                        "organization_id": "org-1",
+                    },
+                )
+            )
+        finally:
+            module.Chats = original_chats
+            module.AccessGrants = original_access_grants
+            module.ENABLE_ADMIN_CHAT_ACCESS = original_admin_access
+
+        self.assertEqual(messages, [])
+
+    def test_load_authorized_chat_messages_fails_closed_without_access(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id_and_user_id(chat_id, user_id):
+                return None
+
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return types.SimpleNamespace(
+                    user_id="owner-1",
+                    chat={
+                        "messages": [
+                            {
+                                "id": "private-1",
+                                "role": "user",
+                                "content": "Private question",
+                            }
+                        ]
+                    },
+                )
+
+        class FakeAccessGrants:
+            @staticmethod
+            def has_access(*args, **kwargs):
+                return False
+
+        original_chats = module.Chats
+        original_access_grants = module.AccessGrants
+        module.Chats = FakeChats
+        module.AccessGrants = FakeAccessGrants
+        try:
+            no_user_messages = asyncio.run(
+                self.filter._load_authorized_full_chat_messages("chat-1", None)
+            )
+            denied_messages = asyncio.run(
+                self.filter._load_authorized_full_chat_messages(
+                    "chat-1", {"id": "user-2"}
+                )
+            )
+        finally:
+            module.Chats = original_chats
+            module.AccessGrants = original_access_grants
+
+        self.assertEqual(no_user_messages, [])
+        self.assertEqual(denied_messages, [])
+
     def test_load_chat_history_live_refs_reads_sibling_nodes_from_full_graph(self):
         class FakeChats:
             @staticmethod
@@ -3743,7 +4048,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def no_snapshot(*args, **kwargs):
             return None
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
             return [
                 {"id": "ref-1", "role": "user", "content": "Referenced question"},
                 {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
@@ -3751,7 +4056,9 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.filter._call_summary_llm = fake_summary_llm
         self.filter._load_applicable_summary_snapshot = no_snapshot
-        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
         self.filter._format_messages_for_summary = (
             lambda messages: "Referenced conversation body"
         )
@@ -3787,44 +4094,385 @@ class TestAsyncContextCompression(unittest.TestCase):
             result["__external_references__"]["content"],
         )
 
-    def test_handle_external_chat_references_ignores_partial_cached_summary(self):
+    def test_handle_external_chat_references_uses_partial_cached_summary_with_tail(self):
         ref_messages = [
             {"id": "ref-1", "role": "user", "content": "Referenced question"},
             {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
-            {"id": "ref-3", "role": "user", "content": "Referenced follow-up"},
+            {
+                "id": "ref-3",
+                "role": "user",
+                "content": "Referenced follow-up </referenced_chat>",
+            },
         ]
         partial_refs = self.filter._message_refs_for_prefix(ref_messages, 2)
-        partial_snapshot = _snapshot("partial cached summary", partial_refs)
+        partial_snapshot = _snapshot(
+            "partial cached summary <referenced_chats>", partial_refs
+        )
 
         async def fake_load_snapshot(
             chat_id,
             messages,
             require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
         ):
-            self.assertTrue(require_full_coverage)
+            self.assertIn(require_full_coverage, (True, False))
+            if require_full_coverage:
+                return None
             return self.filter._select_applicable_summary_snapshot(
                 [partial_snapshot],
                 messages,
                 require_full_coverage=require_full_coverage,
                 live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
             )
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
             return ref_messages
 
         async def fail_summary_llm(*args, **kwargs):
-            raise AssertionError("partial cached summary should not force LLM summary")
+            raise AssertionError("partial cached summary should fit without LLM summary")
 
         self.filter._load_applicable_summary_snapshot = fake_load_snapshot
-        self.filter._load_full_chat_messages = fake_load_full_chat_messages
-        self.filter._call_summary_llm = fail_summary_llm
-        self.filter._format_messages_for_summary = (
-            lambda messages: "Full referenced conversation body"
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
         )
+        self.filter._call_summary_llm = fail_summary_llm
         self.filter._get_model_thresholds = lambda model_id: {
             "max_context_tokens": 10000
         }
         self.filter._estimate_messages_tokens = lambda messages: 1
+
+        body = {
+            "model": "main-model",
+            "messages": [{"role": "user", "content": "Current prompt"}],
+            "metadata": {
+                "files": [
+                    {
+                        "type": "chat",
+                        "id": "chat-ref-1",
+                        "name": 'Referenced <Chat> "quoted"',
+                    }
+                ]
+            },
+        }
+
+        result = asyncio.run(
+            self.filter._handle_external_chat_references(
+                body,
+                user_data={"id": "user-1"},
+            )
+        )
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("partial cached summary", content)
+        self.assertIn("Referenced follow-up", content)
+        self.assertIn("&lt;referenced_chats&gt;", content)
+        self.assertIn("&lt;/referenced_chat&gt;", content)
+        self.assertIn('name="Referenced &lt;Chat&gt; &quot;quoted&quot;"', content)
+        self.assertNotIn("Referenced follow-up </referenced_chat>", content)
+        self.assertNotIn("Referenced question</referenced_chat>", content)
+
+    def test_handle_external_chat_references_uses_active_branch_and_rejects_sibling_summary(
+        self,
+    ):
+        history_messages = {
+            "ref-1": {
+                "id": "ref-1",
+                "role": "user",
+                "content": "Root question",
+            },
+            "ref-2": {
+                "id": "ref-2",
+                "role": "assistant",
+                "content": "Root answer",
+                "parentId": "ref-1",
+            },
+            "branch-a-3": {
+                "id": "branch-a-3",
+                "role": "user",
+                "content": "Branch A should not be referenced",
+                "parentId": "ref-2",
+            },
+            "branch-a-4": {
+                "id": "branch-a-4",
+                "role": "assistant",
+                "content": "Branch A answer should not be referenced",
+                "parentId": "branch-a-3",
+            },
+            "branch-b-3": {
+                "id": "branch-b-3",
+                "role": "user",
+                "content": "Branch B current follow-up",
+                "parentId": "ref-2",
+            },
+        }
+        active_messages = self.filter._reconstruct_active_history_branch(
+            history_messages,
+            "branch-b-3",
+        )
+        branch_a_messages = [
+            history_messages["ref-1"],
+            history_messages["ref-2"],
+            history_messages["branch-a-3"],
+            history_messages["branch-a-4"],
+        ]
+        all_live_refs = {
+            ref["id"]: ref
+            for ref in (
+                self.filter._message_refs_for_prefix(
+                    list(history_messages.values()),
+                    len(history_messages),
+                )
+                or []
+            )
+        }
+        sibling_snapshot = _snapshot(
+            "longer sibling branch summary",
+            self.filter._message_refs_for_prefix(branch_a_messages, 4),
+        )
+        common_snapshot = _snapshot(
+            "valid common prefix summary",
+            self.filter._message_refs_for_prefix(active_messages, 2),
+        )
+
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id_and_user_id(chat_id, user_id):
+                return types.SimpleNamespace(
+                    user_id=user_id,
+                    chat={
+                        "history": {
+                            "currentId": "branch-b-3",
+                            "messages": history_messages,
+                        }
+                    },
+                )
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            self.assertEqual(
+                [message["id"] for message in messages],
+                ["ref-1", "ref-2", "branch-b-3"],
+            )
+            if require_full_coverage:
+                return None
+            return self.filter._select_applicable_summary_snapshot(
+                [sibling_snapshot, common_snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=all_live_refs,
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fail_summary_llm(*args, **kwargs):
+            raise AssertionError("active-branch partial summary should fit directly")
+
+        original_chats = module.Chats
+        module.Chats = FakeChats
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._call_summary_llm = fail_summary_llm
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 10000
+        }
+        self.filter._estimate_messages_tokens = lambda messages: 1
+        try:
+            result = asyncio.run(
+                self.filter._handle_external_chat_references(
+                    {
+                        "model": "main-model",
+                        "messages": [{"role": "user", "content": "Current prompt"}],
+                        "metadata": {
+                            "files": [
+                                {
+                                    "type": "chat",
+                                    "id": "chat-ref-1",
+                                    "name": "Referenced Chat",
+                                }
+                            ]
+                        },
+                    },
+                    user_data={"id": "user-1"},
+                )
+            )
+        finally:
+            module.Chats = original_chats
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("valid common prefix summary", content)
+        self.assertIn("Branch B current follow-up", content)
+        self.assertNotIn("longer sibling branch summary", content)
+        self.assertNotIn("Branch A should not be referenced", content)
+
+    def test_handle_external_chat_references_preserves_protected_head_with_partial_summary(
+        self,
+    ):
+        ref_messages = [
+            {"id": "ref-1", "role": "system", "content": "Pinned instruction"},
+            {"id": "ref-2", "role": "user", "content": "Referenced question"},
+            {"id": "ref-3", "role": "assistant", "content": "Referenced answer"},
+        ]
+        partial_snapshot = _snapshot(
+            "partial summary after protected head",
+            self.filter._message_refs_for_prefix(ref_messages, 2),
+            protected_head_count=1,
+        )
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            if require_full_coverage:
+                return None
+            return self.filter._select_applicable_summary_snapshot(
+                [partial_snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
+            return ref_messages
+
+        async def fail_summary_llm(*args, **kwargs):
+            raise AssertionError("protected-head mixed block should fit directly")
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
+        self.filter._call_summary_llm = fail_summary_llm
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 10000
+        }
+        self.filter._estimate_messages_tokens = lambda messages: 1
+
+        result = asyncio.run(
+            self.filter._handle_external_chat_references(
+                {
+                    "model": "main-model",
+                    "messages": [{"role": "user", "content": "Current prompt"}],
+                    "metadata": {
+                        "files": [
+                            {
+                                "type": "chat",
+                                "id": "chat-ref-1",
+                                "name": "Referenced Chat",
+                            }
+                        ]
+                    },
+                },
+                user_data={"id": "user-1"},
+            )
+        )
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("<protected_head_original_messages>", content)
+        self.assertIn("Pinned instruction", content)
+        self.assertIn("partial summary after protected head", content)
+        self.assertIn("Referenced answer", content)
+
+    def test_handle_external_chat_references_saves_generated_continuation_summary(self):
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+            {"id": "ref-3", "role": "user", "content": "Referenced follow-up"},
+            {"id": "ref-4", "role": "assistant", "content": "Referenced final"},
+        ]
+        partial_refs = self.filter._message_refs_for_prefix(ref_messages, 2)
+        partial_snapshot = _snapshot("partial cached summary", partial_refs)
+        captured_llm = {}
+        saved = {}
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            if saved and require_full_coverage:
+                saved_snapshot = _snapshot(
+                    saved["summary"], saved["covered_message_refs"]
+                )
+                return self.filter._select_applicable_summary_snapshot(
+                    [saved_snapshot],
+                    messages,
+                    require_full_coverage=require_full_coverage,
+                    live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                    max_coverage_count=max_coverage_count,
+                    enforce_keep_first=enforce_keep_first,
+                )
+            if require_full_coverage:
+                return None
+            return self.filter._select_applicable_summary_snapshot(
+                [partial_snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
+            return ref_messages
+
+        async def fake_summary_llm(
+            new_conversation_text,
+            body,
+            user_data,
+            event_call=None,
+            request=None,
+            previous_summary=None,
+        ):
+            captured_llm["calls"] = captured_llm.get("calls", 0) + 1
+            captured_llm["new_conversation_text"] = new_conversation_text
+            captured_llm["previous_summary"] = previous_summary
+            return "updated continuation summary"
+
+        async def fake_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
+            saved.update(
+                {
+                    "chat_id": chat_id,
+                    "summary": summary,
+                    "compressed_count": compressed_count,
+                    "covered_message_refs": covered_message_refs,
+                    "protected_head_count": protected_head_count,
+                }
+            )
+            return True
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
+        self.filter._call_summary_llm = fake_summary_llm
+        self.filter._save_summary = fake_save_summary
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 100
+        }
+        self.filter._get_summary_model_context_limit = lambda model_id: 10000
+        self.filter._estimate_messages_tokens = lambda messages: 80
+        self.filter.valves.max_summary_tokens = 4096
 
         body = {
             "model": "main-model",
@@ -3848,8 +4496,434 @@ class TestAsyncContextCompression(unittest.TestCase):
         )
 
         content = result["__external_references__"]["content"]
-        self.assertIn("Full referenced conversation body", content)
-        self.assertNotIn("partial cached summary", content)
+        self.assertIn("updated continuation summary", content)
+        self.assertEqual(captured_llm["previous_summary"], "partial cached summary")
+        self.assertIn("Referenced follow-up", captured_llm["new_conversation_text"])
+        self.assertEqual(saved["chat_id"], "chat-ref-1")
+        self.assertEqual(saved["summary"], "updated continuation summary")
+        self.assertEqual(saved["compressed_count"], 4)
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            ["ref-1", "ref-2", "ref-3", "ref-4"],
+        )
+        self.assertEqual(captured_llm["calls"], 1)
+
+        second_result = asyncio.run(
+            self.filter._handle_external_chat_references(
+                deepcopy(body),
+                user_data={"id": "user-1"},
+            )
+        )
+
+        self.assertIn(
+            "updated continuation summary",
+            second_result["__external_references__"]["content"],
+        )
+        self.assertEqual(captured_llm["calls"], 1)
+
+    def test_handle_external_chat_references_keeps_unsummarized_tail_after_fitted_continuation(
+        self,
+    ):
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+            {"id": "ref-3", "role": "user", "content": "First fitted tail"},
+            {"id": "ref-4", "role": "assistant", "content": "Unsummarized remainder"},
+            {"id": "ref-5", "role": "user", "content": "Latest unsummarized tail"},
+        ]
+        partial_refs = self.filter._message_refs_for_prefix(ref_messages, 2)
+        partial_snapshot = _snapshot("partial cached summary", partial_refs)
+        captured_llm = {}
+        saved = {}
+        logs = []
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            if require_full_coverage:
+                return None
+            return self.filter._select_applicable_summary_snapshot(
+                [partial_snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
+            return ref_messages
+
+        async def fake_summary_llm(
+            new_conversation_text,
+            body,
+            user_data,
+            event_call=None,
+            request=None,
+            previous_summary=None,
+        ):
+            captured_llm["body"] = body
+            captured_llm["new_conversation_text"] = new_conversation_text
+            captured_llm["previous_summary"] = previous_summary
+            return "generated prefix continuation summary"
+
+        async def fake_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
+            saved.update(
+                {
+                    "chat_id": chat_id,
+                    "summary": summary,
+                    "compressed_count": compressed_count,
+                    "covered_message_refs": covered_message_refs,
+                    "source_current_id": source_current_id,
+                }
+            )
+            return True
+
+        async def fake_log(message, *args, **kwargs):
+            logs.append(message)
+
+        self.filter.valves.summary_model = "configured-summary-model"
+        self.filter.valves.max_summary_tokens = 4096
+        self.filter._log = fake_log
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
+        self.filter._call_summary_llm = fake_summary_llm
+        self.filter._save_summary = fake_save_summary
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 100
+        }
+        self.filter._get_summary_model_context_limit = lambda model_id: 1
+        self.filter._estimate_messages_tokens = lambda messages: 80
+        self.filter._format_prefix_messages_for_summary_with_count = (
+            lambda messages, max_tokens: (
+                self.filter._format_messages_for_summary(messages[:1]),
+                1,
+            )
+        )
+
+        original_estimator = module._estimate_text_tokens
+
+        def fake_estimate_text_tokens(text):
+            text = str(text)
+            if "partial cached summary" in text and "Unsummarized" in text:
+                return 1000
+            if "Return only the XML working memory" in text and "Unsummarized" in text:
+                return 1000
+            return 1
+
+        module._estimate_text_tokens = fake_estimate_text_tokens
+
+        try:
+            result = asyncio.run(
+                self.filter._handle_external_chat_references(
+                    {
+                        "model": "main-model",
+                        "messages": [{"role": "user", "content": "Current prompt"}],
+                        "metadata": {
+                            "files": [
+                                {
+                                    "type": "chat",
+                                    "id": "chat-ref-1",
+                                    "name": "Referenced Chat",
+                                }
+                            ]
+                        },
+                    },
+                    user_data={"id": "user-1"},
+                    __event_call__=object(),
+                )
+            )
+        finally:
+            module._estimate_text_tokens = original_estimator
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("generated prefix continuation summary", content)
+        self.assertIn("Unsummarized remainder", content)
+        self.assertIn("Latest unsummarized tail", content)
+        self.assertIn("<generated_reference_summary>", content)
+        self.assertIn("<recent_original_messages>", content)
+        self.assertEqual(captured_llm["body"]["model"], "configured-summary-model")
+        self.assertEqual(captured_llm["previous_summary"], "partial cached summary")
+        self.assertIn("First fitted tail", captured_llm["new_conversation_text"])
+        self.assertNotIn("Unsummarized remainder", captured_llm["new_conversation_text"])
+        self.assertEqual(saved["compressed_count"], 3)
+        self.assertEqual(saved["source_current_id"], "ref-3")
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            ["ref-1", "ref-2", "ref-3"],
+        )
+        log_text = "\n".join(logs)
+        self.assertIn("summarizing 1 contiguous tail message(s)", log_text)
+        self.assertIn("Added 2 unsummarized tail message(s)", log_text)
+        self.assertNotIn("Unsummarized remainder", log_text)
+        self.assertNotIn("generated prefix continuation summary", log_text)
+
+    def test_handle_external_chat_references_fits_generated_summary_to_keep_latest_tail(
+        self,
+    ):
+        older_remainder = "Older unsummarized remainder " + ("old-detail " * 80)
+        latest_remainder = "Latest unsummarized tail " + ("latest-detail " * 20)
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+            {"id": "ref-3", "role": "user", "content": "First fitted tail"},
+            {"id": "ref-4", "role": "assistant", "content": older_remainder},
+            {"id": "ref-5", "role": "user", "content": latest_remainder},
+        ]
+        partial_refs = self.filter._message_refs_for_prefix(ref_messages, 2)
+        partial_snapshot = _snapshot("partial cached summary", partial_refs)
+        logs = []
+        saved = {}
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            if require_full_coverage:
+                return None
+            return self.filter._select_applicable_summary_snapshot(
+                [partial_snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
+            return ref_messages
+
+        async def fake_summary_llm(*args, **kwargs):
+            return "generated continuation summary " + ("summary-detail " * 140)
+
+        async def fake_save_summary(
+            chat_id,
+            summary,
+            compressed_count,
+            covered_message_refs=None,
+            source_current_id=None,
+            protected_head_count=0,
+        ):
+            saved.update(
+                {
+                    "compressed_count": compressed_count,
+                    "covered_message_refs": covered_message_refs,
+                    "source_current_id": source_current_id,
+                }
+            )
+            return True
+
+        async def fake_log(message, *args, **kwargs):
+            logs.append(message)
+
+        original_estimator = module._estimate_text_tokens
+
+        def fake_estimate_text_tokens(text):
+            return max(1, len(str(text)) // 20)
+
+        self.filter.valves.summary_model = "configured-summary-model"
+        self.filter.valves.max_summary_tokens = 400
+        self.filter._log = fake_log
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
+        self.filter._call_summary_llm = fake_summary_llm
+        self.filter._save_summary = fake_save_summary
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 60
+        }
+        self.filter._get_summary_model_context_limit = lambda model_id: 1000
+        self.filter._estimate_messages_tokens = lambda messages: 20
+        module._estimate_text_tokens = fake_estimate_text_tokens
+        try:
+            result = asyncio.run(
+                self.filter._handle_external_chat_references(
+                    {
+                        "model": "main-model",
+                        "messages": [{"role": "user", "content": "Current prompt"}],
+                        "metadata": {
+                            "files": [
+                                {
+                                    "type": "chat",
+                                    "id": "chat-ref-1",
+                                    "name": "Referenced Chat",
+                                }
+                            ]
+                        },
+                    },
+                    user_data={"id": "user-1"},
+                    __event_call__=object(),
+                )
+            )
+        finally:
+            module._estimate_text_tokens = original_estimator
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("<generated_reference_summary>", content)
+        self.assertIn("<recent_original_messages>", content)
+        self.assertIn("Latest unsummarized tail", content)
+        self.assertNotIn("Older unsummarized remainder", content)
+        self.assertEqual(saved["compressed_count"], 3)
+        self.assertEqual(saved["source_current_id"], "ref-3")
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            ["ref-1", "ref-2", "ref-3"],
+        )
+
+        log_text = "\n".join(logs)
+        self.assertIn("Fitted generated referenced context", log_text)
+        self.assertIn("omitted 1 older unsummarized tail message(s)", log_text)
+        self.assertNotIn("Latest unsummarized tail", log_text)
+        self.assertNotIn("Older unsummarized remainder", log_text)
+
+    def test_handle_external_chat_references_processes_multiple_references_in_attachment_order(
+        self,
+    ):
+        ref_one_messages = [
+            {"id": "one-1", "role": "user", "content": "Chat One question"},
+            {"id": "one-2", "role": "assistant", "content": "Chat One answer"},
+            {"id": "one-3", "role": "user", "content": "Chat One tail"},
+        ]
+        ref_two_messages = [
+            {"id": "two-1", "role": "user", "content": "Chat Two question"},
+            {"id": "two-2", "role": "assistant", "content": "Chat Two answer"},
+            {"id": "two-3", "role": "user", "content": "Chat Two tail"},
+        ]
+        messages_by_chat = {
+            "chat-one": ref_one_messages,
+            "chat-two": ref_two_messages,
+        }
+        snapshots_by_chat = {
+            "chat-one": _snapshot(
+                "chat one partial summary",
+                self.filter._message_refs_for_prefix(ref_one_messages, 2),
+            ),
+            "chat-two": _snapshot(
+                "chat two partial summary",
+                self.filter._message_refs_for_prefix(ref_two_messages, 2),
+            ),
+        }
+        summary_calls = []
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            if require_full_coverage:
+                return None
+            return self.filter._select_applicable_summary_snapshot(
+                [snapshots_by_chat[chat_id]],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
+            return messages_by_chat[chat_id]
+
+        async def fake_summary_llm(
+            new_conversation_text,
+            body,
+            user_data,
+            event_call=None,
+            request=None,
+            previous_summary=None,
+        ):
+            summary_calls.append(
+                {
+                    "body": body,
+                    "previous_summary": previous_summary,
+                    "input": new_conversation_text,
+                }
+            )
+            return "generated chat two summary"
+
+        async def fake_save_summary(*args, **kwargs):
+            return True
+
+        original_estimator = module._estimate_text_tokens
+
+        def fake_estimate_text_tokens(text):
+            text = str(text)
+            if "generated chat two summary" in text:
+                return 1
+            if "Chat One tail" in text or "Chat Two tail" in text:
+                return 2
+            return 1
+
+        self.filter.valves.summary_model = "configured-summary-model"
+        self.filter.valves.max_summary_tokens = 4096
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
+        self.filter._call_summary_llm = fake_summary_llm
+        self.filter._save_summary = fake_save_summary
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 4
+        }
+        self.filter._get_summary_model_context_limit = lambda model_id: 1000
+        self.filter._estimate_messages_tokens = lambda messages: 1
+        module._estimate_text_tokens = fake_estimate_text_tokens
+        try:
+            result = asyncio.run(
+                self.filter._handle_external_chat_references(
+                    {
+                        "model": "main-model",
+                        "messages": [{"role": "user", "content": "Current prompt"}],
+                        "metadata": {
+                            "files": [
+                                {
+                                    "type": "chat",
+                                    "id": "chat-one",
+                                    "name": "Chat One",
+                                },
+                                {
+                                    "type": "chat",
+                                    "id": "chat-two",
+                                    "name": "Chat Two",
+                                },
+                            ]
+                        },
+                    },
+                    user_data={"id": "user-1"},
+                )
+            )
+        finally:
+            module._estimate_text_tokens = original_estimator
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("chat one partial summary", content)
+        self.assertIn("Chat One tail", content)
+        self.assertIn("generated chat two summary", content)
+        self.assertNotIn("Chat Two tail", content)
+        self.assertEqual(len(summary_calls), 1)
+        self.assertEqual(
+            summary_calls[0]["previous_summary"],
+            "chat two partial summary",
+        )
 
     def test_generate_referenced_summaries_background_uses_model_context_window_fallback(
         self,

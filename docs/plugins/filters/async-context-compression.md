@@ -25,6 +25,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 
 - **Branch-aware summary reuse**: Cached summaries are now validated against message ids and payload fingerprints before reuse, so summaries from sibling branches or edited content are rejected instead of being injected into the wrong branch.
 - **Single-table branch summary storage**: Branch-valid summary rows are stored in `chat_summary`, while untrusted count-only summaries are regenerated.
+- **Branch-aware referenced chats**: Referenced chats can now reuse the largest valid prefix summary plus the uncovered active-branch tail. If that mixed reference needs a new summary, the continuation summary is saved back to `chat_summary` for the referenced chat and reused later.
 - **Safer upgrade checks**: Legacy tables that still enforce one row per chat are rebuilt, and schema inspection failures leave existing tables untouched instead of running destructive DDL.
 
 ## What's new in 1.6.4
@@ -60,7 +61,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 - ✅ Persistent storage via Open WebUI's shared database connection (PostgreSQL, SQLite, etc.).
 - ✅ Flexible retention policy to keep the first and last N messages.
 - ✅ Branch-aware injection of historical summaries back into the context.
-- ✅ External chat reference summarization with branch-valid cached-summary reuse, direct injection for small chats, and generated summaries for larger chats.
+- ✅ External chat reference summarization with branch-valid full summaries, partial summary + active-branch tail reuse, direct injection for small chats, and persisted generated summaries for larger chats.
 - ✅ Structure-aware trimming that preserves document structure (headers, intro, conclusion).
 - ✅ Native tool output trimming for cleaner context when using function calling.
 - ✅ Configurable compression style for token-minimal, balanced, or high-fidelity summaries.
@@ -102,19 +103,25 @@ flowchart TD
     C -- No --> D[Load current chat summary if available]
     C -- Yes --> E[Inspect each referenced chat]
 
-    E --> F{Branch-valid cached summary?}
+    E --> F{Full branch-valid cached summary?}
     F -- Yes --> G[Reuse validated summary]
-    F -- No --> H{Fits direct budget?}
-    H -- Yes --> I[Inject full referenced chat text]
-    H -- No --> J[Prepare referenced-chat summary input]
+    F -- No --> H{Partial valid prefix summary?}
+    H -- Yes --> I[Build summary + active-branch tail]
+    I --> I2{Mixed reference fits direct budget?}
+    I2 -- Yes --> I3[Inject mixed reference block]
+    I2 -- No --> J[Prepare continuation summary input]
+    H -- No --> K{Full referenced chat fits direct budget?}
+    K -- Yes --> K2[Inject full referenced chat text]
+    K -- No --> J
 
-    J --> K{Referenced-chat summary call succeeds?}
-    K -- Yes --> L[Inject generated referenced summary]
-    K -- No --> M[Fallback to direct contextual injection]
+    J --> L{Referenced-chat summary call succeeds?}
+    L -- Yes --> L2[Inject and persist generated referenced summary]
+    L -- No --> M[Fallback to direct contextual injection]
 
     G --> D
-    I --> D
-    L --> D
+    I3 --> D
+    K2 --> D
+    L2 --> D
     M --> D
 
     D --> N[Build current-chat Head + Validated Summary + Tail]
@@ -138,9 +145,11 @@ flowchart TD
 
 - `inlet` only injects and trims context. It does not generate the main chat summary.
 - `outlet` performs summary generation asynchronously and does not block the current reply.
-- External chat references may come from an existing branch-valid persisted summary, a small chat's full text, or a generated/truncated reference summary.
+- External chat references use the referenced chat's saved active branch (`history.currentId`). The reference attachment does not choose a separate branch.
+- External chat references may come from an existing full branch-valid persisted summary, a partial branch-valid summary plus uncovered active-branch tail, a small chat's full text, or a generated/truncated reference summary.
 - If a referenced-chat summary call fails, the filter falls back to direct context injection instead of failing the whole request.
 - `chat_summary` stores branch-valid summary rows with ordered message refs and payload fingerprints. Historical rows are retained so a future branch can reuse the nearest matching ancestor summary, even when the user forks at an arbitrary earlier point.
+- When a referenced-chat continuation summary is generated from an existing cached summary plus raw tail, it is saved back to the referenced chat's `chat_summary` row coverage so future references can reuse it.
 - `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be, and it must be less than 80% of the summary model input window. This reserve ensures a future compression pass can feed the previous summary plus at least some new messages into the summary model; if the old summary can fill the whole input window by itself, another compression pass cannot make meaningful progress. Invalid settings raise a configuration error; the filter does not silently lower the value.
 - Important background summary failures are surfaced to the browser console (`F12`) and the chat status area.
 - External reference messages are protected during trimming and skipped when building branch message refs, so reference blocks do not poison current-chat summary persistence.
