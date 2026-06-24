@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.6.5
+version: 1.7.0
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -92,21 +92,16 @@ backend that Open WebUI supports (PostgreSQL, SQLite, etc.).
 No additional database configuration is required - the plugin inherits
 Open WebUI's database settings automatically.
 
-  Table Structure (`chat_summary`, compatibility/current pointer):
+  Table Structure (`chat_summary`, branch-valid reusable coverage):
     - id: Primary Key (auto-increment)
-    - chat_id: Unique chat identifier (indexed)
-    - summary: The summary content (TEXT)
-    - compressed_message_count: The original number of messages
-    - created_at: Timestamp of creation
-    - updated_at: Timestamp of last update
-
-  Table Structure (`chat_summary_snapshot`, branch-valid reusable coverage):
-    - chat_id: Unique chat identifier (indexed)
+    - chat_id: Chat identifier (indexed)
     - summary: The summary content (TEXT)
     - compressed_message_count: Covered original-history message count
     - covered_message_refs_json: Ordered message ids + payload fingerprints
     - covered_refs_hash: Hash of the ordered refs
     - branch_tip_id/source_current_id: Debugging fields for branch/async saves
+    - created_at: Timestamp of creation
+    - updated_at: Timestamp of last update
 
 ═══════════════════════════════════════════════════════════════════════════════
 📊 Compression Example
@@ -244,24 +239,22 @@ View all summaries:
   FROM chat_summary
   ORDER BY updated_at DESC;
 
-View branch-valid summary snapshots:
+View branch-valid summary rows:
   SELECT
     chat_id,
     branch_tip_id,
     compressed_message_count,
     updated_at
-  FROM chat_summary_snapshot
+  FROM chat_summary
   ORDER BY updated_at DESC;
 
 Query a specific conversation:
   SELECT *
-  FROM chat_summary_snapshot
+  FROM chat_summary
   WHERE chat_id = 'your_chat_id';
 
 Delete old summaries:
   DELETE FROM chat_summary
-  WHERE updated_at < NOW() - INTERVAL '30 days';
-  DELETE FROM chat_summary_snapshot
   WHERE updated_at < NOW() - INTERVAL '30 days';
 
 Statistics:
@@ -278,8 +271,8 @@ Statistics:
 1. Database Connection
    ✓ The plugin uses Open WebUI's shared database connection automatically.
    ✓ No additional configuration is required.
-   ✓ The `chat_summary` and `chat_summary_snapshot` tables will be created
-     automatically on first run.
+   ✓ The branch-aware `chat_summary` table will be created automatically on
+     first run.
 
 2. Retention Policy
    ⚠ `keep_first` counts only non-system messages. System messages are always
@@ -375,7 +368,17 @@ except ImportError:
     tiktoken = None
 
 # Database imports
-from sqlalchemy import Column, String, Text, DateTime, Integer, inspect
+from sqlalchemy import (
+    Column,
+    String,
+    Text,
+    DateTime,
+    Integer,
+    Index,
+    MetaData,
+    Table,
+    inspect,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.engine import Engine
 from datetime import datetime, timezone
@@ -494,36 +497,23 @@ def _call_db_sync(method, *args, **kwargs):
         return pool.submit(asyncio.run, method(*args, **kwargs)).result()
 
 
+CHAT_SUMMARY_DEDUP_INDEX_NAME = "ix_chat_summary_chat_id_covered_refs_hash_unique"
+
+
 class ChatSummary(owui_Base):
-    """Chat Summary Storage Table"""
+    """Branch-aware chat summary storage table."""
 
     __tablename__ = "chat_summary"
     __table_args__ = (
+        Index(
+            CHAT_SUMMARY_DEDUP_INDEX_NAME,
+            "chat_id",
+            "covered_refs_hash",
+            unique=True,
+        ),
         {"extend_existing": True, "schema": owui_schema}
         if owui_schema
-        else {"extend_existing": True}
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    chat_id = Column(String(255), unique=True, nullable=False, index=True)
-    summary = Column(Text, nullable=False)
-    compressed_message_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-
-class ChatSummarySnapshot(owui_Base):
-    """Branch-aware summary snapshot with exact covered message identity."""
-
-    __tablename__ = "chat_summary_snapshot"
-    __table_args__ = (
-        {"extend_existing": True, "schema": owui_schema}
-        if owui_schema
-        else {"extend_existing": True}
+        else {"extend_existing": True},
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -531,7 +521,7 @@ class ChatSummarySnapshot(owui_Base):
     summary = Column(Text, nullable=False)
     compressed_message_count = Column(Integer, default=0)
     covered_message_refs_json = Column(Text, nullable=False)
-    covered_refs_hash = Column(String(64), nullable=True, index=True)
+    covered_refs_hash = Column(String(64), nullable=False, index=True)
     branch_tip_id = Column(String(255), nullable=True, index=True)
     source_current_id = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -831,6 +821,20 @@ def _get_cached_tokens(text: str) -> int:
     return _estimate_text_tokens(text)
 
 
+BRANCH_SUMMARY_REQUIRED_COLUMNS = {
+    "id",
+    "chat_id",
+    "summary",
+    "compressed_message_count",
+    "covered_message_refs_json",
+    "covered_refs_hash",
+    "branch_tip_id",
+    "source_current_id",
+    "created_at",
+    "updated_at",
+}
+
+
 class Filter:
     def __init__(self):
         self.valves = self.Valves()
@@ -840,6 +844,7 @@ class Filter:
             sessionmaker(bind=self._db_engine) if self._db_engine else None
         )
         self._model_thresholds_cache: Optional[Dict[str, Any]] = None
+        self._summary_db_available = True
 
         # Fallback mapping for variants not in TRANSLATIONS keys
         self.fallback_map = {
@@ -1204,6 +1209,8 @@ class Filter:
         for message in messages:
             if not isinstance(message, dict):
                 return None
+            if self._is_external_reference_message(message):
+                continue
 
             marker_refs = self._summary_marker_refs(message)
             if marker_refs is not None:
@@ -1526,9 +1533,20 @@ class Filter:
         base_progress = summary_state["base_progress"] or 0
 
         if summary_index is None:
-            return len(messages)
+            return sum(
+                1
+                for message in messages
+                if isinstance(message, dict)
+                and not self._is_external_reference_message(message)
+            )
 
-        return base_progress + max(0, len(messages) - summary_index - 1)
+        live_tail_count = sum(
+            1
+            for message in messages[summary_index + 1 :]
+            if isinstance(message, dict)
+            and not self._is_external_reference_message(message)
+        )
+        return base_progress + live_tail_count
 
     def _calculate_target_compressed_count(self, messages: List[Dict]) -> int:
         """Calculate the next summary boundary in original-history coordinates."""
@@ -2230,8 +2248,239 @@ class Filter:
             except Exception as exc:  # pragma: no cover - best-effort cleanup
                 logger.warning(f"[Database] ⚠️ Failed to close fallback session: {exc}")
 
+    def _has_table(self, inspector: Any, table_name: str) -> bool:
+        if owui_schema:
+            return inspector.has_table(table_name, schema=owui_schema)
+        return inspector.has_table(table_name)
+
+    def _table_column_names(self, inspector: Any, table_name: str) -> set[str]:
+        if owui_schema:
+            columns = inspector.get_columns(table_name, schema=owui_schema)
+        else:
+            columns = inspector.get_columns(table_name)
+        return {column.get("name") for column in columns if column.get("name")}
+
+    def _table_has_unique_columns(
+        self, inspector: Any, table_name: str, column_names: List[str]
+    ) -> bool:
+        expected = tuple(column_names)
+        for constraint in inspector.get_unique_constraints(
+            table_name, schema=owui_schema
+        ):
+            if tuple(constraint.get("column_names") or []) == expected:
+                return True
+
+        for index in inspector.get_indexes(table_name, schema=owui_schema):
+            if not index.get("unique"):
+                continue
+            if tuple(index.get("column_names") or []) == expected:
+                return True
+
+        return False
+
+    def _chat_summary_table_is_branch_aware(self, inspector: Any) -> Optional[bool]:
+        try:
+            column_names = self._table_column_names(inspector, "chat_summary")
+        except Exception as exc:
+            logger.error(
+                "[Database] ⚠️ Unable to inspect existing chat_summary schema; "
+                f"leaving it untouched and disabling summary persistence: {exc}"
+            )
+            return None
+
+        missing_columns = BRANCH_SUMMARY_REQUIRED_COLUMNS - column_names
+        if missing_columns:
+            logger.warning(
+                "[Database] ⚠️ Existing chat_summary table is legacy/incompatible "
+                f"(missing: {', '.join(sorted(missing_columns))}); it will be rebuilt "
+                "and summaries will be regenerated on demand."
+            )
+            return False
+
+        try:
+            has_unique_chat_id = self._table_has_unique_columns(
+                inspector, "chat_summary", ["chat_id"]
+            )
+        except Exception as exc:
+            logger.error(
+                "[Database] ⚠️ Unable to inspect chat_summary indexes; "
+                f"leaving it untouched and disabling summary persistence: {exc}"
+            )
+            return None
+
+        if has_unique_chat_id:
+            logger.warning(
+                "[Database] ⚠️ Existing chat_summary table still has a unique "
+                "constraint on chat_id; it will be rebuilt for branch-aware multi-row storage."
+            )
+            return False
+        return True
+
+    def _chat_summary_row_mapping_get(
+        self, row_mapping: Any, key: str, default: Any = None
+    ) -> Any:
+        getter = getattr(row_mapping, "get", None)
+        if callable(getter):
+            return getter(key, default)
+        try:
+            return row_mapping[key]
+        except Exception:
+            return default
+
+    def _drop_table_if_exists(self, table_name: str):
+        metadata = MetaData()
+        table = Table(
+            table_name,
+            metadata,
+            autoload_with=self._db_engine,
+            schema=owui_schema,
+        )
+        table.drop(bind=self._db_engine, checkfirst=True)
+
+    def _deduplicate_chat_summary_rows(self) -> int:
+        target_table = ChatSummary.__table__
+        deleted_count = 0
+        with self._db_engine.begin() as connection:
+            rows = connection.execute(
+                target_table.select().order_by(
+                    target_table.c.chat_id,
+                    target_table.c.covered_refs_hash,
+                    target_table.c.updated_at.desc(),
+                    target_table.c.id.desc(),
+                )
+            )
+            seen: set[tuple[Any, Any]] = set()
+            duplicate_ids: List[int] = []
+            for row in rows:
+                row_mapping = getattr(row, "_mapping", row)
+                covered_refs_hash = self._chat_summary_row_mapping_get(
+                    row_mapping, "covered_refs_hash"
+                )
+                if not covered_refs_hash:
+                    continue
+                key = (
+                    self._chat_summary_row_mapping_get(row_mapping, "chat_id"),
+                    covered_refs_hash,
+                )
+                if key in seen:
+                    row_id = self._chat_summary_row_mapping_get(row_mapping, "id")
+                    if row_id is not None:
+                        duplicate_ids.append(row_id)
+                else:
+                    seen.add(key)
+
+            if duplicate_ids:
+                connection.execute(
+                    target_table.delete().where(target_table.c.id.in_(duplicate_ids))
+                )
+                deleted_count = len(duplicate_ids)
+
+        if deleted_count:
+            logger.warning(
+                "[Database] Removed duplicate chat_summary rows before creating "
+                f"dedup index: {deleted_count}"
+            )
+        return deleted_count
+
+    def _ensure_chat_summary_dedup_index(self):
+        self._deduplicate_chat_summary_rows()
+        for index in ChatSummary.__table__.indexes:
+            if index.name == CHAT_SUMMARY_DEDUP_INDEX_NAME:
+                index.create(bind=self._db_engine, checkfirst=True)
+                return
+
+    def _migrate_legacy_snapshot_table(self) -> int:
+        metadata = MetaData()
+        source_table = Table(
+            "chat_summary_snapshot",
+            metadata,
+            autoload_with=self._db_engine,
+            schema=owui_schema,
+        )
+        required_source_columns = {
+            "chat_id",
+            "summary",
+            "compressed_message_count",
+            "covered_message_refs_json",
+        }
+        source_columns = set(source_table.c.keys())
+        missing_columns = required_source_columns - source_columns
+        if missing_columns:
+            logger.warning(
+                "[Database] ⚠️ Legacy chat_summary_snapshot table is incompatible "
+                f"(missing: {', '.join(sorted(missing_columns))}); it will be dropped "
+                "and summaries will be regenerated on demand."
+            )
+            return 0
+
+        target_table = ChatSummary.__table__
+        migrated_count = 0
+        with self._db_engine.begin() as connection:
+            rows = connection.execute(source_table.select())
+            for row in rows:
+                row_mapping = getattr(row, "_mapping", row)
+                source_refs_json = row_mapping["covered_message_refs_json"]
+                normalized_refs = self._parse_message_refs_json(source_refs_json)
+                if not normalized_refs:
+                    logger.warning(
+                        "[Database] Skipping unmigratable chat_summary_snapshot row: "
+                        "invalid covered_message_refs_json."
+                    )
+                    continue
+
+                protected_head_count = self._parse_protected_head_count_json(
+                    source_refs_json
+                )
+                refs_json = self._snapshot_refs_json(
+                    normalized_refs, protected_head_count
+                )
+                covered_refs_hash = hashlib.sha256(
+                    refs_json.encode("utf-8")
+                ).hexdigest()
+                existing = connection.execute(
+                    target_table.select()
+                    .where(target_table.c.chat_id == row_mapping["chat_id"])
+                    .where(target_table.c.covered_refs_hash == covered_refs_hash)
+                ).first()
+                if existing:
+                    continue
+
+                now = datetime.now(timezone.utc)
+                connection.execute(
+                    target_table.insert().values(
+                        chat_id=row_mapping["chat_id"],
+                        summary=row_mapping["summary"],
+                        compressed_message_count=row_mapping[
+                            "compressed_message_count"
+                        ],
+                        covered_message_refs_json=refs_json,
+                        covered_refs_hash=covered_refs_hash,
+                        branch_tip_id=self._chat_summary_row_mapping_get(
+                            row_mapping,
+                            "branch_tip_id",
+                            normalized_refs[-1]["id"],
+                        )
+                        or normalized_refs[-1]["id"],
+                        source_current_id=self._chat_summary_row_mapping_get(
+                            row_mapping, "source_current_id"
+                        ),
+                        created_at=self._chat_summary_row_mapping_get(
+                            row_mapping, "created_at", now
+                        )
+                        or now,
+                        updated_at=self._chat_summary_row_mapping_get(
+                            row_mapping, "updated_at", now
+                        )
+                        or now,
+                    )
+                )
+                migrated_count += 1
+
+        return migrated_count
+
     def _init_database(self):
-        """Initializes the database table using Open WebUI's shared connection."""
+        """Initializes the branch-aware summary table using Open WebUI's shared connection."""
+        self._summary_db_available = False
         try:
             if self._db_engine is None:
                 raise RuntimeError(
@@ -2241,16 +2490,21 @@ class Filter:
             # Check if tables exist using SQLAlchemy inspect
             inspector = inspect(self._db_engine)
             # Support schema if configured
-            has_summary_table = (
-                inspector.has_table("chat_summary", schema=owui_schema)
-                if owui_schema
-                else inspector.has_table("chat_summary")
-            )
-            has_snapshot_table = (
-                inspector.has_table("chat_summary_snapshot", schema=owui_schema)
-                if owui_schema
-                else inspector.has_table("chat_summary_snapshot")
-            )
+            has_summary_table = self._has_table(inspector, "chat_summary")
+            has_snapshot_table = self._has_table(inspector, "chat_summary_snapshot")
+
+            if has_summary_table:
+                schema_is_branch_aware = self._chat_summary_table_is_branch_aware(
+                    inspector
+                )
+                if schema_is_branch_aware is None:
+                    return
+                if not schema_is_branch_aware:
+                    ChatSummary.__table__.drop(bind=self._db_engine, checkfirst=True)
+                    has_summary_table = False
+                    logger.info(
+                        "[Database] Rebuilt legacy chat_summary table; old count-only summaries were discarded."
+                    )
 
             if not has_summary_table:
                 # Create the chat_summary table if it doesn't exist
@@ -2263,17 +2517,16 @@ class Filter:
                     "[Database] ✅ Using Open WebUI's shared database connection. chat_summary table already exists."
                 )
 
-            if not has_snapshot_table:
-                ChatSummarySnapshot.__table__.create(
-                    bind=self._db_engine, checkfirst=True
-                )
+            if has_snapshot_table:
+                migrated_count = self._migrate_legacy_snapshot_table()
+                self._drop_table_if_exists("chat_summary_snapshot")
                 logger.info(
-                    "[Database] ✅ Successfully created chat_summary_snapshot table using Open WebUI's shared database connection."
+                    "[Database] Removed legacy chat_summary_snapshot table after "
+                    f"migrating {migrated_count} branch-aware summaries into chat_summary."
                 )
-            else:
-                logger.info(
-                    "[Database] ✅ Using Open WebUI's shared database connection. chat_summary_snapshot table already exists."
-                )
+
+            self._ensure_chat_summary_dedup_index()
+            self._summary_db_available = True
 
         except Exception as e:
             logger.error(f"[Database] ❌ Initialization failed: {str(e)}")
@@ -2787,13 +3040,14 @@ class Filter:
         covered_message_refs: Optional[List[Dict[str, str]]] = None,
         source_current_id: Optional[str] = None,
         protected_head_count: int = 0,
-    ):
-        """Save summary text.
+    ) -> bool:
+        """Save a branch-valid summary row."""
+        if not self._summary_db_available:
+            logger.warning(
+                f"[Storage] Skipping summary save for chat {chat_id}: summary database is unavailable."
+            )
+            return False
 
-        Branch-valid coverage is stored in chat_summary_snapshot when exact refs
-        are available. chat_summary remains a compatibility/current-pointer row
-        and must not be trusted by inlet as coverage proof.
-        """
         normalized_refs = self._normalize_message_refs(covered_message_refs)
         refs_json = (
             self._snapshot_refs_json(normalized_refs, protected_head_count)
@@ -2809,6 +3063,11 @@ class Filter:
             else None
         )
         branch_tip_id = normalized_refs[-1]["id"] if normalized_refs else None
+        if not (normalized_refs and refs_json and refs_hash):
+            logger.warning(
+                f"[Storage] Skipping summary save for chat {chat_id}: missing branch message refs."
+            )
+            return False
 
         try:
             async with self._async_db_session() as session:
@@ -2818,60 +3077,31 @@ class Filter:
                     from sqlalchemy import select
 
                     result = await session.execute(
-                        select(ChatSummary).filter_by(chat_id=chat_id)
+                        select(ChatSummary).filter_by(
+                            chat_id=chat_id,
+                            covered_refs_hash=refs_hash,
+                        )
                     )
                     existing = result.scalars().first()
-
                     if existing:
-                        # chat_summary is only a legacy/current-pointer row. If a
-                        # smaller branch-valid checkpoint arrives late, keep the
-                        # pointer as-is but still persist the snapshot below.
-                        if compressed_count > existing.compressed_message_count:
-                            existing.summary = summary
-                            existing.compressed_message_count = compressed_count
-                            existing.updated_at = datetime.now(timezone.utc)
-                        elif self.valves.debug_mode:
-                            logger.info(
-                                f"[Storage] Keeping legacy summary pointer: New progress ({compressed_count}) "
-                                f"<= existing ({existing.compressed_message_count})"
-                            )
+                        existing.summary = summary
+                        existing.compressed_message_count = compressed_count
+                        existing.covered_message_refs_json = refs_json
+                        existing.branch_tip_id = branch_tip_id
+                        existing.source_current_id = source_current_id
+                        existing.updated_at = datetime.now(timezone.utc)
                     else:
-                        new_summary = ChatSummary(
-                            chat_id=chat_id,
-                            summary=summary,
-                            compressed_message_count=compressed_count,
-                        )
-                        session.add(new_summary)
-
-                    if normalized_refs and refs_json and refs_hash:
-                        result = await session.execute(
-                            select(ChatSummarySnapshot).filter_by(
+                        session.add(
+                            ChatSummary(
                                 chat_id=chat_id,
+                                summary=summary,
+                                compressed_message_count=compressed_count,
+                                covered_message_refs_json=refs_json,
                                 covered_refs_hash=refs_hash,
+                                branch_tip_id=branch_tip_id,
+                                source_current_id=source_current_id,
                             )
                         )
-                        existing_snapshot = result.scalars().first()
-                        if existing_snapshot:
-                            existing_snapshot.summary = summary
-                            existing_snapshot.compressed_message_count = (
-                                compressed_count
-                            )
-                            existing_snapshot.covered_message_refs_json = refs_json
-                            existing_snapshot.branch_tip_id = branch_tip_id
-                            existing_snapshot.source_current_id = source_current_id
-                            existing_snapshot.updated_at = datetime.now(timezone.utc)
-                        else:
-                            session.add(
-                                ChatSummarySnapshot(
-                                    chat_id=chat_id,
-                                    summary=summary,
-                                    compressed_message_count=compressed_count,
-                                    covered_message_refs_json=refs_json,
-                                    covered_refs_hash=refs_hash,
-                                    branch_tip_id=branch_tip_id,
-                                    source_current_id=source_current_id,
-                                )
-                            )
                     await session.commit()
 
                     if self.valves.debug_mode:
@@ -2879,57 +3109,33 @@ class Filter:
                         logger.info(
                             f"[Storage] Summary has been {action.lower()} in the database (Chat ID: {chat_id})"
                         )
+                    return True
                 else:
                     # < 0.9.0: sync session (Session)
                     existing = (
-                        session.query(ChatSummary).filter_by(chat_id=chat_id).first()
+                        session.query(ChatSummary)
+                        .filter_by(chat_id=chat_id, covered_refs_hash=refs_hash)
+                        .first()
                     )
-
                     if existing:
-                        if compressed_count > existing.compressed_message_count:
-                            existing.summary = summary
-                            existing.compressed_message_count = compressed_count
-                            existing.updated_at = datetime.now(timezone.utc)
-                        elif self.valves.debug_mode:
-                            logger.info(
-                                f"[Storage] Keeping legacy summary pointer: New progress ({compressed_count}) "
-                                f"<= existing ({existing.compressed_message_count})"
-                            )
+                        existing.summary = summary
+                        existing.compressed_message_count = compressed_count
+                        existing.covered_message_refs_json = refs_json
+                        existing.branch_tip_id = branch_tip_id
+                        existing.source_current_id = source_current_id
+                        existing.updated_at = datetime.now(timezone.utc)
                     else:
-                        new_summary = ChatSummary(
-                            chat_id=chat_id,
-                            summary=summary,
-                            compressed_message_count=compressed_count,
-                        )
-                        session.add(new_summary)
-
-                    if normalized_refs and refs_json and refs_hash:
-                        existing_snapshot = (
-                            session.query(ChatSummarySnapshot)
-                            .filter_by(chat_id=chat_id, covered_refs_hash=refs_hash)
-                            .first()
-                        )
-                        if existing_snapshot:
-                            existing_snapshot.summary = summary
-                            existing_snapshot.compressed_message_count = (
-                                compressed_count
+                        session.add(
+                            ChatSummary(
+                                chat_id=chat_id,
+                                summary=summary,
+                                compressed_message_count=compressed_count,
+                                covered_message_refs_json=refs_json,
+                                covered_refs_hash=refs_hash,
+                                branch_tip_id=branch_tip_id,
+                                source_current_id=source_current_id,
                             )
-                            existing_snapshot.covered_message_refs_json = refs_json
-                            existing_snapshot.branch_tip_id = branch_tip_id
-                            existing_snapshot.source_current_id = source_current_id
-                            existing_snapshot.updated_at = datetime.now(timezone.utc)
-                        else:
-                            session.add(
-                                ChatSummarySnapshot(
-                                    chat_id=chat_id,
-                                    summary=summary,
-                                    compressed_message_count=compressed_count,
-                                    covered_message_refs_json=refs_json,
-                                    covered_refs_hash=refs_hash,
-                                    branch_tip_id=branch_tip_id,
-                                    source_current_id=source_current_id,
-                                )
-                            )
+                        )
                     session.commit()
 
                     if self.valves.debug_mode:
@@ -2937,19 +3143,24 @@ class Filter:
                         logger.info(
                             f"[Storage] Summary has been {action.lower()} in the database (Chat ID: {chat_id})"
                         )
+                    return True
 
         except Exception as e:
             logger.error(f"[Storage] ❌ Database save failed: {str(e)}")
+            return False
 
-    async def _load_summary_snapshots(self, chat_id: str) -> List[ChatSummarySnapshot]:
-        """Load branch-aware summary snapshots for a chat."""
+    async def _load_summary_snapshots(self, chat_id: str) -> List[ChatSummary]:
+        """Load branch-aware summary rows for a chat."""
+        if not self._summary_db_available:
+            return []
+
         try:
             async with self._async_db_session() as session:
                 if iscoroutinefunction(getattr(session, "execute", None)):
                     from sqlalchemy import select
 
                     result = await session.execute(
-                        select(ChatSummarySnapshot).filter_by(chat_id=chat_id)
+                        select(ChatSummary).filter_by(chat_id=chat_id)
                     )
                     snapshots = list(result.scalars().all())
                     # Detach so attribute access in the selector (after the
@@ -2961,7 +3172,7 @@ class Filter:
                     return snapshots
 
                 snapshots = (
-                    session.query(ChatSummarySnapshot).filter_by(chat_id=chat_id).all()
+                    session.query(ChatSummary).filter_by(chat_id=chat_id).all()
                 )
                 for snapshot in snapshots:
                     try:
@@ -2979,7 +3190,7 @@ class Filter:
         messages: List[Dict],
         require_full_coverage: bool = False,
         live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
-    ) -> Optional[ChatSummarySnapshot]:
+    ) -> Optional[ChatSummary]:
         snapshots = await self._load_summary_snapshots(chat_id)
         if not snapshots:
             return None
@@ -2991,45 +3202,6 @@ class Filter:
             require_full_coverage=require_full_coverage,
             live_message_refs_by_id=live_message_refs_by_id,
         )
-
-    async def _load_summary_record(self, chat_id: str) -> Optional[ChatSummary]:
-        """Loads the summary record object from the database (async, compatible with 0.9.0)."""
-        try:
-            async with self._async_db_session() as session:
-                # Detect session type: async sessions expose execute as a coroutinefunction
-                if iscoroutinefunction(getattr(session, "execute", None)):
-                    # SQLAlchemy 2.0 async style (AsyncSession)
-                    from sqlalchemy import select
-
-                    result = await session.execute(
-                        select(ChatSummary).filter_by(chat_id=chat_id)
-                    )
-                    record = result.scalars().first()
-                    if record:
-                        return record
-                else:
-                    # < 0.9.0: sync session (Session)
-                    record = (
-                        session.query(ChatSummary).filter_by(chat_id=chat_id).first()
-                    )
-                    if record:
-                        session.expunge(record)
-                        return record
-        except Exception as e:
-            logger.error(f"[Load] ❌ Database read failed: {str(e)}")
-        return None
-
-    async def _load_summary(self, chat_id: str, body: dict) -> Optional[str]:
-        """Loads the summary text from the database (async, compatible with 0.9.0)."""
-        record = await self._load_summary_record(chat_id)
-        if record:
-            if self.valves.debug_mode:
-                logger.info(f"[Load] Loaded summary from database (Chat ID: {chat_id})")
-                logger.info(
-                    f"[Load] Last updated: {record.updated_at}, Compressed message count: {record.compressed_message_count}"
-                )
-            return record.summary
-        return None
 
     def _count_tokens(self, text: str) -> int:
         """Counts the number of tokens in the text."""
@@ -4203,9 +4375,9 @@ class Filter:
             event_call=__event_call__,
         )
 
-        # Load only branch-valid snapshots. The legacy chat_summary row is kept
-        # for compatibility/current-pointer storage, but its count cannot prove
-        # that the summary covers this active OpenWebUI branch.
+        # Load only branch-valid summary rows. Legacy count-only chat_summary
+        # rows are rebuilt during database initialization and are never trusted
+        # as coverage proof.
         summary_snapshot = await self._load_applicable_summary_snapshot(
             chat_id,
             messages,
@@ -5482,14 +5654,14 @@ class Filter:
             if covered_refs is None:
                 await self._log(
                     "[🤖 Async Summary Task] ⚠️ Covered range lacks stable message refs; "
-                    "saving compatibility summary only, not branch-valid snapshot",
+                    "skipping branch summary save",
                     log_type="warning",
                     event_call=__event_call__,
                 )
 
             source_refs = self._current_branch_refs(messages) or []
             source_current_id = source_refs[-1]["id"] if source_refs else None
-            await self._save_summary(
+            summary_saved = await self._save_summary(
                 chat_id,
                 new_summary,
                 saved_compressed_count,
@@ -5497,6 +5669,14 @@ class Filter:
                 source_current_id,
                 protected_head_count,
             )
+            if not summary_saved:
+                await self._log(
+                    "[🤖 Async Summary Task] ⚠️ Summary generated but was not persisted; "
+                    "skipping success status for future-context summary reuse.",
+                    log_type="warning",
+                    event_call=__event_call__,
+                )
+                return
 
             # Send completion status notification
             if __event_emitter__:

@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.5 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.0 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -23,10 +23,11 @@
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
 
-## 1.6.5 版本更新
+## 1.7.0 版本更新
 
-- **新增压缩风格控制**：新增 `compression_style` 配置项，支持 `aggressive`、`balanced`、`faithful` 三档，可以直接控制摘要更偏“省 token”还是更偏“保留上下文细节”。
-- **新增 faithful 提示词模式**：当 `compression_style=faithful` 时，摘要 prompt 会明确要求模型更多保留关键论证链、评估标准、仍在比较中的候选方案和细微上下文，而不是过度抽象化。
+- **分支感知摘要复用**：缓存摘要现在会先用 message id 和 payload fingerprint 验证覆盖范围。来自 sibling 分支或编辑前内容的旧摘要会被拒绝，不会注入到错误分支。
+- **单表分支摘要存储**：branch-valid 摘要行统一写入 `chat_summary`，缺少覆盖元数据的 count-only 摘要会重新生成。
+- **更安全的升级检查**：仍通过 `chat_id` unique 限制每个 chat 只能一行的旧表会被重建；如果无法反射检查现有 schema，会保留表不动并禁用摘要持久化，不会执行破坏性 DDL。
 
 ## 1.6.4 版本更新
 
@@ -83,6 +84,8 @@
   以前有一段逻辑把 `max_summary_tokens` 这种“输出长度限制”误当成了“输入上下文窗口”，结果大一点的引用聊天会被过早截断。现在改成按摘要模型真实的输入窗口来算，能保留更多有用内容。
 - **问题 3：后台摘要失败时，用户不容易知道发生了什么。**
   以前在 `show_debug_log=false` 时，有些后台失败只会留在内部日志里。现在关键失败会强制打到浏览器控制台，并在聊天状态里提醒去看 `F12`。
+- **问题 4：旧摘要可能被复用到错误分支。**
+  以前摘要复用主要依赖消息数量；用户从旧消息处分叉或编辑历史后，另一条分支生成的摘要可能被注入到当前分支。现在每条持久化摘要都会记录有序 message refs 和 fingerprint，只有 branch-valid 覆盖范围才会被复用，仍存在的 sibling 分支 refs 会被拒绝。
 
 ---
 
@@ -100,22 +103,22 @@ flowchart TD
     C -- 否 --> D[如果有当前聊天摘要就先加载]
     C -- 是 --> E[逐个检查被引用聊天]
 
-    E --> F{已有缓存摘要?}
-    F -- 是 --> G[直接复用缓存摘要]
+    E --> F{已有 branch-valid 缓存摘要?}
+    F -- 是 --> G[复用验证后的摘要]
     F -- 否 --> H{能直接放进当前预算?}
     H -- 是 --> I[直接注入完整引用聊天文本]
-    H -- No --> J[准备引用聊天的摘要输入]
+    H -- 否 --> J[准备引用聊天的摘要输入]
 
     J --> K{引用聊天摘要调用成功?}
     K -- 是 --> L[注入生成后的引用摘要]
-    K -- No --> M[回退为直接注入上下文]
+    K -- 否 --> M[回退为直接注入上下文]
 
     G --> D
     I --> D
     L --> D
     M --> D
 
-    D --> N[为当前聊天构造 Head + Summary + Tail]
+    D --> N[为当前聊天构造 Head + 已验证摘要 + Tail]
     N --> O{是否超过 max_context_tokens?}
     O -- 是 --> P[从最旧 atomic groups 开始裁剪]
     O -- 否 --> Q[把最终上下文发给模型]
@@ -136,12 +139,12 @@ flowchart TD
 
 - `inlet` 只负责注入和裁剪上下文，不负责生成当前聊天的主摘要。
 - `outlet` 异步生成摘要，不会阻塞当前回复。
-- 外部聊天引用可以来自已有持久化摘要、小聊天的完整文本，或动态生成/截断后的引用摘要。
+- 外部聊天引用可以来自已有 branch-valid 持久化摘要、小聊天的完整文本，或动态生成/截断后的引用摘要。
 - 如果引用聊天摘要失败，会自动回退为直接注入上下文，而不是让当前请求失败。
-- 会保留所有 branch-valid 历史摘要快照；用户在任意更早位置分叉后，下次压缩会复用当前分支上最接近的祖先摘要。
-- `summary_model_max_context` 控制摘要输入窗口；`max_summary_tokens` 只控制生成摘要的输出长度，并且必须严格小于摘要模型输入窗口的 80%，为后续再次压缩的新消息至少预留 20% 空间。不满足要求会报配置错误，过滤器不会静默改小该值。
+- `chat_summary` 保存带有有序 message refs 和 payload fingerprints 的 branch-valid 摘要行。插件会保留历史摘要行；用户在任意更早位置分叉后，下次压缩会复用当前分支上最接近的祖先摘要。
+- `summary_model_max_context` 控制摘要输入窗口；`max_summary_tokens` 只控制生成摘要的输出长度，并且必须严格小于摘要模型输入窗口的 80%。这 20% 预留空间用于保证后续再次压缩时，可以把旧摘要和至少一部分新消息一起送入摘要模型；如果旧摘要自己就能占满整个输入窗口，再次压缩就无法有效推进。不满足要求会报配置错误，过滤器不会静默改小该值。
 - 重要的后台摘要失败会显示到浏览器控制台 (`F12`) 和聊天状态提示里。
-- 外部引用消息在裁剪阶段会被特殊保护，避免被最先删除。
+- 外部引用消息在裁剪阶段会被特殊保护，并且在构造当前聊天 message refs 时作为 side-channel 跳过，避免引用块污染当前聊天摘要持久化。
 
 ---
 
@@ -150,7 +153,9 @@ flowchart TD
 ### 1. 数据库（自动）
 
 - 自动使用 Open WebUI 的共享数据库连接，**无需额外配置**。
-- 首次运行自动创建 `chat_summary` 和 `chat_summary_snapshot` 表。
+- 首次运行自动创建 branch-aware `chat_summary` 表。
+- 旧版 count-only `chat_summary` 表，或仍通过 `chat_id` unique 限制每个 chat 只能一行的表，会被重建，后续重新生成安全摘要。
+- 如果插件无法反射检查现有 schema，会保留表不动并禁用摘要持久化，不会执行破坏性 DDL。
 
 ### 2. 过滤器顺序
 
@@ -178,7 +183,7 @@ flowchart TD
 | :-------------------- | :------ | :------------------------------------------------------------------------------------------------------------------------------------------ |
 | `summary_model`       | `None`  | 用于生成摘要的模型 ID。**强烈建议**配置快速、经济、上下文窗口大的模型（如 `gemini-2.5-flash`、`deepseek-v3`）。留空则尝试复用当前对话模型。 |
 | `summary_model_max_context` | `0`     | 摘要请求可使用的输入上下文窗口。如果为 0，则回退到 `model_thresholds` 或全局 `max_context_tokens`。                                          |
-| `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限，并且必须严格小于有效摘要输入窗口（`summary_model_max_context`，或从 `model_thresholds` / `max_context_tokens` 回退得到的窗口）的 80%。不满足要求会报错，不会自动调整。 |
+| `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限，并且必须严格小于有效摘要输入窗口（`summary_model_max_context`，或从 `model_thresholds` / `max_context_tokens` 回退得到的窗口）的 80%。剩余窗口用于下次压缩时同时容纳旧摘要和新消息；不满足要求会报错，不会自动调整。 |
 | `summary_temperature` | `0.1`   | 控制摘要生成的随机性，较低的值结果更稳定。                                                                                                  |
 | `summary_fail_mode`   | `silent` | 控制摘要 LLM 调用失败时的行为。`silent` 会记录错误并跳过本轮摘要；`raise` 会保留之前的硬抛错行为。                                         |
 | `compression_style`   | `balanced` | 控制摘要压缩风格。`aggressive` 更省 token，`balanced` 在紧凑和保真之间取中间值，`faithful` 会尽量保留更多细节、论证和上下文层次。 |
@@ -233,6 +238,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.6.5` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.6.5_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.7.0` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.0_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

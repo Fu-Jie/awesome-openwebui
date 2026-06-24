@@ -136,9 +136,9 @@ flowchart TD
 
 ## 建议数据模型
 
-保留现有 `chat_summary` 表作为兼容层或 optional current pointer。新增面向 snapshot 的存储模型，使一个 chat 可以保存多个有效摘要。
+直接复用 `chat_summary` 表名作为 branch-aware summary rows，不再保留兼容/current pointer 行，也不再创建 `chat_summary_snapshot`。一个 chat 可以在 `chat_summary` 中保存多行有效摘要，每一行代表一个可验证覆盖范围。
 
-建议 snapshot 字段：
+建议 `chat_summary` 字段：
 
 - `id`：snapshot id。
 - `chat_id`：所属 chat。
@@ -149,6 +149,8 @@ flowchart TD
 - `branch_tip_id`：最后一个 covered message id。
 - `source_current_id`：生成 snapshot 时的活跃 leaf id，用于排查 late async save。
 - `created_at`、`updated_at`。
+
+旧版 `chat_summary` 只有 `chat_id` unique + count-only 覆盖信息，缺少 refs/fingerprint/branch identity，无法安全迁移到分支感知模型。初始化时通过字段检测识别旧 schema；如果缺少 `covered_message_refs_json`、`covered_refs_hash`、`branch_tip_id` 等分支摘要必需字段，就删除旧表并按新 schema 重建，后续由正常压缩流程重新生成摘要。旧 `chat_summary_snapshot` 表不再使用；如果已存在且包含完整分支覆盖字段，就先迁移到新的 `chat_summary` 行再删除旧表；如果字段不完整，则删除后重新压缩。
 
 可选保留字段：
 
@@ -300,20 +302,21 @@ flowchart TD
 - Modify: `plugins/filters/async-context-compression/test_async_context_compression.py`
 
 **方案：**
-- 新增 lazy-created snapshot table，而不是继续把唯一 `chat_summary.chat_id` 行当作唯一真相。
-- 每个 snapshot 保存 ordered refs JSON 和 hash。
-- 保持现有 `chat_summary` 兼容，避免已安装环境启动失败。
+- 复用 `chat_summary` 表名作为 branch-aware 多行摘要表，而不是新增 `chat_summary_snapshot`。
+- 每行保存 ordered refs JSON 和 hash，并通过 `(chat_id, covered_refs_hash)` 语义去重相同覆盖范围。
+- 移除 legacy/current pointer 兼容逻辑；旧 count-only `chat_summary` schema 不能安全复用，初始化时检测缺失分支字段后删除重建，后续重新压缩。
+- 初始化时不再创建 `chat_summary_snapshot`；如果历史版本留下该表，先迁移可验证的 branch-aware rows 到 `chat_summary`，再删除旧表，避免 stale snapshot 被继续误读。
 - 保留所有 branch-valid historical snapshots。用户可能在任意历史深度分叉，任一旧 snapshot 都可能成为该分支下次压缩时最接近的祖先摘要；只通过 covered refs hash 去重完全相同的覆盖范围，不按 recency/size/最短前缀驱逐。
 
 **参考模式：**
-- `_init_database` 里的 lazy database initialization 与兼容行为。
+- `_init_database` 里的 lazy database initialization。
 - 现有 `_save_summary` 的 optimistic save 思路，但从“单行胜出”改成“分支 snapshot 独立保存”。
 
 **测试场景：**
 - Happy path：同一 chat 下保存两个不同 branch tip 的 snapshots，二者都保留。
 - Happy path：加载 candidates 时优先返回覆盖更多、更新的 snapshots。
 - Edge case：旧分支 late async save 不删除或覆盖当前分支 snapshot。
-- Edge case：只有 legacy `chat_summary` 行、没有 snapshot rows 时，启动和加载仍然正常。
+- Edge case：只有 legacy `chat_summary` 行时，初始化检测旧 schema 并删除重建，后续聊天不会读取不可验证摘要。
 - Error path：refs JSON 损坏时忽略为 invalid coverage，不影响聊天。
 
 **验证：**
@@ -438,13 +441,13 @@ flowchart TD
 
 | 风险 | 缓解 |
 |------|------|
-| snapshot table 增加存储量 | 保留所有历史 branch-valid snapshots 以支持任意深度分叉；通过 covered refs hash 去重相同覆盖范围，refs 保持 compact，并在后续需要时再设计显式归档/清理策略。 |
-| legacy summaries 被复用得更保守 | 优先正确性；升级后为当前分支重新生成 branch-valid snapshots。 |
+| 单表多行摘要增加存储量 | 保留所有历史 branch-valid 摘要行以支持任意深度分叉；通过 covered refs hash 去重相同覆盖范围，refs 保持 compact，并在后续需要时再设计显式归档/清理策略。 |
+| 旧 count-only `chat_summary` 被重建后丢弃旧摘要 | 优先正确性；旧 schema 缺少 refs/fingerprint/branch identity，不能安全复用，升级后为当前分支重新生成 branch-valid 摘要。 |
 | 无法拿到完整 `history.messages` graph | 不把 unmatched refs 当作删除跳过；拒绝 candidate 并保留原始当前分支消息。 |
 | 非标准 OpenWebUI 流程里的 body messages 缺少 ids | 能 DB reconstruction 就用 DB；不能就不声明 validated coverage。 |
 | summary prompt fitting 改变实际覆盖范围 | fitting 后再保存 refs，不能 fitting 前保存。 |
 | candidate selection 更难排查 | 输出 matched coverage、skipped deleted refs、第一处 live sibling/edited mismatch 原因。 |
-| 多 snapshots 让 current pointer 语义复杂 | snapshots 是 source of truth；单行 current pointer 只作为优化或兼容层。 |
+| 多个历史摘要行可能让排查当前生效摘要更复杂 | selector 只会从当前分支可验证的候选里选覆盖范围最大的一个；debug 日志输出 matched coverage、skipped deleted refs 和第一处 mismatch 原因。 |
 
 ## 文档与运维说明
 

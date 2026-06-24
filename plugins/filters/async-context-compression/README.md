@@ -1,6 +1,6 @@
 # Async Context Compression Filter
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v1.6.5 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.0 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -23,15 +23,16 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 
 ## Branch-aware summary reuse
 
-- **Branch-safe cached summaries**: Stored summaries are reused only when every saved message-id + payload-fingerprint ref can be explained as either a current active-branch ancestor or a message proven deleted from the full history graph. Snapshots that still contain live sibling-branch refs are rejected, so new or edited current-branch messages stay in the raw live tail instead of being hidden by an old summary.
-- **Snapshot-based persistence**: The legacy `chat_summary` row remains as a compatibility/current-pointer record, while reusable coverage is stored in branch-specific `chat_summary_snapshot` rows. Branch-valid historical snapshots are retained so a future fork can reuse the nearest matching ancestor, even when the user branches from an older point.
-- **Protected-head tracking**: Snapshots remember how many leading messages were kept outside the summary. If the current `keep_first` policy no longer preserves those messages, the snapshot is not reused as branch-valid coverage.
-- **Safe upgrade behavior**: Legacy summaries without coverage metadata are not trusted as coverage. The first turn after upgrading may send more raw context until a branch-valid snapshot is generated.
+- **Branch-safe cached summaries**: Stored summaries are reused only when every saved message-id + payload-fingerprint ref can be explained as either a current active-branch ancestor or a message proven deleted from the full history graph. Summary rows that still contain live sibling-branch refs are rejected, so new or edited current-branch messages stay in the raw live tail instead of being hidden by an old summary.
+- **Single-table persistence**: Branch-specific reusable coverage is stored as multiple rows in `chat_summary`; there is no separate current-pointer row. Branch-valid historical rows are retained so a future fork can reuse the nearest matching ancestor, even when the user branches from an older point.
+- **Protected-head tracking**: Summary rows remember how many leading messages were kept outside the summary. If the current `keep_first` policy no longer preserves those messages, the row is not reused as branch-valid coverage.
+- **Safe upgrade behavior**: Legacy summaries without coverage metadata are not trusted as coverage. The first turn after upgrading may send more raw context until a branch-valid summary row is generated.
 
-## What's new in 1.6.5
+## What's new in 1.7.0
 
-- **Compression style control**: Added a new `compression_style` valve with `aggressive`, `balanced`, and `faithful` modes so you can directly tune summaries for minimum token use or higher context fidelity.
-- **Faithful prompt mode**: `compression_style=faithful` now tells the summary model to spend more of the available budget on key reasoning chains, evaluation criteria, active alternatives, and nuanced context instead of compressing them into abstract notes.
+- **Branch-aware summary reuse**: Cached summaries are validated against ordered message refs and payload fingerprints before reuse, so sibling-branch or edited-history summaries are not injected into the wrong branch.
+- **Single-table summary storage**: Branch-valid historical rows are stored directly in `chat_summary`; all branch summaries live in that table.
+- **Safer schema upgrades**: Legacy count-only summaries are not trusted as coverage, and old one-row-per-chat schemas are rebuilt so summaries can be regenerated safely.
 
 ## What's new in 1.6.4
 
@@ -137,10 +138,10 @@ flowchart TD
 - `inlet` only injects and trims context. It does not generate the main chat summary.
 - `outlet` performs summary generation asynchronously and does not block the current reply.
 - External chat references may come from an existing branch-valid persisted summary, a small chat's full text, or a generated/truncated reference summary.
-- Legacy `chat_summary` rows are compatibility records only; current-branch summary coverage is validated through `chat_summary_snapshot` message refs.
+- `chat_summary` stores branch-valid summary rows with message refs. Legacy count-only `chat_summary` schemas are rebuilt on startup because they do not contain enough coverage metadata to reuse safely.
 - If a referenced-chat summary call fails, the filter falls back to direct context injection instead of failing the whole request.
-- Branch-valid historical summary snapshots are retained so a future branch can reuse the nearest matching ancestor summary, even when the user forks at an arbitrary earlier point.
-- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be, and it must be less than 80% of the summary model input window so at least 20% remains for new messages during follow-up compression. Invalid settings raise a configuration error; the filter does not silently lower the value.
+- Branch-valid historical summary rows are retained so a future branch can reuse the nearest matching ancestor summary, even when the user forks at an arbitrary earlier point.
+- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be, and it must be less than 80% of the summary model input window. This reserve ensures a future compression pass can feed the previous summary plus at least some new messages into the summary model; if the old summary can fill the whole input window by itself, another compression pass cannot make meaningful progress. Invalid settings raise a configuration error; the filter does not silently lower the value.
 - Important background summary failures are surfaced to the browser console (`F12`) and the chat status area.
 - External reference messages are protected during trimming so they are not discarded first.
 
@@ -151,7 +152,7 @@ flowchart TD
 ### 1) Database (automatic)
 
 - Uses Open WebUI's shared database connection; no extra configuration needed.
-- The `chat_summary` and `chat_summary_snapshot` tables are created on first run.
+- The branch-aware `chat_summary` table is created on first run. Older count-only `chat_summary` tables, or tables that still enforce one row per chat with a unique `chat_id`, are rebuilt so summaries can be regenerated safely. If the plugin cannot inspect the existing schema, it leaves the tables untouched and disables summary persistence instead of running destructive DDL.
 
 ### 2) Filter order
 
@@ -170,7 +171,7 @@ flowchart TD
 | `keep_last`                    | `6`      | Always keep the last N messages to preserve recent context.                                                                                                           |
 | `summary_model`                | `None`   | Model for summaries. Strongly recommended to set a fast, economical model (e.g., `gemini-2.5-flash`, `deepseek-v3`). Falls back to the current chat model when empty. |
 | `summary_model_max_context`    | `0`      | Input context window used to fit summary requests. If `0`, falls back to `model_thresholds` or global `max_context_tokens`.                                          |
-| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit, and must be strictly less than 80% of the effective summary input window (`summary_model_max_context`, or its fallback from `model_thresholds` / `max_context_tokens`). Invalid settings raise an error instead of being auto-adjusted. |
+| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit, and must be strictly less than 80% of the effective summary input window (`summary_model_max_context`, or its fallback from `model_thresholds` / `max_context_tokens`). The remaining window is reserved so the next compression can include the previous summary plus new messages; invalid settings raise an error instead of being auto-adjusted. |
 | `summary_temperature`          | `0.1`    | Randomness for summary generation. Lower is more deterministic.                                                                                                       |
 | `summary_fail_mode`            | `silent` | Controls what happens when the summary LLM call fails. `silent` logs the error and skips summary generation for that turn; `raise` preserves the previous hard-failure behavior. |
 | `compression_style`            | `balanced` | Controls summary compactness. `aggressive` minimizes tokens, `balanced` keeps key context with moderate detail, and `faithful` preserves more nuance and reasoning context. |
@@ -200,6 +201,6 @@ If this plugin has been useful, a star on [OpenWebUI Extensions](https://github.
 
 ## Changelog
 
-See [`v1.6.5` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.6.5.md) for the release-specific summary.
+See [`v1.7.0` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.0.md) for the release-specific summary.
 
 See the full history on GitHub: [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

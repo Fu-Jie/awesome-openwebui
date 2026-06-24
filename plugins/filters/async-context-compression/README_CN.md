@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.6.5 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.0 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -25,10 +25,16 @@
 
 ## 分支感知摘要复用
 
-- **分支安全的缓存摘要**：只有当已保存 snapshot 里的每个 message id + payload fingerprint ref 都能解释为当前活跃分支祖先，或能从完整 history graph 证明已经删除时，缓存摘要才会被复用。仍包含 live sibling 分支 refs 的 snapshot 会被拒绝，因此新增或编辑后的当前分支消息必须留在原文 live tail 里，不能被旧摘要隐藏。
-- **基于 snapshot 的持久化**：旧的 `chat_summary` 行继续作为兼容/current pointer 记录；真正可复用的覆盖范围写入分支专属的 `chat_summary_snapshot` 行。插件会保留 branch-valid 历史 snapshot，使用户从更早位置分叉时仍能复用当前分支上最接近的祖先摘要。
-- **受保护头部追踪**：snapshot 会记录有多少开头消息是在摘要之外按原文保留的。如果当前 `keep_first` 策略已经不再保留这些消息，该 snapshot 不会作为 branch-valid 覆盖范围复用。
-- **安全升级行为**：没有覆盖范围元数据的 legacy summary 不再被当成可信覆盖。升级后的第一轮对话可能会发送更多原始上下文，直到生成 branch-valid snapshot。
+- **分支安全的缓存摘要**：只有当已保存摘要行里的每个 message id + payload fingerprint ref 都能解释为当前活跃分支祖先，或能从完整 history graph 证明已经删除时，缓存摘要才会被复用。仍包含 live sibling 分支 refs 的摘要行会被拒绝，因此新增或编辑后的当前分支消息必须留在原文 live tail 里，不能被旧摘要隐藏。
+- **单表持久化**：分支专属的可复用覆盖范围以多行形式写入 `chat_summary`；不再保留单独的 current pointer 行。插件会保留 branch-valid 历史摘要行，使用户从更早位置分叉时仍能复用当前分支上最接近的祖先摘要。
+- **受保护头部追踪**：摘要行会记录有多少开头消息是在摘要之外按原文保留的。如果当前 `keep_first` 策略已经不再保留这些消息，该摘要行不会作为 branch-valid 覆盖范围复用。
+- **安全升级行为**：没有覆盖范围元数据的 legacy summary 不再被当成可信覆盖。升级后的第一轮对话可能会发送更多原始上下文，直到生成 branch-valid 摘要行。
+
+## 1.7.0 版本更新
+
+- **分支感知摘要复用**：缓存摘要会先用有序 message refs 和 payload fingerprints 校验，来自 sibling 分支或编辑前历史的摘要不会注入到错误分支。
+- **单表摘要存储**：branch-valid 历史摘要行直接保存在 `chat_summary`，所有分支摘要都在这张表里。
+- **更安全的 schema 升级**：legacy count-only 摘要不会被当成可信覆盖，旧的一 chat 一行 schema 会重建，后续重新生成安全摘要。
 
 ## 1.6.5 版本更新
 
@@ -139,10 +145,10 @@ flowchart TD
 - `inlet` 只负责注入和裁剪上下文，不负责生成当前聊天的主摘要。
 - `outlet` 异步生成摘要，不会阻塞当前回复。
 - 外部聊天引用可以来自已有 branch-valid 持久化摘要、小聊天的完整文本，或动态生成/截断后的引用摘要。
-- 旧的 `chat_summary` 行只作为兼容记录；当前分支摘要覆盖范围通过 `chat_summary_snapshot` 里的 message refs 验证。
+- `chat_summary` 保存带 message refs 的 branch-valid 摘要行。旧的 count-only `chat_summary` schema 缺少可安全复用的覆盖范围元数据，启动时会被重建。
 - 如果引用聊天摘要失败，会自动回退为直接注入上下文，而不是让当前请求失败。
-- 会保留所有 branch-valid 历史摘要快照；用户在任意更早位置分叉后，下次压缩会复用当前分支上最接近的祖先摘要。
-- `summary_model_max_context` 控制摘要输入窗口；`max_summary_tokens` 只控制生成摘要的输出长度，并且必须严格小于摘要模型输入窗口的 80%，为后续再次压缩的新消息至少预留 20% 空间。不满足要求会报配置错误，过滤器不会静默改小该值。
+- 会保留所有 branch-valid 历史摘要行；用户在任意更早位置分叉后，下次压缩会复用当前分支上最接近的祖先摘要。
+- `summary_model_max_context` 控制摘要输入窗口；`max_summary_tokens` 只控制生成摘要的输出长度，并且必须严格小于摘要模型输入窗口的 80%。这 20% 预留空间用于保证后续再次压缩时，可以把旧摘要和至少一部分新消息一起送入摘要模型；如果旧摘要自己就能占满整个输入窗口，再次压缩就无法有效推进。不满足要求会报配置错误，过滤器不会静默改小该值。
 - 重要的后台摘要失败会显示到浏览器控制台 (`F12`) 和聊天状态提示里。
 - 外部引用消息在裁剪阶段会被特殊保护，避免被最先删除。
 
@@ -153,7 +159,7 @@ flowchart TD
 ### 1. 数据库（自动）
 
 - 自动使用 Open WebUI 的共享数据库连接，**无需额外配置**。
-- 首次运行自动创建 `chat_summary` 和 `chat_summary_snapshot` 表。
+- 首次运行自动创建 branch-aware `chat_summary` 表。旧版 count-only `chat_summary` 表，或仍通过 `chat_id` unique 限制每个 chat 只能一行的表，会被重建，后续重新生成安全摘要。如果插件无法反射检查现有 schema，会保留表不动并禁用摘要持久化，不会执行破坏性 DDL。
 
 ### 2. 过滤器顺序
 
@@ -181,7 +187,7 @@ flowchart TD
 | :-------------------- | :------ | :------------------------------------------------------------------------------------------------------------------------------------------ |
 | `summary_model`       | `None`  | 用于生成摘要的模型 ID。**强烈建议**配置快速、经济、上下文窗口大的模型（如 `gemini-2.5-flash`、`deepseek-v3`）。留空则尝试复用当前对话模型。 |
 | `summary_model_max_context` | `0`     | 摘要请求可使用的输入上下文窗口。如果为 0，则回退到 `model_thresholds` 或全局 `max_context_tokens`。                                          |
-| `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限，并且必须严格小于有效摘要输入窗口（`summary_model_max_context`，或从 `model_thresholds` / `max_context_tokens` 回退得到的窗口）的 80%。不满足要求会报错，不会自动调整。 |
+| `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限，并且必须严格小于有效摘要输入窗口（`summary_model_max_context`，或从 `model_thresholds` / `max_context_tokens` 回退得到的窗口）的 80%。剩余窗口用于下次压缩时同时容纳旧摘要和新消息；不满足要求会报错，不会自动调整。 |
 | `summary_temperature` | `0.1`   | 控制摘要生成的随机性，较低的值结果更稳定。                                                                                                  |
 | `summary_fail_mode`   | `silent` | 控制摘要 LLM 调用失败时的行为。`silent` 会记录错误并跳过本轮摘要；`raise` 会保留之前的硬抛错行为。                                         |
 | `compression_style`   | `balanced` | 控制摘要压缩风格。`aggressive` 更省 token，`balanced` 在紧凑和保真之间取中间值，`faithful` 会尽量保留更多细节、论证和上下文层次。 |
@@ -236,6 +242,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.6.5` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.6.5_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.7.0` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.0_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

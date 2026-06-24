@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import importlib.util
 import json
 import os
@@ -54,6 +55,23 @@ def _install_dependency_stubs() -> None:
     class DummyEngine:
         pass
 
+    class DummyMetaData:
+        pass
+
+    class DummyTable:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def drop(self, *args, **kwargs):
+            return None
+
+    class DummyIndex:
+        def __init__(self, name, *args, **kwargs):
+            self.name = name
+
+        def create(self, *args, **kwargs):
+            return None
+
     def dummy_column(*args, **kwargs):
         return None
 
@@ -70,6 +88,9 @@ def _install_dependency_stubs() -> None:
     sqlalchemy_module.Text = dummy_type
     sqlalchemy_module.DateTime = dummy_type
     sqlalchemy_module.Integer = dummy_type
+    sqlalchemy_module.Index = DummyIndex
+    sqlalchemy_module.MetaData = DummyMetaData
+    sqlalchemy_module.Table = DummyTable
     sqlalchemy_module.inspect = dummy_inspect
     sqlalchemy_orm_module.declarative_base = dummy_declarative_base
     sqlalchemy_orm_module.sessionmaker = dummy_sessionmaker
@@ -124,6 +145,44 @@ sys.modules[MODULE_NAME] = module
 assert spec.loader is not None
 spec.loader.exec_module(module)
 module.Filter._init_database = lambda self: None
+
+
+def _load_module_with_real_sqlalchemy(module_name: str):
+    sqlalchemy_module_names = [
+        name
+        for name in sys.modules
+        if name == "sqlalchemy" or name.startswith("sqlalchemy.")
+    ]
+    saved_modules = {name: sys.modules.get(name) for name in sqlalchemy_module_names}
+    for name in sqlalchemy_module_names:
+        sys.modules.pop(name, None)
+
+    real_sqlalchemy = importlib.import_module("sqlalchemy")
+    real_sqlalchemy_orm = importlib.import_module("sqlalchemy.orm")
+    real_sqlalchemy_engine = importlib.import_module("sqlalchemy.engine")
+
+    real_spec = importlib.util.spec_from_file_location(module_name, PLUGIN_PATH)
+    real_module = importlib.util.module_from_spec(real_spec)
+    sys.modules[module_name] = real_module
+
+    def restore_sqlalchemy_stubs():
+        for loaded_name in list(sys.modules):
+            if loaded_name == "sqlalchemy" or loaded_name.startswith("sqlalchemy."):
+                sys.modules.pop(loaded_name, None)
+        for saved_name, saved_module in saved_modules.items():
+            if saved_module is not None:
+                sys.modules[saved_name] = saved_module
+
+    sys.modules["sqlalchemy"] = real_sqlalchemy
+    sys.modules["sqlalchemy.orm"] = real_sqlalchemy_orm
+    sys.modules["sqlalchemy.engine"] = real_sqlalchemy_engine
+    try:
+        assert real_spec.loader is not None
+        real_spec.loader.exec_module(real_module)
+    except Exception:
+        restore_sqlalchemy_stubs()
+        raise
+    return real_module, real_sqlalchemy, restore_sqlalchemy_stubs
 
 
 def _messages_with_ids(ids):
@@ -1179,11 +1238,6 @@ class TestAsyncContextCompression(unittest.TestCase):
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 
-        class FakeChatSummarySnapshot:
-            def __init__(self, **kwargs):
-                for key, value in kwargs.items():
-                    setattr(self, key, value)
-
         class FakeQuery:
             def __init__(self, model):
                 self.model = model
@@ -1218,28 +1272,27 @@ class TestAsyncContextCompression(unittest.TestCase):
                 return False
 
         original_summary = module.ChatSummary
-        original_snapshot = module.ChatSummarySnapshot
         module.ChatSummary = FakeChatSummary
-        module.ChatSummarySnapshot = FakeChatSummarySnapshot
         self.filter._async_db_session = lambda: FakeAsyncContext()
 
         try:
-            asyncio.run(
+            saved_head_0 = asyncio.run(
                 self.filter._save_summary(
                     "chat-1", "summary head 0", 4, refs, protected_head_count=0
                 )
             )
-            asyncio.run(
+            saved_head_2 = asyncio.run(
                 self.filter._save_summary(
                     "chat-1", "summary head 2", 4, refs, protected_head_count=2
                 )
             )
         finally:
             module.ChatSummary = original_summary
-            module.ChatSummarySnapshot = original_snapshot
 
+        self.assertTrue(saved_head_0)
+        self.assertTrue(saved_head_2)
         snapshot_rows = [
-            obj for obj in added_objects if isinstance(obj, FakeChatSummarySnapshot)
+            obj for obj in added_objects if isinstance(obj, FakeChatSummary)
         ]
         self.assertEqual(len(snapshot_rows), 2)
         self.assertNotEqual(
@@ -1348,23 +1401,44 @@ class TestAsyncContextCompression(unittest.TestCase):
                 ref["fingerprint"], self.filter._message_fingerprint(message)
             )
 
-    def test_save_summary_persists_snapshot_when_legacy_pointer_is_ahead(self):
+    def test_message_refs_for_prefix_skips_external_reference_messages(self):
+        messages = [
+            {"id": "m0", "role": "user", "content": "current chat"},
+            {
+                "role": "assistant",
+                "content": "<external_references>ref</external_references>",
+                "metadata": {
+                    "is_summary": True,
+                    "is_external_references": True,
+                    "source": "external_references",
+                },
+            },
+            {"id": "m1", "role": "assistant", "content": "answer"},
+        ]
+
+        refs = self.filter._message_refs_for_prefix(messages, 2)
+
+        self.assertEqual([ref["id"] for ref in refs], ["m0", "m1"])
+        self.assertEqual(self.filter._get_original_history_count(messages), 2)
+
+    def test_save_summary_updates_existing_branch_row_by_hash(self):
         refs = self.filter._message_refs_for_prefix(
             _messages_with_ids(["m1", "m2"]),
             2,
         )
-        legacy_row = types.SimpleNamespace(
-            summary="legacy summary",
-            compressed_message_count=5,
+        existing_row = types.SimpleNamespace(
+            summary="old branch summary",
+            compressed_message_count=1,
+            covered_message_refs_json=None,
+            covered_refs_hash=None,
+            branch_tip_id=None,
+            source_current_id=None,
             updated_at=None,
         )
         added_objects = []
         commits = []
 
         class FakeChatSummary:
-            pass
-
-        class FakeChatSummarySnapshot:
             def __init__(self, **kwargs):
                 for key, value in kwargs.items():
                     setattr(self, key, value)
@@ -1377,9 +1451,7 @@ class TestAsyncContextCompression(unittest.TestCase):
                 return self
 
             def first(self):
-                if self.model is FakeChatSummary:
-                    return legacy_row
-                return None
+                return existing_row
 
             def all(self):
                 return []
@@ -1405,13 +1477,11 @@ class TestAsyncContextCompression(unittest.TestCase):
                 return False
 
         original_summary = module.ChatSummary
-        original_snapshot = module.ChatSummarySnapshot
         module.ChatSummary = FakeChatSummary
-        module.ChatSummarySnapshot = FakeChatSummarySnapshot
         self.filter._async_db_session = lambda: FakeAsyncContext()
 
         try:
-            asyncio.run(
+            saved = asyncio.run(
                 self.filter._save_summary(
                     "chat-1",
                     "short branch summary",
@@ -1422,20 +1492,230 @@ class TestAsyncContextCompression(unittest.TestCase):
             )
         finally:
             module.ChatSummary = original_summary
-            module.ChatSummarySnapshot = original_snapshot
 
-        self.assertEqual(legacy_row.summary, "legacy summary")
-        self.assertEqual(legacy_row.compressed_message_count, 5)
-        self.assertEqual(len(added_objects), 1)
-        saved_snapshot = added_objects[0]
-        self.assertEqual(saved_snapshot.summary, "short branch summary")
-        self.assertEqual(saved_snapshot.compressed_message_count, 2)
-        self.assertEqual(saved_snapshot.source_current_id, "m2")
+        self.assertTrue(saved)
+        self.assertEqual(added_objects, [])
+        self.assertEqual(existing_row.summary, "short branch summary")
+        self.assertEqual(existing_row.compressed_message_count, 2)
+        self.assertEqual(existing_row.branch_tip_id, "m2")
+        self.assertEqual(existing_row.source_current_id, "m2")
         self.assertEqual(
-            [ref["id"] for ref in json.loads(saved_snapshot.covered_message_refs_json)],
+            [ref["id"] for ref in json.loads(existing_row.covered_message_refs_json)],
             ["m1", "m2"],
         )
         self.assertEqual(commits, [True])
+
+    def test_save_summary_skips_without_message_refs(self):
+        def fail_session():
+            raise AssertionError("DB session should not open without branch refs")
+
+        self.filter._async_db_session = fail_session
+
+        saved = asyncio.run(
+            self.filter._save_summary(
+                "chat-1",
+                "unverifiable summary",
+                2,
+                covered_message_refs=None,
+            )
+        )
+        self.assertFalse(saved)
+
+    def test_save_summary_skips_when_database_unavailable(self):
+        def fail_session():
+            raise AssertionError("DB session should not open when DB init failed")
+
+        self.filter._summary_db_available = False
+        self.filter._async_db_session = fail_session
+
+        saved = asyncio.run(
+            self.filter._save_summary(
+                "chat-1",
+                "summary",
+                2,
+                covered_message_refs=[{"id": "m1", "fingerprint": "fp"}],
+            )
+        )
+        self.assertFalse(saved)
+
+    def test_chat_summary_schema_detection_rejects_legacy_count_only_table(self):
+        test_case = self
+
+        class FakeInspector:
+            def get_columns(self, table_name):
+                test_case.assertEqual(table_name, "chat_summary")
+                return [
+                    {"name": "id"},
+                    {"name": "chat_id"},
+                    {"name": "summary"},
+                    {"name": "compressed_message_count"},
+                    {"name": "created_at"},
+                    {"name": "updated_at"},
+                ]
+
+        self.assertFalse(self.filter._chat_summary_table_is_branch_aware(FakeInspector()))
+
+    def test_chat_summary_schema_detection_does_not_rebuild_on_inspection_error(self):
+        class FakeInspector:
+            def get_columns(self, table_name):
+                raise RuntimeError("temporary reflection failure")
+
+        self.assertIsNone(
+            self.filter._chat_summary_table_is_branch_aware(FakeInspector())
+        )
+
+    def test_chat_summary_schema_detection_rejects_unique_chat_id_constraint(self):
+        test_case = self
+
+        class FakeInspector:
+            def get_columns(self, table_name):
+                test_case.assertEqual(table_name, "chat_summary")
+                return [
+                    {"name": column_name}
+                    for column_name in module.BRANCH_SUMMARY_REQUIRED_COLUMNS
+                ]
+
+            def get_unique_constraints(self, table_name, schema=None):
+                test_case.assertEqual(table_name, "chat_summary")
+                return [{"column_names": ["chat_id"]}]
+
+            def get_indexes(self, table_name, schema=None):
+                return []
+
+        self.assertFalse(self.filter._chat_summary_table_is_branch_aware(FakeInspector()))
+
+    def test_chat_summary_schema_detection_accepts_branch_aware_table(self):
+        test_case = self
+
+        class FakeInspector:
+            def get_columns(self, table_name):
+                test_case.assertEqual(table_name, "chat_summary")
+                return [
+                    {"name": column_name}
+                    for column_name in module.BRANCH_SUMMARY_REQUIRED_COLUMNS
+                ]
+
+            def get_unique_constraints(self, table_name, schema=None):
+                test_case.assertEqual(table_name, "chat_summary")
+                return []
+
+            def get_indexes(self, table_name, schema=None):
+                test_case.assertEqual(table_name, "chat_summary")
+                return [
+                    {
+                        "unique": True,
+                        "column_names": ["chat_id", "covered_refs_hash"],
+                    }
+                ]
+
+        self.assertTrue(self.filter._chat_summary_table_is_branch_aware(FakeInspector()))
+
+    def test_init_database_migrates_legacy_snapshot_table_with_real_sqlite(self):
+        real_module, sqlalchemy, restore_sqlalchemy_stubs = _load_module_with_real_sqlalchemy(
+            "async_context_compression_real_sqlalchemy_under_test"
+        )
+        try:
+            engine = sqlalchemy.create_engine("sqlite:///:memory:")
+            metadata = sqlalchemy.MetaData()
+
+            legacy_summary = sqlalchemy.Table(
+                "chat_summary",
+                metadata,
+                sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
+                sqlalchemy.Column("chat_id", sqlalchemy.String(255), unique=True),
+                sqlalchemy.Column("summary", sqlalchemy.Text),
+                sqlalchemy.Column("compressed_message_count", sqlalchemy.Integer),
+                sqlalchemy.Column("created_at", sqlalchemy.DateTime),
+                sqlalchemy.Column("updated_at", sqlalchemy.DateTime),
+            )
+            legacy_snapshot = sqlalchemy.Table(
+                "chat_summary_snapshot",
+                metadata,
+                sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
+                sqlalchemy.Column("chat_id", sqlalchemy.String(255), nullable=False),
+                sqlalchemy.Column("summary", sqlalchemy.Text, nullable=False),
+                sqlalchemy.Column("compressed_message_count", sqlalchemy.Integer),
+                sqlalchemy.Column(
+                    "covered_message_refs_json", sqlalchemy.Text, nullable=False
+                ),
+            )
+            metadata.create_all(engine)
+
+            refs = [
+                {"id": "m1", "fingerprint": "fp1"},
+                {"id": "m2", "fingerprint": "fp2"},
+            ]
+            with engine.begin() as connection:
+                connection.execute(
+                    legacy_summary.insert().values(
+                        chat_id="chat-1",
+                        summary="legacy count-only summary",
+                        compressed_message_count=99,
+                    )
+                )
+                connection.execute(
+                    legacy_snapshot.insert(),
+                    [
+                        {
+                            "chat_id": "chat-1",
+                            "summary": "snapshot without protected head",
+                            "compressed_message_count": 2,
+                            "covered_message_refs_json": json.dumps(refs),
+                        },
+                        {
+                            "chat_id": "chat-1",
+                            "summary": "snapshot with protected head",
+                            "compressed_message_count": 2,
+                            "covered_message_refs_json": json.dumps(
+                                {"refs": refs, "protected_head_count": 1}
+                            ),
+                        },
+                    ],
+                )
+
+            filter_obj = real_module.Filter.__new__(real_module.Filter)
+            filter_obj._db_engine = engine
+            filter_obj._summary_db_available = True
+
+            filter_obj._init_database()
+
+            inspector = sqlalchemy.inspect(engine)
+            self.assertTrue(inspector.has_table("chat_summary"))
+            self.assertFalse(inspector.has_table("chat_summary_snapshot"))
+            self.assertTrue(filter_obj._summary_db_available)
+            self.assertFalse(
+                filter_obj._table_has_unique_columns(
+                    inspector, "chat_summary", ["chat_id"]
+                )
+            )
+            self.assertTrue(
+                filter_obj._table_has_unique_columns(
+                    inspector, "chat_summary", ["chat_id", "covered_refs_hash"]
+                )
+            )
+
+            with engine.connect() as connection:
+                rows = list(
+                    connection.execute(real_module.ChatSummary.__table__.select())
+                    .mappings()
+                    .all()
+                )
+
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(
+                {row["summary"] for row in rows},
+                {
+                    "snapshot without protected head",
+                    "snapshot with protected head",
+                },
+            )
+            self.assertNotIn(
+                "legacy count-only summary", {row["summary"] for row in rows}
+            )
+            self.assertEqual(len({row["covered_refs_hash"] for row in rows}), 2)
+            self.assertEqual({row["branch_tip_id"] for row in rows}, {"m2"})
+        finally:
+            restore_sqlalchemy_stubs()
 
     def test_load_full_chat_messages_rebuilds_active_history_branch(self):
         class FakeChats:
