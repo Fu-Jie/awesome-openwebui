@@ -6,6 +6,8 @@ import os
 import sys
 import types
 import unittest
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 
 
 PLUGIN_PATH = os.path.join(os.path.dirname(__file__), "async_context_compression.py")
@@ -226,6 +228,188 @@ def _snapshot(summary, refs, protected_head_count=0):
 def _live_refs_by_id(filter_instance, messages):
     refs = filter_instance._message_refs_for_prefix(messages, len(messages)) or []
     return {ref["id"]: ref for ref in refs}
+
+
+class _GeneratedBranchGraph:
+    """Deterministic OpenWebUI-like branch tree for compression tests."""
+
+    def __init__(self, filter_instance):
+        self.filter = filter_instance
+        self.branches = {}
+        self.deleted_ids = set()
+
+    def add_branch(self, name, ids, prefix_branch=None, through_id=None):
+        if prefix_branch is None:
+            messages = _messages_with_ids(ids)
+        else:
+            prefix = self.branch(prefix_branch)
+            try:
+                through_index = next(
+                    index
+                    for index, message in enumerate(prefix)
+                    if message.get("id") == through_id
+                )
+            except StopIteration as exc:
+                raise AssertionError(f"Unknown fork point: {through_id}") from exc
+            messages = prefix[: through_index + 1] + _messages_with_ids(ids)
+        self.branches[name] = [deepcopy(message) for message in messages]
+        return self
+
+    def branch(self, name):
+        return [deepcopy(message) for message in self.branches[name]]
+
+    def edit_message(self, branch_name, message_id, **updates):
+        for message in self.branches[branch_name]:
+            if message.get("id") == message_id:
+                message.update(updates)
+                return self
+        raise AssertionError(f"Unknown message for edit: {message_id}")
+
+    def delete_message(self, message_id):
+        self.deleted_ids.add(message_id)
+        return self
+
+    def summary_row(self, summary, branch_name, covered_count, sequence=0):
+        refs = self.filter._message_refs_for_prefix(
+            self.branch(branch_name), covered_count
+        )
+        row = _snapshot(summary, refs)
+        timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(
+            seconds=sequence
+        )
+        row.created_at = timestamp
+        row.updated_at = timestamp
+        return row
+
+    def live_refs_by_id(self):
+        live_messages_by_id = {}
+        for messages in self.branches.values():
+            for message in messages:
+                message_id = message.get("id")
+                if message_id in self.deleted_ids:
+                    continue
+                live_messages_by_id[message_id] = deepcopy(message)
+        refs = [
+            self.filter._message_ref(message)
+            for message in live_messages_by_id.values()
+        ]
+        return {ref["id"]: ref for ref in refs if ref is not None}
+
+
+class _FakeBranchSummaryStore:
+    def __init__(self, filter_instance, graph):
+        self.filter = filter_instance
+        self.graph = graph
+        self.rows = []
+        self.saved_calls = []
+        self._sequence = 0
+
+    def add(self, row):
+        self.rows.append(row)
+        return row
+
+    async def load(self, chat_id, messages, require_full_coverage=False):
+        return self.filter._select_applicable_summary_snapshot(
+            list(self.rows),
+            messages,
+            require_full_coverage=require_full_coverage,
+            live_message_refs_by_id=self.graph.live_refs_by_id(),
+        )
+
+    async def save(
+        self,
+        chat_id,
+        summary,
+        compressed_count,
+        covered_message_refs=None,
+        source_current_id=None,
+        protected_head_count=0,
+    ):
+        self.saved_calls.append(
+            {
+                "chat_id": chat_id,
+                "summary": summary,
+                "compressed_count": compressed_count,
+                "covered_message_refs": covered_message_refs,
+                "source_current_id": source_current_id,
+                "protected_head_count": protected_head_count,
+            }
+        )
+        if not covered_message_refs:
+            return False
+        self._sequence += 1
+        row = _snapshot(summary, covered_message_refs, protected_head_count)
+        timestamp = datetime(2026, 1, 2, tzinfo=timezone.utc) + timedelta(
+            seconds=self._sequence
+        )
+        row.created_at = timestamp
+        row.updated_at = timestamp
+        row.compressed_message_count = compressed_count
+        row.branch_tip_id = source_current_id
+        self.rows.append(row)
+        return True
+
+
+def _run_forced_branch_compression(
+    filter_instance,
+    graph,
+    store,
+    branch_name,
+    target_compressed_count,
+    summary,
+):
+    captured = {}
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_summary_llm(
+        conversation_text,
+        body,
+        user_data,
+        event_call=None,
+        request=None,
+        previous_summary=None,
+    ):
+        captured["conversation_text"] = conversation_text
+        captured["previous_summary"] = previous_summary
+        return summary
+
+    filter_instance.valves.keep_last = 0
+    filter_instance.valves.summary_model = "fake-summary-model"
+    filter_instance.valves.summary_model_max_context = 10000
+    filter_instance.valves.max_summary_tokens = 100
+    filter_instance._log = noop
+    filter_instance._load_applicable_summary_snapshot = store.load
+    filter_instance._save_summary = store.save
+    filter_instance._call_summary_llm = fake_summary_llm
+    filter_instance._estimate_messages_tokens = lambda messages: 100
+    filter_instance._calculate_messages_tokens = lambda messages: 100
+    filter_instance._get_model_thresholds = lambda model_id: {
+        "compression_threshold_tokens": 100,
+        "max_context_tokens": 1000,
+    }
+
+    saved_before = len(store.saved_calls)
+    asyncio.run(
+        filter_instance._check_and_generate_summary_async(
+            chat_id="chat-branch",
+            model="test-model",
+            body={
+                "model": "test-model",
+                "messages": graph.branch(branch_name),
+            },
+            user_data={"id": "user-1"},
+            target_compressed_count=target_compressed_count,
+            lang="en-US",
+        )
+    )
+    if len(store.saved_calls) != saved_before + 1:
+        raise AssertionError(
+            f"Expected forced compression for {branch_name} to save exactly one "
+            f"summary row; saved {len(store.saved_calls) - saved_before}"
+        )
+    return captured, store.saved_calls[-1]
 
 
 class TestAsyncContextCompression(unittest.TestCase):
@@ -870,6 +1054,349 @@ class TestAsyncContextCompression(unittest.TestCase):
             ],
             [f"m{i}" for i in range(15)],
         )
+
+    def test_generated_branch_graph_models_non_aligned_fork(self):
+        graph = _GeneratedBranchGraph(self.filter)
+        graph.add_branch("main", [f"m{i}" for i in range(1, 11)])
+        graph.add_branch("branch-b", ["b8", "b9"], "main", "m7")
+
+        self.assertEqual(
+            [message["id"] for message in graph.branch("branch-b")],
+            ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "b8", "b9"],
+        )
+
+        row = graph.summary_row("main 1-5", "main", 5)
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in self.filter._parse_message_refs_json(
+                    row.covered_message_refs_json
+                )
+            ],
+            ["m1", "m2", "m3", "m4", "m5"],
+        )
+        self.assertIn("m8", graph.live_refs_by_id())
+        self.assertIn("b8", graph.live_refs_by_id())
+
+    def test_generated_inlet_rejects_non_aligned_sibling_summary(self):
+        self.filter.valves.keep_last = 0
+        graph = _GeneratedBranchGraph(self.filter)
+        graph.add_branch("main", [f"m{i}" for i in range(1, 11)])
+        graph.add_branch("branch-b", ["b8", "b9"], "main", "m7")
+        store = _FakeBranchSummaryStore(self.filter, graph)
+        store.add(graph.summary_row("main 1-5", "main", 5, sequence=1))
+        store.add(graph.summary_row("main 1-10", "main", 10, sequence=2))
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_applicable_summary_snapshot = store.load
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-branch",
+                    "model": "test-model",
+                    "messages": graph.branch("branch-b"),
+                }
+            )
+        )
+        final_messages = result["messages"]
+
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("main 1-5", final_messages[0]["content"])
+        self.assertNotIn("main 1-10", final_messages[0]["content"])
+        self.assertEqual(
+            [message["id"] for message in final_messages[1:]],
+            ["m6", "m7", "b8", "b9"],
+        )
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m1", "m2", "m3", "m4", "m5"],
+        )
+
+    def test_generated_alternating_branches_use_branch_newest_summary(self):
+        self.filter.valves.keep_last = 0
+        graph = _GeneratedBranchGraph(self.filter)
+        graph.add_branch("main", [f"m{i}" for i in range(1, 13)])
+        graph.add_branch("branch-b", ["b8", "b9", "b10"], "main", "m7")
+        store = _FakeBranchSummaryStore(self.filter, graph)
+        store.add(graph.summary_row("main 1-5", "main", 5, sequence=1))
+        store.add(graph.summary_row("main 1-10", "main", 10, sequence=2))
+        store.add(graph.summary_row("branch-b 1-9", "branch-b", 9, sequence=3))
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_applicable_summary_snapshot = store.load
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        main_result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-branch",
+                    "model": "test-model",
+                    "messages": graph.branch("main"),
+                }
+            )
+        )
+        branch_result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-branch",
+                    "model": "test-model",
+                    "messages": graph.branch("branch-b"),
+                }
+            )
+        )
+
+        main_summary = main_result["messages"][0]
+        branch_summary = branch_result["messages"][0]
+        self.assertIn("main 1-10", main_summary["content"])
+        self.assertNotIn("branch-b 1-9", main_summary["content"])
+        self.assertEqual(
+            [message["id"] for message in main_result["messages"][1:]],
+            ["m11", "m12"],
+        )
+        self.assertIn("branch-b 1-9", branch_summary["content"])
+        self.assertNotIn("main 1-10", branch_summary["content"])
+        self.assertEqual(
+            [message["id"] for message in branch_result["messages"][1:]],
+            ["b10"],
+        )
+
+    def test_generated_derivation_uses_nearest_ancestor_and_live_tail(self):
+        self.filter.valves.keep_last = 0
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 10000
+        self.filter.valves.max_summary_tokens = 100
+        graph = _GeneratedBranchGraph(self.filter)
+        graph.add_branch("main", [f"m{i}" for i in range(1, 11)])
+        graph.add_branch("branch-b", ["b8", "b9"], "main", "m7")
+        store = _FakeBranchSummaryStore(self.filter, graph)
+        store.add(graph.summary_row("main 1-5", "main", 5, sequence=1))
+        store.add(graph.summary_row("main 1-10", "main", 10, sequence=2))
+        captured = {}
+
+        async def noop(*args, **kwargs):
+            return None
+
+        async def fake_summary_llm(
+            conversation_text,
+            body,
+            user_data,
+            event_call=None,
+            request=None,
+            previous_summary=None,
+        ):
+            captured["conversation_text"] = conversation_text
+            captured["previous_summary"] = previous_summary
+            return "branch-b derived 1-9"
+
+        self.filter._log = noop
+        self.filter._load_applicable_summary_snapshot = store.load
+        self.filter._save_summary = store.save
+        self.filter._call_summary_llm = fake_summary_llm
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=graph.branch("branch-b"),
+                chat_id="chat-branch",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=9,
+            )
+        )
+
+        self.assertEqual(captured["previous_summary"], "main 1-5")
+        self.assertIn("message m6", captured["conversation_text"])
+        self.assertIn("message m7", captured["conversation_text"])
+        self.assertIn("message b8", captured["conversation_text"])
+        self.assertIn("message b9", captured["conversation_text"])
+        self.assertNotIn("message m1", captured["conversation_text"])
+        self.assertNotIn("message m8", captured["conversation_text"])
+        self.assertEqual(store.saved_calls[-1]["summary"], "branch-b derived 1-9")
+        self.assertEqual(store.saved_calls[-1]["compressed_count"], 9)
+        self.assertEqual(
+            [ref["id"] for ref in store.saved_calls[-1]["covered_message_refs"]],
+            ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "b8", "b9"],
+        )
+
+        selected_after_save = self.filter._select_applicable_summary_snapshot(
+            store.rows,
+            graph.branch("branch-b"),
+            live_message_refs_by_id=graph.live_refs_by_id(),
+        )
+        self.assertEqual(selected_after_save.summary, "branch-b derived 1-9")
+
+    def test_generated_forced_compression_tracks_branch_switches_and_deletes(self):
+        graph = _GeneratedBranchGraph(self.filter)
+        graph.add_branch("main", [f"m{i}" for i in range(1, 13)])
+        graph.add_branch("branch-b", ["b8", "b9", "b10"], "main", "m7")
+        graph.add_branch("after-delete", ["m1", "m2", "m4", "m5", "d6"])
+        store = _FakeBranchSummaryStore(self.filter, graph)
+
+        main_1_5, saved = _run_forced_branch_compression(
+            self.filter,
+            graph,
+            store,
+            "main",
+            5,
+            "main 1-5",
+        )
+        self.assertIsNone(main_1_5["previous_summary"])
+        self.assertEqual(saved["compressed_count"], 5)
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            ["m1", "m2", "m3", "m4", "m5"],
+        )
+
+        main_1_10, saved = _run_forced_branch_compression(
+            self.filter,
+            graph,
+            store,
+            "main",
+            10,
+            "main 1-10",
+        )
+        self.assertEqual(main_1_10["previous_summary"], "main 1-5")
+        self.assertIn("message m6", main_1_10["conversation_text"])
+        self.assertIn("message m10", main_1_10["conversation_text"])
+        self.assertNotIn("[ID: m1]", main_1_10["conversation_text"])
+        self.assertEqual(saved["compressed_count"], 10)
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            [f"m{i}" for i in range(1, 11)],
+        )
+
+        branch_1_9, saved = _run_forced_branch_compression(
+            self.filter,
+            graph,
+            store,
+            "branch-b",
+            9,
+            "branch-b 1-9",
+        )
+        self.assertEqual(branch_1_9["previous_summary"], "main 1-5")
+        self.assertIn("message m6", branch_1_9["conversation_text"])
+        self.assertIn("message m7", branch_1_9["conversation_text"])
+        self.assertIn("message b8", branch_1_9["conversation_text"])
+        self.assertIn("message b9", branch_1_9["conversation_text"])
+        self.assertNotIn("message m8", branch_1_9["conversation_text"])
+        self.assertEqual(saved["compressed_count"], 9)
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "b8", "b9"],
+        )
+
+        main_1_12, saved = _run_forced_branch_compression(
+            self.filter,
+            graph,
+            store,
+            "main",
+            12,
+            "main 1-12",
+        )
+        self.assertEqual(main_1_12["previous_summary"], "main 1-10")
+        self.assertIn("message m11", main_1_12["conversation_text"])
+        self.assertIn("message m12", main_1_12["conversation_text"])
+        self.assertNotIn("message b8", main_1_12["conversation_text"])
+        self.assertEqual(saved["compressed_count"], 12)
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            [f"m{i}" for i in range(1, 13)],
+        )
+
+        branch_1_10, saved = _run_forced_branch_compression(
+            self.filter,
+            graph,
+            store,
+            "branch-b",
+            10,
+            "branch-b 1-10",
+        )
+        self.assertEqual(branch_1_10["previous_summary"], "branch-b 1-9")
+        self.assertIn("message b10", branch_1_10["conversation_text"])
+        self.assertNotIn("message m11", branch_1_10["conversation_text"])
+        self.assertEqual(saved["compressed_count"], 10)
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "b8", "b9", "b10"],
+        )
+
+        graph.delete_message("m3")
+        deleted_branch, saved = _run_forced_branch_compression(
+            self.filter,
+            graph,
+            store,
+            "after-delete",
+            5,
+            "after-delete 1-5",
+        )
+        self.assertEqual(deleted_branch["previous_summary"], "main 1-5")
+        self.assertIn("message d6", deleted_branch["conversation_text"])
+        self.assertNotIn("message m6", deleted_branch["conversation_text"])
+        self.assertEqual(saved["compressed_count"], 5)
+        self.assertEqual(
+            [ref["id"] for ref in saved["covered_message_refs"]],
+            ["m1", "m2", "m4", "m5", "d6"],
+        )
+        self.assertEqual(len(store.saved_calls), 6)
+
+    def test_generated_deleted_ref_is_allowed_but_live_sibling_is_rejected(self):
+        self.filter.valves.keep_last = 0
+        graph = _GeneratedBranchGraph(self.filter)
+        graph.add_branch("original", ["m1", "m2", "m3", "m4", "m5"])
+        graph.add_branch("after-delete", ["m1", "m2", "m4", "m5"])
+        row = graph.summary_row("summary with m3", "original", 5)
+
+        deleted_selected = self.filter._select_applicable_summary_snapshot(
+            [row],
+            graph.branch("after-delete"),
+            live_message_refs_by_id=graph.delete_message("m3").live_refs_by_id(),
+        )
+        self.assertIsNotNone(deleted_selected)
+
+        live_sibling_graph = _GeneratedBranchGraph(self.filter)
+        live_sibling_graph.add_branch("original", ["m1", "m2", "m3", "m4", "m5"])
+        live_sibling_graph.add_branch("sibling", ["m1", "m2", "m4", "m5"])
+        live_sibling_row = live_sibling_graph.summary_row(
+            "summary with live sibling m3", "original", 5
+        )
+        live_sibling_selected = self.filter._select_applicable_summary_snapshot(
+            [live_sibling_row],
+            live_sibling_graph.branch("sibling"),
+            live_message_refs_by_id=live_sibling_graph.live_refs_by_id(),
+        )
+        self.assertIsNone(live_sibling_selected)
+
+    def test_generated_same_id_payload_edit_rejects_stale_summary(self):
+        self.filter.valves.keep_last = 0
+        graph = _GeneratedBranchGraph(self.filter)
+        graph.add_branch("original", ["m1", "m2", "m3", "m4"])
+        graph.add_branch("edited", ["m1", "m2", "m3", "m4"])
+        graph.edit_message("edited", "m2", content="edited payload")
+        stale_row = graph.summary_row("stale original summary", "original", 4)
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [stale_row],
+            graph.branch("edited"),
+            live_message_refs_by_id=graph.live_refs_by_id(),
+        )
+
+        self.assertIsNone(selected)
 
     def test_inlet_allows_deleted_refs_in_snapshot_and_keeps_new_tail(self):
         self.filter.valves.keep_last = 0
