@@ -103,6 +103,7 @@ def _install_openwebui_stubs() -> None:
     _ensure_module("open_webui")
     _ensure_module("open_webui.utils")
     chat_module = _ensure_module("open_webui.utils.chat")
+    misc_module = _ensure_module("open_webui.utils.misc")
     _ensure_module("open_webui.models")
     users_module = _ensure_module("open_webui.models.users")
     models_module = _ensure_module("open_webui.models.models")
@@ -113,6 +114,9 @@ def _install_openwebui_stubs() -> None:
 
     async def generate_chat_completion(*args, **kwargs):
         return {}
+
+    def convert_output_to_messages(output, raw=False):
+        return deepcopy(output) if isinstance(output, list) else []
 
     class DummyUsers:
         pass
@@ -132,6 +136,7 @@ def _install_openwebui_stubs() -> None:
             pass
 
     chat_module.generate_chat_completion = generate_chat_completion
+    misc_module.convert_output_to_messages = convert_output_to_messages
     users_module.Users = DummyUsers
     models_module.Models = DummyModels
     chats_module.Chats = DummyChats
@@ -414,6 +419,12 @@ def _run_forced_branch_compression(
 
 class TestAsyncContextCompression(unittest.TestCase):
     def setUp(self):
+        misc_module = _ensure_module("open_webui.utils.misc")
+        misc_module.convert_output_to_messages = (
+            lambda output, raw=False: deepcopy(output)
+            if isinstance(output, list)
+            else []
+        )
         self.filter = module.Filter()
 
     def test_build_summary_prompt_defaults_to_balanced_style(self):
@@ -1450,6 +1461,502 @@ class TestAsyncContextCompression(unittest.TestCase):
             ["m0", "m1", "m3", "m4"],
         )
 
+    def test_inlet_reuses_prefix_snapshot_when_later_tool_tail_lacks_ids(self):
+        self.filter.valves.keep_last = 0
+        stable_prefix = _messages_with_ids(["m0", "m1", "m2", "m3"])
+        current_messages = stable_prefix + [
+            {
+                "role": "assistant",
+                "content": "calling tool",
+                "tool_calls": [{"id": "call_1", "type": "function"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
+            {"role": "user", "content": "new question"},
+        ]
+        prefix_refs = self.filter._message_refs_for_prefix(stable_prefix, 4)
+        snapshots = [_snapshot("summary before idless tool tail", prefix_refs)]
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+        ):
+            return self.filter._select_applicable_summary_snapshot(
+                snapshots,
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, stable_prefix),
+            )
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        body = {
+            "chat_id": "chat-1",
+            "model": "test-model",
+            "messages": current_messages,
+        }
+
+        result = asyncio.run(self.filter.inlet(body))
+        final_messages = result["messages"]
+
+        self.assertEqual(len(final_messages), 4)
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("summary before idless tool tail", final_messages[0]["content"])
+        self.assertEqual(final_messages[1]["content"], "calling tool")
+        self.assertEqual(final_messages[2]["role"], "tool")
+        self.assertEqual(final_messages[3]["content"], "new question")
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1", "m2", "m3"],
+        )
+
+    def test_snapshot_selection_rejects_snapshot_reaching_idless_tool_tail(self):
+        self.filter.valves.keep_last = 0
+        stable_prefix = _messages_with_ids(["m0", "m1", "m2", "m3"])
+        current_messages = stable_prefix + [
+            {
+                "role": "assistant",
+                "content": "calling tool",
+                "tool_calls": [{"id": "call_1", "type": "function"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
+        ]
+        unsafe_refs = self.filter._message_refs_for_prefix(
+            stable_prefix
+            + [
+                {
+                    "id": "tool-call",
+                    "role": "assistant",
+                    "content": "calling tool",
+                    "tool_calls": [{"id": "call_1", "type": "function"}],
+                }
+            ],
+            5,
+        )
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [_snapshot("unsafe tool summary", unsafe_refs)],
+            current_messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, stable_prefix),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_inlet_reuses_db_branch_snapshot_when_body_has_no_message_ids(self):
+        self.filter.valves.keep_last = 0
+        db_messages = _messages_with_ids([f"m{i}" for i in range(7)])
+        body_messages = [
+            {
+                key: deepcopy(value)
+                for key, value in message.items()
+                if key != "id"
+            }
+            for message in db_messages
+        ]
+        snapshots = [
+            _snapshot(
+                "db-backed summary",
+                self.filter._message_refs_for_prefix(db_messages, 4),
+            )
+        ]
+
+        async def fake_load_snapshots(chat_id):
+            return snapshots
+
+        async def fake_load_live_refs(chat_id):
+            return _live_refs_by_id(self.filter, db_messages)
+
+        async def fake_load_full_chat_messages(chat_id):
+            return db_messages
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_summary_snapshots = fake_load_snapshots
+        self.filter._load_chat_history_live_refs = fake_load_live_refs
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-1",
+                    "model": "test-model",
+                    "messages": body_messages,
+                }
+            )
+        )
+        final_messages = result["messages"]
+
+        self.assertEqual(len(final_messages), 4)
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("db-backed summary", final_messages[0]["content"])
+        self.assertEqual(
+            [message["content"] for message in final_messages[1:]],
+            ["message m4", "message m5", "message m6"],
+        )
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1", "m2", "m3"],
+        )
+
+    def test_inlet_reuses_db_snapshot_when_current_tip_is_assistant_placeholder(self):
+        self.filter.valves.keep_last = 0
+        db_messages = _messages_with_ids([f"m{i}" for i in range(6)])
+        self.assertEqual(db_messages[-2]["role"], "user")
+        self.assertEqual(db_messages[-1]["role"], "assistant")
+        body_messages = [
+            {
+                key: deepcopy(value)
+                for key, value in message.items()
+                if key != "id"
+            }
+            for message in db_messages[:-1]
+        ]
+        snapshots = [
+            _snapshot(
+                "user-tip db summary",
+                self.filter._message_refs_for_prefix(db_messages, 4),
+            )
+        ]
+
+        async def fake_load_snapshots(chat_id):
+            return snapshots
+
+        async def fake_load_live_refs(chat_id):
+            return _live_refs_by_id(self.filter, db_messages)
+
+        async def fake_load_full_chat_messages(chat_id):
+            return db_messages
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_summary_snapshots = fake_load_snapshots
+        self.filter._load_chat_history_live_refs = fake_load_live_refs
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-1",
+                    "model": "test-model",
+                    "messages": body_messages,
+                }
+            )
+        )
+        final_messages = result["messages"]
+
+        self.assertEqual(len(final_messages), 2)
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("user-tip db summary", final_messages[0]["content"])
+        self.assertEqual(final_messages[1]["content"], "message m4")
+        self.assertNotIn("message m5", [message["content"] for message in final_messages])
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1", "m2", "m3"],
+        )
+
+    def test_db_branch_snapshot_fallback_rejects_mismatched_idless_body(self):
+        self.filter.valves.keep_last = 0
+        db_messages = _messages_with_ids([f"m{i}" for i in range(5)])
+        body_messages = [
+            {
+                key: deepcopy(value)
+                for key, value in message.items()
+                if key != "id"
+            }
+            for message in db_messages
+        ]
+        body_messages[2]["content"] = "edited body payload"
+        snapshots = [
+            _snapshot(
+                "unsafe db summary",
+                self.filter._message_refs_for_prefix(db_messages, 3),
+            )
+        ]
+
+        async def fake_load_snapshots(chat_id):
+            return snapshots
+
+        async def fake_load_live_refs(chat_id):
+            return _live_refs_by_id(self.filter, db_messages)
+
+        async def fake_load_full_chat_messages(chat_id):
+            return db_messages
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_summary_snapshots = fake_load_snapshots
+        self.filter._load_chat_history_live_refs = fake_load_live_refs
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-1",
+                    "model": "test-model",
+                    "messages": body_messages,
+                }
+            )
+        )
+
+        self.assertFalse(
+            any(
+                self.filter._is_summary_message(message)
+                for message in result["messages"]
+            )
+        )
+        self.assertEqual(result["messages"], body_messages)
+
+    def test_inlet_maps_folded_db_snapshot_to_unfolded_tool_body_tail(self):
+        self.filter.valves.keep_last = 0
+        folded_tool_message = {
+            "id": "m1",
+            "role": "assistant",
+            "content": '<details type="tool_calls">folded result</details>',
+            "output": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "large tool result",
+                },
+                {"role": "assistant", "content": "tool follow-up"},
+            ],
+        }
+        db_messages = [
+            {"id": "m0", "role": "user", "content": "message m0"},
+            folded_tool_message,
+            {"id": "m2", "role": "user", "content": "message m2"},
+            {"id": "m3", "role": "assistant", "content": "message m3"},
+        ]
+        body_messages = [
+            {"role": "user", "content": "message m0"},
+            deepcopy(folded_tool_message["output"][0]),
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "[content collapsed]",
+                "metadata": {
+                    "is_trimmed": True,
+                    "trimmed_by": "async_context_compression",
+                },
+            },
+            deepcopy(folded_tool_message["output"][2]),
+            {"role": "user", "content": "message m2"},
+            {"role": "assistant", "content": "message m3"},
+        ]
+        snapshots = [
+            _snapshot(
+                "folded tool summary",
+                self.filter._message_refs_for_prefix(db_messages, 2),
+            )
+        ]
+
+        async def fake_load_snapshots(chat_id):
+            return snapshots
+
+        async def fake_load_live_refs(chat_id):
+            return _live_refs_by_id(self.filter, db_messages)
+
+        async def fake_load_full_chat_messages(chat_id):
+            return db_messages
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_summary_snapshots = fake_load_snapshots
+        self.filter._load_chat_history_live_refs = fake_load_live_refs
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-1",
+                    "model": "test-model",
+                    "messages": body_messages,
+                }
+            )
+        )
+        final_messages = result["messages"]
+
+        self.assertEqual(len(final_messages), 3)
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("folded tool summary", final_messages[0]["content"])
+        self.assertEqual(
+            final_messages[0]["metadata"]["covered_until"],
+            4,
+        )
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1"],
+        )
+        self.assertEqual(
+            [message["content"] for message in final_messages[1:]],
+            ["message m2", "message m3"],
+        )
+
+    def test_inlet_maps_reasoning_output_body_to_folded_db_snapshot(self):
+        self.filter.valves.keep_last = 0
+        misc_module = _ensure_module("open_webui.utils.misc")
+
+        def convert_output_to_messages(output, raw=False):
+            messages = []
+            for item in output:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                text = "".join(
+                    part.get("text", "")
+                    for part in item.get("content", [])
+                    if isinstance(part, dict) and part.get("type") == "output_text"
+                )
+                if text:
+                    messages.append({"role": "assistant", "content": text})
+            return messages
+
+        misc_module.convert_output_to_messages = convert_output_to_messages
+
+        folded_reasoning_message = {
+            "id": "m1",
+            "role": "assistant",
+            "content": (
+                '<details type="reasoning">hidden chain</details>\n'
+                "visible answer"
+            ),
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "output_text", "text": "hidden chain"}],
+                },
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "visible answer"}
+                    ],
+                },
+            ],
+        }
+        db_messages = [
+            {"id": "m0", "role": "user", "content": "message m0"},
+            folded_reasoning_message,
+            {"id": "m2", "role": "user", "content": "message m2"},
+            {"id": "m3", "role": "assistant", "content": "message m3"},
+        ]
+        body_messages = [
+            {"role": "user", "content": "message m0"},
+            {"role": "assistant", "content": "visible answer"},
+            {"role": "user", "content": "message m2"},
+            {"role": "assistant", "content": "message m3"},
+        ]
+        snapshots = [
+            _snapshot(
+                "folded reasoning summary",
+                self.filter._message_refs_for_prefix(db_messages, 2),
+            )
+        ]
+
+        async def fake_load_snapshots(chat_id):
+            return snapshots
+
+        async def fake_load_live_refs(chat_id):
+            return _live_refs_by_id(self.filter, db_messages)
+
+        async def fake_load_full_chat_messages(chat_id):
+            return db_messages
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_summary_snapshots = fake_load_snapshots
+        self.filter._load_chat_history_live_refs = fake_load_live_refs
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-1",
+                    "model": "test-model",
+                    "messages": body_messages,
+                }
+            )
+        )
+        final_messages = result["messages"]
+
+        self.assertEqual(len(final_messages), 3)
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("folded reasoning summary", final_messages[0]["content"])
+        self.assertEqual(
+            final_messages[0]["metadata"]["covered_until"],
+            2,
+        )
+        self.assertEqual(
+            [
+                ref["id"]
+                for ref in final_messages[0]["metadata"]["covered_message_refs"]
+            ],
+            ["m0", "m1"],
+        )
+        self.assertEqual(
+            [message["content"] for message in final_messages[1:]],
+            ["message m2", "message m3"],
+        )
+
     def test_outlet_does_not_reinject_live_sibling_snapshot(self):
         self.filter.valves.keep_last = 0
         current_messages = _messages_with_ids(["m0", "m1", "new_m2", "new_m3"])
@@ -2293,6 +2800,54 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.assertEqual([message["id"] for message in messages], ["m1", "m2", "m3"])
         self.assertEqual(messages[2]["role"], "tool")
+
+    def test_load_full_chat_messages_filters_failed_assistant_from_history_branch(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return types.SimpleNamespace(
+                    chat={
+                        "history": {
+                            "currentId": "m4",
+                            "messages": {
+                                "m1": {
+                                    "id": "m1",
+                                    "role": "user",
+                                    "content": "Question",
+                                },
+                                "m2": {
+                                    "id": "m2",
+                                    "role": "assistant",
+                                    "content": "",
+                                    "error": {"message": "provider failed"},
+                                    "parentId": "m1",
+                                },
+                                "m3": {
+                                    "id": "m3",
+                                    "role": "user",
+                                    "content": "Retry",
+                                    "parentId": "m2",
+                                },
+                                "m4": {
+                                    "id": "m4",
+                                    "role": "assistant",
+                                    "content": "OK",
+                                    "parentId": "m3",
+                                },
+                            },
+                        }
+                    }
+                )
+
+        original_chats = module.Chats
+        module.Chats = FakeChats
+        try:
+            messages = asyncio.run(self.filter._load_full_chat_messages("chat-1"))
+        finally:
+            module.Chats = original_chats
+
+        self.assertEqual([message["id"] for message in messages], ["m1", "m3", "m4"])
+        self.assertFalse(any("error" in message for message in messages))
 
     def test_load_authorized_chat_messages_uses_owner_helper(self):
         class FakeChats:

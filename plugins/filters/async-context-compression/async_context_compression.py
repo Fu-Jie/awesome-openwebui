@@ -1376,11 +1376,21 @@ class Filter:
         current_coverage_count: int,
         current_coverage_refs: List[Dict[str, str]],
         protected_head_count: int,
+        body_coverage_count: Optional[int] = None,
     ) -> Any:
         """Attach current-branch coverage metadata to the selected snapshot."""
         setattr(snapshot, "_current_coverage_count", current_coverage_count)
         setattr(snapshot, "_current_coverage_refs", current_coverage_refs)
         setattr(snapshot, "_current_protected_head_count", protected_head_count)
+        setattr(
+            snapshot,
+            "_current_body_coverage_count",
+            (
+                current_coverage_count
+                if body_coverage_count is None
+                else max(0, int(body_coverage_count))
+            ),
+        )
         return snapshot
 
     def _summary_snapshot_current_coverage_count(self, snapshot: Any) -> int:
@@ -1389,6 +1399,16 @@ class Filter:
                 snapshot,
                 "_current_coverage_count",
                 getattr(snapshot, "compressed_message_count", 0),
+            )
+            or 0
+        )
+
+    def _summary_snapshot_current_body_coverage_count(self, snapshot: Any) -> int:
+        return int(
+            getattr(
+                snapshot,
+                "_current_body_coverage_count",
+                self._summary_snapshot_current_coverage_count(snapshot),
             )
             or 0
         )
@@ -1427,7 +1447,7 @@ class Filter:
     ) -> Optional[Any]:
         """Choose the best snapshot that is safe for the current active branch."""
         current_refs = self._current_branch_refs(messages)
-        if current_refs is None:
+        if current_refs is None and require_full_coverage:
             if self.valves.debug_mode:
                 logger.info(
                     "[Summary Snapshot] Current messages do not expose stable refs; "
@@ -1438,10 +1458,20 @@ class Filter:
         if require_full_coverage:
             safe_boundary = len(current_refs)
         elif max_coverage_count is not None:
-            safe_boundary = min(len(current_refs), max(0, int(max_coverage_count)))
+            original_count = (
+                len(current_refs)
+                if current_refs is not None
+                else self._get_original_history_count(messages)
+            )
+            safe_boundary = min(original_count, max(0, int(max_coverage_count)))
         else:
+            original_count = (
+                len(current_refs)
+                if current_refs is not None
+                else self._get_original_history_count(messages)
+            )
             safe_boundary = min(
-                len(current_refs),
+                original_count,
                 max(0, self._calculate_target_compressed_count(messages)),
             )
         effective_keep_first = (
@@ -1464,6 +1494,22 @@ class Filter:
             count = int(getattr(snapshot, "compressed_message_count", 0) or 0)
             if count <= 0 or count != len(snapshot_refs):
                 continue
+
+            current_refs_for_snapshot = current_refs
+            if current_refs_for_snapshot is None:
+                current_refs_for_snapshot = self._message_refs_for_prefix(
+                    messages,
+                    count,
+                )
+                if current_refs_for_snapshot is None:
+                    if self.valves.debug_mode:
+                        logger.info(
+                            "[Summary Snapshot] Rejecting snapshot because current "
+                            f"messages do not expose stable refs through covered "
+                            f"prefix count={count}."
+                        )
+                    continue
+
             protected_head_count = self._parse_protected_head_count_json(
                 getattr(snapshot, "covered_message_refs_json", None)
             )
@@ -1482,7 +1528,7 @@ class Filter:
                 rejection_reason,
             ) = self._snapshot_coverage_for_current_branch(
                 snapshot_refs,
-                current_refs,
+                current_refs_for_snapshot,
                 safe_boundary,
                 live_message_refs_by_id=live_message_refs_by_id,
             )
@@ -1528,7 +1574,7 @@ class Filter:
                 best_snapshot = self._annotate_summary_snapshot_selection(
                     snapshot,
                     matched_current_count,
-                    current_refs[:matched_current_count],
+                    current_refs_for_snapshot[:matched_current_count],
                     protected_head_count,
                 )
                 continue
@@ -1640,6 +1686,23 @@ class Filter:
         sortable_messages.sort(key=lambda item: (item[0], item[1]))
         return [message for _, _, message in sortable_messages]
 
+    def _is_failed_assistant_message(self, message: Dict[str, Any]) -> bool:
+        """Mirror OpenWebUI middleware's failed-assistant filter."""
+        return (
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and "error" in message
+        )
+
+    def _filter_model_visible_history_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        return [
+            message
+            for message in messages
+            if not self._is_failed_assistant_message(message)
+        ]
+
     async def _load_full_chat_messages(self, chat_id: str) -> List[Dict[str, Any]]:
         """Load the full persisted chat history for summary decisions when available."""
         if not chat_id or Chats is None:
@@ -1664,11 +1727,15 @@ class Filter:
                     history_messages, current_id
                 )
                 if branch_messages:
-                    return branch_messages
+                    return self._filter_model_visible_history_messages(
+                        branch_messages
+                    )
 
         direct_messages = chat_payload.get("messages")
         if isinstance(direct_messages, list) and direct_messages:
-            return deepcopy(direct_messages)
+            return self._filter_model_visible_history_messages(
+                deepcopy(direct_messages)
+            )
 
         return []
 
@@ -2132,6 +2199,213 @@ class Filter:
                 return True
 
         return ref_index == len(body_refs)
+
+    def _body_message_matches_db_branch_message(
+        self,
+        body_message: Dict[str, Any],
+        db_message: Dict[str, Any],
+    ) -> bool:
+        """Compare a request-body message with its persisted active-branch peer."""
+        if not isinstance(body_message, dict) or not isinstance(db_message, dict):
+            return False
+        if self._is_summary_message(body_message) or self._is_summary_message(
+            db_message
+        ):
+            return False
+        if self._is_external_reference_message(
+            body_message
+        ) or self._is_external_reference_message(db_message):
+            return False
+
+        body_ref = self._message_ref(body_message)
+        db_ref = self._message_ref(db_message)
+        if db_ref is None:
+            return False
+        if body_ref is not None and body_ref["id"] != db_ref["id"]:
+            return False
+
+        if self._message_fingerprint_payload(
+            body_message
+        ) == self._message_fingerprint_payload(db_message):
+            return True
+
+        # OpenWebUI request bodies can omit folded assistant `output` while the
+        # DB history still carries it. The model-visible role/content/tool-call
+        # shape must still match before DB refs are trusted for an idless body.
+        if body_message.get("output") not in (None, "", []):
+            return False
+
+        return self._message_fingerprint_payload(
+            body_message,
+            include_output=False,
+        ) == self._message_fingerprint_payload(
+            db_message,
+            include_output=False,
+        )
+
+    def _body_message_matches_unfolded_db_message(
+        self,
+        body_message: Dict[str, Any],
+        unfolded_db_message: Dict[str, Any],
+    ) -> bool:
+        """Compare a body message against an unfolded DB message."""
+        if not isinstance(body_message, dict) or not isinstance(
+            unfolded_db_message, dict
+        ):
+            return False
+        if body_message.get("role") != unfolded_db_message.get("role"):
+            return False
+
+        body_ref = self._message_ref(body_message)
+        db_ref = self._message_ref(unfolded_db_message)
+        if body_ref is not None and db_ref is not None and body_ref["id"] != db_ref["id"]:
+            return False
+
+        body_tool_call_id = body_message.get("tool_call_id")
+        db_tool_call_id = unfolded_db_message.get("tool_call_id")
+        if isinstance(body_tool_call_id, str) or isinstance(db_tool_call_id, str):
+            if body_tool_call_id != db_tool_call_id:
+                return False
+
+        if self._message_fingerprint_payload(
+            body_message,
+            include_output=False,
+        ) == self._message_fingerprint_payload(
+            unfolded_db_message,
+            include_output=False,
+        ):
+            return True
+
+        metadata = body_message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        if body_message.get("role") == "tool" and metadata.get("is_trimmed"):
+            return True
+
+        if (
+            body_message.get("role") == "assistant"
+            and metadata.get("tool_outputs_trimmed")
+        ):
+            return True
+
+        return False
+
+    def _unfold_db_branch_for_body_ref_fallback(
+        self,
+        db_messages: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], List[int]]:
+        """Unfold DB messages and map folded DB boundaries to unfolded indices."""
+        unfolded_messages: List[Dict[str, Any]] = []
+        db_to_body_boundaries = [0]
+
+        for message in db_messages:
+            before_count = len(unfolded_messages)
+
+            if (
+                isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and isinstance(message.get("output"), list)
+                and message.get("output")
+            ):
+                expanded_messages = []
+                try:
+                    from open_webui.utils.misc import convert_output_to_messages
+
+                    expanded_messages = convert_output_to_messages(
+                        message["output"], raw=True
+                    )
+                except ImportError:
+                    expanded_messages = []
+
+                # Match OpenWebUI middleware.process_messages_with_output(): the
+                # model-facing body uses convert_output_to_messages for every
+                # assistant `output`, including reasoning-only outputs.
+                if expanded_messages:
+                    unfolded_messages.extend(deepcopy(expanded_messages))
+                else:
+                    clean_message = {k: v for k, v in message.items() if k != "output"}
+                    unfolded_messages.append(clean_message)
+            elif isinstance(message, dict):
+                clean_message = {k: v for k, v in message.items() if k != "output"}
+                unfolded_messages.append(clean_message)
+            else:
+                unfolded_messages.append(message)
+
+            if len(unfolded_messages) == before_count:
+                unfolded_messages.append(deepcopy(message))
+            db_to_body_boundaries.append(len(unfolded_messages))
+
+        self._normalize_native_tool_call_ids(unfolded_messages)
+        return unfolded_messages, db_to_body_boundaries
+
+    def _body_to_db_coverage_map_for_ref_fallback(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> Optional[List[int]]:
+        """Return DB-count -> body-boundary map when DB refs can stand in."""
+        if not body_messages or not db_messages:
+            return None
+
+        if len(body_messages) == len(db_messages) and all(
+            self._body_message_matches_db_branch_message(body_message, db_message)
+            for body_message, db_message in zip(body_messages, db_messages)
+        ):
+            return list(range(len(db_messages) + 1))
+
+        unfolded_messages, db_to_body_boundaries = (
+            self._unfold_db_branch_for_body_ref_fallback(db_messages)
+        )
+        if len(body_messages) != len(unfolded_messages):
+            return None
+
+        if not all(
+            self._body_message_matches_unfolded_db_message(
+                body_message,
+                unfolded_message,
+            )
+            for body_message, unfolded_message in zip(
+                body_messages,
+                unfolded_messages,
+            )
+        ):
+            return None
+
+        return db_to_body_boundaries
+
+    def _compatible_db_branch_for_body_ref_fallback(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> tuple[Optional[List[Dict[str, Any]]], Optional[List[int]], bool]:
+        """Find the persisted branch shape matching the model-visible body.
+
+        OpenWebUI inserts the new assistant placeholder before middleware
+        filters run, then middleware rebuilds the LLM payload only up to the
+        latest user message. When the plugin reads history.currentId it sees
+        that terminal assistant too; exclude it only if the request body proves
+        the user-tip branch is the matching source.
+        """
+        db_to_body_boundaries = self._body_to_db_coverage_map_for_ref_fallback(
+            body_messages,
+            db_messages,
+        )
+        if db_to_body_boundaries is not None:
+            return db_messages, db_to_body_boundaries, False
+
+        if not db_messages or db_messages[-1].get("role") != "assistant":
+            return None, None, False
+
+        user_tip_messages = db_messages[:-1]
+        db_to_body_boundaries = self._body_to_db_coverage_map_for_ref_fallback(
+            body_messages,
+            user_tip_messages,
+        )
+        if db_to_body_boundaries is None:
+            return None, None, False
+
+        return user_tip_messages, db_to_body_boundaries, True
 
     async def _load_chat_history_live_refs(
         self, chat_id: str
@@ -3821,7 +4095,7 @@ class Filter:
             return None
         if live_message_refs_by_id is None:
             live_message_refs_by_id = await self._load_chat_history_live_refs(chat_id)
-        return self._select_applicable_summary_snapshot(
+        selected = self._select_applicable_summary_snapshot(
             snapshots,
             messages,
             require_full_coverage=require_full_coverage,
@@ -3829,6 +4103,58 @@ class Filter:
             max_coverage_count=max_coverage_count,
             enforce_keep_first=enforce_keep_first,
         )
+        if selected is not None:
+            return selected
+
+        if require_full_coverage or self._current_branch_refs(messages) is not None:
+            return None
+
+        db_messages = await self._load_full_chat_messages(chat_id)
+        (
+            compatible_db_messages,
+            db_to_body_boundaries,
+            ignored_terminal_assistant,
+        ) = self._compatible_db_branch_for_body_ref_fallback(
+            messages,
+            db_messages,
+        )
+        if compatible_db_messages is None or db_to_body_boundaries is None:
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Summary Snapshot] DB active branch fallback skipped: "
+                    f"request body is not a compatible idless view "
+                    f"(body_count={len(messages)}, db_count={len(db_messages)})."
+                )
+            return None
+
+        selected = self._select_applicable_summary_snapshot(
+            snapshots,
+            compatible_db_messages,
+            require_full_coverage=require_full_coverage,
+            live_message_refs_by_id=live_message_refs_by_id,
+            max_coverage_count=max_coverage_count,
+            enforce_keep_first=enforce_keep_first,
+        )
+        if selected is not None:
+            db_coverage_count = self._summary_snapshot_current_coverage_count(selected)
+            if db_coverage_count >= len(db_to_body_boundaries):
+                return None
+            self._annotate_summary_snapshot_selection(
+                selected,
+                db_coverage_count,
+                self._summary_snapshot_current_coverage_refs(selected) or [],
+                self._summary_snapshot_current_protected_head_count(selected),
+                body_coverage_count=db_to_body_boundaries[db_coverage_count],
+            )
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Summary Snapshot] Selected snapshot using DB active branch refs "
+                    "for request body without stable message ids "
+                    f"(db_coverage={db_coverage_count}, "
+                    f"body_coverage={db_to_body_boundaries[db_coverage_count]}, "
+                    f"ignored_terminal_assistant={ignored_terminal_assistant})."
+                )
+        return selected
 
     def _count_tokens(self, text: str) -> int:
         """Counts the number of tokens in the text."""
@@ -5022,6 +5348,9 @@ class Filter:
             compressed_count = self._summary_snapshot_current_coverage_count(
                 summary_snapshot
             )
+            body_compressed_count = (
+                self._summary_snapshot_current_body_coverage_count(summary_snapshot)
+            )
             covered_refs = self._summary_snapshot_current_coverage_refs(
                 summary_snapshot
             )
@@ -5038,7 +5367,7 @@ class Filter:
             # 2. Tail messages (Tail) - All messages starting from the last compression point.
             # Align legacy/raw progress to an atomic boundary so old summary rows do not
             # reintroduce orphaned tool messages into the retained tail.
-            raw_start_index = max(compressed_count, effective_keep_first)
+            raw_start_index = max(body_compressed_count, effective_keep_first)
             start_index = self._align_tail_start_to_atomic_boundary(
                 messages, raw_start_index, effective_keep_first
             )
