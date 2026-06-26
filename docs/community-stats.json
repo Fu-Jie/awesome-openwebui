@@ -36,7 +36,7 @@
       "title": "Async Context Compression",
       "slug": "async_context_compression_b1655bc8",
       "type": "filter",
-      "version": "1.7.0",
+      "version": "1.7.1",
       "author": "Fu-Jie",
       "description": "Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.",
       "downloads": 2893,
