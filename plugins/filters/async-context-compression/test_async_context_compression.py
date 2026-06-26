@@ -3815,6 +3815,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             captured["covered_message_refs"] = covered_message_refs
             captured["source_current_id"] = source_current_id
             captured["protected_head_count"] = protected_head_count
+            return True
 
         async def noop_log(*args, **kwargs):
             return None
@@ -4495,6 +4496,51 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.assertIn("timed out after 0.01 seconds", str(exc_info.exception))
 
+    def test_call_summary_llm_timeout_zero_allows_slow_provider_success(self):
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.max_summary_tokens = 1024
+        self.filter.valves.show_debug_log = False
+        self.filter.valves.summary_llm_timeout_seconds = 0
+
+        async def fake_generate_chat_completion(request, payload, user):
+            await asyncio.sleep(0.01)
+            return {"choices": [{"message": {"content": "eventual summary"}}]}
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        original_generate = module.generate_chat_completion
+        original_get_user = getattr(module.Users, "get_user_by_id", None)
+
+        module.generate_chat_completion = fake_generate_chat_completion
+        module.Users.get_user_by_id = staticmethod(
+            lambda user_id: types.SimpleNamespace(email="user@example.com")
+        )
+        self.filter._log = noop_log
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 8192
+        }
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+
+        try:
+            summary = asyncio.run(
+                self.filter._call_summary_llm(
+                    "conversation",
+                    {"model": "fake-summary-model"},
+                    {"id": "user-1"},
+                )
+            )
+        finally:
+            module.generate_chat_completion = original_generate
+            if original_get_user is None:
+                delattr(module.Users, "get_user_by_id")
+            else:
+                module.Users.get_user_by_id = original_get_user
+
+        self.assertEqual(summary, "eventual summary")
+
     def test_extract_summary_text_supports_alternate_response_shapes(self):
         self.assertEqual(
             self.filter._extract_summary_text_from_response(
@@ -4840,6 +4886,314 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertIn("empty", statuses[-1]["description"])
         self.assertFalse(save_called)
 
+    def test_generate_summary_async_save_failure_settles_generating_status(self):
+        self.filter.valves.keep_first = 1
+        self.filter.valves.keep_last = 1
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 1200
+        self.filter.valves.max_summary_tokens = 500
+        self.filter.valves.show_debug_log = False
+
+        events = []
+        save_called = False
+
+        async def fake_summary_llm(*args, **kwargs):
+            return "new summary"
+
+        async def fail_save_summary(*args, **kwargs):
+            nonlocal save_called
+            save_called = True
+            return False
+
+        async def fake_emitter(event):
+            events.append(event)
+
+        async def no_snapshot(*args, **kwargs):
+            return None
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._call_summary_llm = fake_summary_llm
+        self.filter._save_summary = fail_save_summary
+        self.filter._load_applicable_summary_snapshot = no_snapshot
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 1200
+        }
+        self.filter._format_messages_for_summary = lambda messages: "\n".join(
+            msg["content"] for msg in messages
+        )
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+        self.filter._count_tokens = lambda text: len(text)
+
+        messages = [
+            {"id": "m0", "role": "system", "content": "System prompt"},
+            {"id": "m1", "role": "user", "content": "Q" * 40},
+            {"id": "m2", "role": "assistant", "content": "A" * 40},
+            {"id": "m3", "role": "user", "content": "Question 2"},
+        ]
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=messages,
+                chat_id="chat-1",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=3,
+                lang="en-US",
+                __event_emitter__=fake_emitter,
+                __event_call__=None,
+            )
+        )
+
+        statuses = [
+            event["data"] for event in events if event.get("type") == "status"
+        ]
+        self.assertGreaterEqual(len(statuses), 2)
+        self.assertEqual(
+            statuses[-2]["description"], "Generating context summary in background..."
+        )
+        self.assertFalse(statuses[-2]["done"])
+        self.assertTrue(statuses[-1]["done"])
+        self.assertIn("Summary Error", statuses[-1]["description"])
+        self.assertIn("persisted", statuses[-1]["description"])
+        self.assertTrue(save_called)
+        self.assertFalse(
+            any("Loaded historical summary" in status["description"] for status in statuses)
+        )
+
+    def test_generate_summary_async_terminal_status_emitter_failure_is_best_effort(self):
+        self.filter.valves.keep_first = 1
+        self.filter.valves.keep_last = 1
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 1200
+        self.filter.valves.max_summary_tokens = 500
+        self.filter.valves.show_debug_log = False
+
+        events = []
+        save_called = False
+
+        async def empty_summary_llm(*args, **kwargs):
+            return ""
+
+        async def fake_save_summary(*args, **kwargs):
+            nonlocal save_called
+            save_called = True
+            return True
+
+        async def flaky_emitter(event):
+            if events:
+                raise RuntimeError("frontend disconnected")
+            events.append(event)
+
+        async def no_snapshot(*args, **kwargs):
+            return None
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._call_summary_llm = empty_summary_llm
+        self.filter._save_summary = fake_save_summary
+        self.filter._load_applicable_summary_snapshot = no_snapshot
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 1200
+        }
+        self.filter._format_messages_for_summary = lambda messages: "\n".join(
+            msg["content"] for msg in messages
+        )
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+        self.filter._count_tokens = lambda text: len(text)
+
+        messages = [
+            {"id": "m0", "role": "system", "content": "System prompt"},
+            {"id": "m1", "role": "user", "content": "Q" * 40},
+            {"id": "m2", "role": "assistant", "content": "A" * 40},
+            {"id": "m3", "role": "user", "content": "Question 2"},
+        ]
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=messages,
+                chat_id="chat-1",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=3,
+                lang="en-US",
+                __event_emitter__=flaky_emitter,
+                __event_call__=None,
+            )
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["data"]["description"],
+            "Generating context summary in background...",
+        )
+        self.assertFalse(events[0]["data"]["done"])
+        self.assertFalse(save_called)
+
+    def test_generate_summary_async_error_status_emitter_failure_is_best_effort(self):
+        self.filter.valves.keep_first = 1
+        self.filter.valves.keep_last = 1
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 1200
+        self.filter.valves.max_summary_tokens = 500
+        self.filter.valves.show_debug_log = False
+
+        events = []
+
+        async def fail_summary_llm(*args, **kwargs):
+            raise Exception("summary backend failed")
+
+        async def flaky_emitter(event):
+            if events:
+                raise RuntimeError("frontend disconnected")
+            events.append(event)
+
+        async def no_snapshot(*args, **kwargs):
+            return None
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._call_summary_llm = fail_summary_llm
+        self.filter._load_applicable_summary_snapshot = no_snapshot
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 1200
+        }
+        self.filter._format_messages_for_summary = lambda messages: "\n".join(
+            msg["content"] for msg in messages
+        )
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+        self.filter._count_tokens = lambda text: len(text)
+
+        messages = [
+            {"id": "m0", "role": "system", "content": "System prompt"},
+            {"id": "m1", "role": "user", "content": "Q" * 40},
+            {"id": "m2", "role": "assistant", "content": "A" * 40},
+            {"id": "m3", "role": "user", "content": "Question 2"},
+        ]
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=messages,
+                chat_id="chat-1",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=3,
+                lang="en-US",
+                __event_emitter__=flaky_emitter,
+                __event_call__=None,
+            )
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["data"]["description"],
+            "Generating context summary in background...",
+        )
+        self.assertFalse(events[0]["data"]["done"])
+
+    def test_generate_summary_async_timeout_silent_settles_generating_status(self):
+        self.filter.valves.keep_first = 1
+        self.filter.valves.keep_last = 1
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 1200
+        self.filter.valves.max_summary_tokens = 500
+        self.filter.valves.show_debug_log = False
+        self.filter.valves.summary_llm_timeout_seconds = 0.01
+
+        events = []
+        save_called = False
+
+        async def slow_generate_chat_completion(request, payload, user):
+            await asyncio.sleep(10)
+            return {"choices": [{"message": {"content": "too late"}}]}
+
+        async def fake_save_summary(*args, **kwargs):
+            nonlocal save_called
+            save_called = True
+            return True
+
+        async def fake_emitter(event):
+            events.append(event)
+
+        async def no_snapshot(*args, **kwargs):
+            return None
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        original_generate = module.generate_chat_completion
+        original_get_user = getattr(module.Users, "get_user_by_id", None)
+
+        module.generate_chat_completion = slow_generate_chat_completion
+        module.Users.get_user_by_id = staticmethod(
+            lambda user_id: types.SimpleNamespace(email="user@example.com")
+        )
+        self.filter._log = noop_log
+        self.filter._save_summary = fake_save_summary
+        self.filter._load_applicable_summary_snapshot = no_snapshot
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 1200
+        }
+        self.filter._format_messages_for_summary = lambda messages: "\n".join(
+            msg["content"] for msg in messages
+        )
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+        self.filter._count_tokens = lambda text: len(text)
+
+        messages = [
+            {"id": "m0", "role": "system", "content": "System prompt"},
+            {"id": "m1", "role": "user", "content": "Q" * 40},
+            {"id": "m2", "role": "assistant", "content": "A" * 40},
+            {"id": "m3", "role": "user", "content": "Question 2"},
+        ]
+
+        try:
+            asyncio.run(
+                self.filter._generate_summary_async(
+                    messages=messages,
+                    chat_id="chat-1",
+                    body={"model": "fake-summary-model"},
+                    user_data={"id": "user-1"},
+                    target_compressed_count=3,
+                    lang="en-US",
+                    __event_emitter__=fake_emitter,
+                    __event_call__=None,
+                )
+            )
+        finally:
+            module.generate_chat_completion = original_generate
+            if original_get_user is None:
+                delattr(module.Users, "get_user_by_id")
+            else:
+                module.Users.get_user_by_id = original_get_user
+
+        statuses = [
+            event["data"] for event in events if event.get("type") == "status"
+        ]
+        self.assertGreaterEqual(len(statuses), 2)
+        self.assertEqual(
+            statuses[-2]["description"], "Generating context summary in background..."
+        )
+        self.assertFalse(statuses[-2]["done"])
+        self.assertTrue(statuses[-1]["done"])
+        self.assertIn("Summary Error", statuses[-1]["description"])
+        self.assertIn("empty", statuses[-1]["description"])
+        self.assertFalse(save_called)
+
     def test_check_and_generate_summary_async_forces_frontend_and_status_on_pre_summary_error(
         self,
     ):
@@ -4892,6 +5246,55 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertTrue(
             any("Check browser console (F12) for details" in text for text in status_descriptions)
         )
+
+    def test_check_and_generate_summary_async_context_status_emitter_failure_still_generates_summary(
+        self,
+    ):
+        self.filter.valves.show_debug_log = False
+        self.filter.valves.show_token_usage_status = True
+        self.filter.valves.token_usage_status_threshold = 0
+
+        generated = False
+        events = []
+
+        async def fake_generate_summary_async(*args, **kwargs):
+            nonlocal generated
+            generated = True
+
+        async def flaky_emitter(event):
+            events.append(event)
+            if len(events) == 1:
+                raise RuntimeError("frontend disconnected")
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._generate_summary_async = fake_generate_summary_async
+        self.filter._estimate_messages_tokens = lambda messages: 100
+        self.filter._calculate_messages_tokens = lambda messages: 100
+        self.filter._get_model_thresholds = lambda model_id: {
+            "compression_threshold_tokens": 100,
+            "max_context_tokens": 1000,
+        }
+
+        asyncio.run(
+            self.filter._check_and_generate_summary_async(
+                chat_id="chat-1",
+                model="fake-model",
+                body={"messages": [{"role": "user", "content": "Hello"}]},
+                user_data={"id": "user-1"},
+                target_compressed_count=1,
+                lang="en-US",
+                __event_emitter__=flaky_emitter,
+                __event_call__=None,
+            )
+        )
+
+        self.assertTrue(generated)
+        self.assertEqual(len(events), 1)
+        self.assertIn("Context Usage", events[0]["data"]["description"])
+        self.assertTrue(events[0]["data"]["done"])
 
     def test_external_reference_message_detection_matches_injected_marker(self):
         message = {

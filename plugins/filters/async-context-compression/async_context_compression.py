@@ -6201,14 +6201,16 @@ class Filter:
                                 lang, "status_high_usage"
                             )
 
-                        await __event_emitter__(
+                        await self._emit_status_event(
+                            __event_emitter__,
                             {
                                 "type": "status",
                                 "data": {
                                     "description": status_msg,
                                     "done": True,
                                 },
-                            }
+                            },
+                            "[🔍 Background Calculation] context usage status",
                         )
 
             # Check if compression is needed
@@ -6273,18 +6275,19 @@ class Filter:
                     event_call=__event_call__,
                     force=True,
                 )
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang, "status_summary_error", error=str(e)[:100]
-                            ),
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang, "status_summary_error", error=str(e)[:100]
+                        ),
+                        "done": True,
+                    },
+                },
+                "[🔍 Background Calculation] error status",
+            )
             logger.exception("[🔍 Background Calculation] Unhandled exception")
 
     def _clean_model_id(self, model_id: Optional[str]) -> Optional[str]:
@@ -6294,16 +6297,35 @@ class Filter:
         cleaned = model_id.strip().strip('"').strip("'")
         return cleaned if cleaned else None
 
+    async def _emit_status_event(
+        self,
+        __event_emitter__: Optional[Callable[[Any], Awaitable[None]]],
+        event: Dict[str, Any],
+        context: str,
+    ) -> bool:
+        if not __event_emitter__:
+            return False
+
+        try:
+            await __event_emitter__(event)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "%s emission failed: %s: %s",
+                context,
+                type(exc).__name__,
+                exc,
+            )
+            return False
+
     async def _emit_summary_terminal_status(
         self,
         __event_emitter__: Callable[[Any], Awaitable[None]],
         lang: str,
         reason: str,
     ) -> None:
-        if not __event_emitter__:
-            return
-
-        await __event_emitter__(
+        await self._emit_status_event(
+            __event_emitter__,
             {
                 "type": "status",
                 "data": {
@@ -6312,7 +6334,8 @@ class Filter:
                     ),
                     "done": True,
                 },
-            }
+            },
+            "[🤖 Async Summary Task] terminal status",
         )
 
     async def _generate_summary_async(
@@ -6576,18 +6599,19 @@ class Filter:
             # 6. Call LLM to generate new summary
 
             # Send status notification for starting summary generation
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang, "status_generating_summary"
-                            ),
-                            "done": False,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang, "status_generating_summary"
+                        ),
+                        "done": False,
+                    },
+                },
+                "[🤖 Async Summary Task] generating status",
+            )
 
             new_summary = await self._call_summary_llm(
                 conversation_text,
@@ -6680,20 +6704,21 @@ class Filter:
                 return
 
             # Send completion status notification
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang,
-                                "status_loaded_summary",
-                                count=len(middle_messages),
-                            ),
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang,
+                            "status_loaded_summary",
+                            count=len(middle_messages),
+                        ),
+                        "done": True,
+                    },
+                },
+                "[🤖 Async Summary Task] completion status",
+            )
 
             await self._log(
                 f"[🤖 Async Summary Task] ✅ Complete! New summary length: {len(new_summary)} characters",
@@ -6820,18 +6845,19 @@ class Filter:
                     force=True,
                 )
 
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang, "status_summary_error", error=str(e)[:100]
-                            ),
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang, "status_summary_error", error=str(e)[:100]
+                        ),
+                        "done": True,
+                    },
+                },
+                "[🤖 Async Summary Task] error status",
+            )
 
             import traceback
 
