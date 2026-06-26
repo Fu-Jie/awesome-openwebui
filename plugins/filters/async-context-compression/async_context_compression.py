@@ -6289,6 +6289,27 @@ class Filter:
         cleaned = model_id.strip().strip('"').strip("'")
         return cleaned if cleaned else None
 
+    async def _emit_summary_terminal_status(
+        self,
+        __event_emitter__: Callable[[Any], Awaitable[None]],
+        lang: str,
+        reason: str,
+    ) -> None:
+        if not __event_emitter__:
+            return
+
+        await __event_emitter__(
+            {
+                "type": "status",
+                "data": {
+                    "description": self._get_translation(
+                        lang, "status_summary_error", error=str(reason)[:100]
+                    ),
+                    "done": True,
+                },
+            }
+        )
+
     async def _generate_summary_async(
         self,
         messages: list,
@@ -6578,6 +6599,11 @@ class Filter:
                     log_type="warning",
                     event_call=__event_call__,
                 )
+                await self._emit_summary_terminal_status(
+                    __event_emitter__,
+                    lang,
+                    "summary generation returned empty result",
+                )
                 return
 
             if summary_index is None:
@@ -6640,6 +6666,11 @@ class Filter:
                     "skipping success status for future-context summary reuse.",
                     log_type="warning",
                     event_call=__event_call__,
+                )
+                await self._emit_summary_terminal_status(
+                    __event_emitter__,
+                    lang,
+                    "summary generated but was not persisted",
                 )
                 return
 

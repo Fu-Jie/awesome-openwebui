@@ -4717,6 +4717,82 @@ class TestAsyncContextCompression(unittest.TestCase):
             any("Check browser console (F12) for details" in text for text in status_descriptions)
         )
 
+    def test_generate_summary_async_empty_summary_settles_generating_status(self):
+        self.filter.valves.keep_first = 1
+        self.filter.valves.keep_last = 1
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.summary_model_max_context = 1200
+        self.filter.valves.max_summary_tokens = 500
+        self.filter.valves.show_debug_log = False
+
+        events = []
+        save_called = False
+
+        async def empty_summary_llm(*args, **kwargs):
+            return ""
+
+        async def fake_save_summary(*args, **kwargs):
+            nonlocal save_called
+            save_called = True
+            return True
+
+        async def fake_emitter(event):
+            events.append(event)
+
+        async def no_snapshot(*args, **kwargs):
+            return None
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        self.filter._log = noop_log
+        self.filter._call_summary_llm = empty_summary_llm
+        self.filter._save_summary = fake_save_summary
+        self.filter._load_applicable_summary_snapshot = no_snapshot
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 1200
+        }
+        self.filter._format_messages_for_summary = lambda messages: "\n".join(
+            msg["content"] for msg in messages
+        )
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+        self.filter._count_tokens = lambda text: len(text)
+
+        messages = [
+            {"id": "m0", "role": "system", "content": "System prompt"},
+            {"id": "m1", "role": "user", "content": "Q" * 40},
+            {"id": "m2", "role": "assistant", "content": "A" * 40},
+            {"id": "m3", "role": "user", "content": "Question 2"},
+        ]
+
+        asyncio.run(
+            self.filter._generate_summary_async(
+                messages=messages,
+                chat_id="chat-1",
+                body={"model": "fake-summary-model"},
+                user_data={"id": "user-1"},
+                target_compressed_count=3,
+                lang="en-US",
+                __event_emitter__=fake_emitter,
+                __event_call__=None,
+            )
+        )
+
+        statuses = [
+            event["data"] for event in events if event.get("type") == "status"
+        ]
+        self.assertGreaterEqual(len(statuses), 2)
+        self.assertEqual(
+            statuses[-2]["description"], "Generating context summary in background..."
+        )
+        self.assertFalse(statuses[-2]["done"])
+        self.assertTrue(statuses[-1]["done"])
+        self.assertIn("Summary Error", statuses[-1]["description"])
+        self.assertIn("empty", statuses[-1]["description"])
+        self.assertFalse(save_called)
+
     def test_check_and_generate_summary_async_forces_frontend_and_status_on_pre_summary_error(
         self,
     ):
