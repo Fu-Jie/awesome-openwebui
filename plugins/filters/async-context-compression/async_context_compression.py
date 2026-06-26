@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.6.5
+version: 1.7.0
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -92,11 +92,14 @@ backend that Open WebUI supports (PostgreSQL, SQLite, etc.).
 No additional database configuration is required - the plugin inherits
 Open WebUI's database settings automatically.
 
-  Table Structure (`chat_summary`):
+  Table Structure (`chat_summary`, branch-valid reusable coverage):
     - id: Primary Key (auto-increment)
-    - chat_id: Unique chat identifier (indexed)
+    - chat_id: Chat identifier (indexed)
     - summary: The summary content (TEXT)
-    - compressed_message_count: The original number of messages
+    - compressed_message_count: Covered original-history message count
+    - covered_message_refs_json: Ordered message ids + payload fingerprints
+    - covered_refs_hash: Hash of the ordered refs
+    - branch_tip_id/source_current_id: Debugging fields for branch/async saves
     - created_at: Timestamp of creation
     - updated_at: Timestamp of last update
 
@@ -236,6 +239,15 @@ View all summaries:
   FROM chat_summary
   ORDER BY updated_at DESC;
 
+View branch-valid summary rows:
+  SELECT
+    chat_id,
+    branch_tip_id,
+    compressed_message_count,
+    updated_at
+  FROM chat_summary
+  ORDER BY updated_at DESC;
+
 Query a specific conversation:
   SELECT *
   FROM chat_summary
@@ -259,7 +271,8 @@ Statistics:
 1. Database Connection
    ✓ The plugin uses Open WebUI's shared database connection automatically.
    ✓ No additional configuration is required.
-   ✓ The `chat_summary` table will be created automatically on first run.
+   ✓ The branch-aware `chat_summary` table will be created automatically on
+     first run.
 
 2. Retention Policy
    ⚠ `keep_first` counts only non-system messages. System messages are always
@@ -321,6 +334,7 @@ import math
 import time
 import contextlib
 import logging
+import html
 from inspect import iscoroutinefunction
 from copy import deepcopy
 from functools import lru_cache
@@ -339,8 +353,18 @@ from open_webui.main import app as webui_app
 
 try:
     from open_webui.models.chats import Chats
-except ModuleNotFoundError:  # pragma: no cover - filter runs inside OpenWebUI
+except (ModuleNotFoundError, ImportError):  # pragma: no cover - filter runs inside OpenWebUI
     Chats = None
+
+try:
+    from open_webui.models.access_grants import AccessGrants
+except (ModuleNotFoundError, ImportError):  # pragma: no cover - optional in older OpenWebUI
+    AccessGrants = None
+
+try:
+    from open_webui.config import ENABLE_ADMIN_CHAT_ACCESS
+except (ModuleNotFoundError, ImportError):  # pragma: no cover - optional in older OpenWebUI
+    ENABLE_ADMIN_CHAT_ACCESS = False
 
 # Open WebUI internal database (re-use shared connection)
 try:
@@ -355,7 +379,17 @@ except ImportError:
     tiktoken = None
 
 # Database imports
-from sqlalchemy import Column, String, Text, DateTime, Integer, inspect
+from sqlalchemy import (
+    Column,
+    String,
+    Text,
+    DateTime,
+    Integer,
+    Index,
+    MetaData,
+    Table,
+    inspect,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.engine import Engine
 from datetime import datetime, timezone
@@ -474,20 +508,33 @@ def _call_db_sync(method, *args, **kwargs):
         return pool.submit(asyncio.run, method(*args, **kwargs)).result()
 
 
+CHAT_SUMMARY_DEDUP_INDEX_NAME = "ix_chat_summary_chat_id_covered_refs_hash_unique"
+
+
 class ChatSummary(owui_Base):
-    """Chat Summary Storage Table"""
+    """Branch-aware chat summary storage table."""
 
     __tablename__ = "chat_summary"
     __table_args__ = (
+        Index(
+            CHAT_SUMMARY_DEDUP_INDEX_NAME,
+            "chat_id",
+            "covered_refs_hash",
+            unique=True,
+        ),
         {"extend_existing": True, "schema": owui_schema}
         if owui_schema
-        else {"extend_existing": True}
+        else {"extend_existing": True},
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    chat_id = Column(String(255), unique=True, nullable=False, index=True)
+    chat_id = Column(String(255), nullable=False, index=True)
     summary = Column(Text, nullable=False)
     compressed_message_count = Column(Integer, default=0)
+    covered_message_refs_json = Column(Text, nullable=False)
+    covered_refs_hash = Column(String(64), nullable=False, index=True)
+    branch_tip_id = Column(String(255), nullable=True, index=True)
+    source_current_id = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
@@ -785,6 +832,20 @@ def _get_cached_tokens(text: str) -> int:
     return _estimate_text_tokens(text)
 
 
+BRANCH_SUMMARY_REQUIRED_COLUMNS = {
+    "id",
+    "chat_id",
+    "summary",
+    "compressed_message_count",
+    "covered_message_refs_json",
+    "covered_refs_hash",
+    "branch_tip_id",
+    "source_current_id",
+    "created_at",
+    "updated_at",
+}
+
+
 class Filter:
     def __init__(self):
         self.valves = self.Valves()
@@ -794,6 +855,7 @@ class Filter:
             sessionmaker(bind=self._db_engine) if self._db_engine else None
         )
         self._model_thresholds_cache: Optional[Dict[str, Any]] = None
+        self._summary_db_available = True
 
         # Fallback mapping for variants not in TRANSLATIONS keys
         self.fallback_map = {
@@ -927,7 +989,12 @@ class Filter:
         )
 
     def _build_summary_message(
-        self, summary_text: str, lang: str, covered_until: int
+        self,
+        summary_text: str,
+        lang: str,
+        covered_until: int,
+        covered_message_refs: Optional[List[Dict[str, str]]] = None,
+        protected_head_count: int = 0,
     ) -> Dict[str, Any]:
         """Create a summary marker message with original-history progress metadata."""
         summary_content = (
@@ -935,14 +1002,26 @@ class Filter:
             + f"{summary_text}"
             + self._get_translation(lang, "summary_prompt_suffix")
         )
+        metadata = {
+            "is_summary": True,
+            "source": SUMMARY_METADATA_SOURCE,
+            "covered_until": max(0, int(covered_until)),
+        }
+        if covered_message_refs:
+            metadata["covered_message_refs"] = covered_message_refs
+            metadata["covered_refs_hash"] = self._message_refs_hash(
+                covered_message_refs
+            )
+        protected_count = self._normalize_protected_head_count(
+            protected_head_count, max_count=covered_until
+        )
+        if protected_count > 0:
+            metadata["protected_head_count"] = protected_count
+
         return {
             "role": "assistant",
             "content": summary_content,
-            "metadata": {
-                "is_summary": True,
-                "source": SUMMARY_METADATA_SOURCE,
-                "covered_until": max(0, int(covered_until)),
-            },
+            "metadata": metadata,
         }
 
     def _is_external_reference_message(self, message: Dict[str, Any]) -> bool:
@@ -974,6 +1053,500 @@ class Filter:
 
         return {"summary_index": None, "base_progress": 0}
 
+    def _get_message_id(self, message: Dict[str, Any]) -> Optional[str]:
+        """Return the stable OpenWebUI message node id when available."""
+        message_id = message.get("id") or message.get("message_id")
+        return message_id if isinstance(message_id, str) and message_id else None
+
+    def _message_fingerprint(self, message: Dict[str, Any]) -> str:
+        """Fingerprint the model-visible payload to detect in-place edits."""
+        payload = self._message_fingerprint_payload(message)
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _message_fingerprint_payload(
+        self, message: Dict[str, Any], include_output: bool = True
+    ) -> Dict[str, Any]:
+        payload = {
+            "role": message.get("role"),
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls"),
+            "tool_call_id": message.get("tool_call_id"),
+            "files": message.get("files"),
+            "sources": message.get("sources"),
+            "images": message.get("images"),
+        }
+        if include_output:
+            payload["output"] = message.get("output")
+        return payload
+
+    def _message_ref(self, message: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """Return compact branch identity for one original chat message."""
+        message_id = self._get_message_id(message)
+        if not message_id:
+            return None
+        return {"id": message_id, "fingerprint": self._message_fingerprint(message)}
+
+    def _message_refs_hash(self, refs: List[Dict[str, str]]) -> str:
+        encoded = json.dumps(
+            refs,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _normalize_message_refs(
+        self, refs: Any
+    ) -> Optional[List[Dict[str, str]]]:
+        """Validate refs loaded from DB or summary marker metadata."""
+        if not isinstance(refs, list):
+            return None
+
+        normalized: List[Dict[str, str]] = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                return None
+            message_id = ref.get("id")
+            fingerprint = ref.get("fingerprint")
+            if not isinstance(message_id, str) or not message_id:
+                return None
+            if not isinstance(fingerprint, str) or not fingerprint:
+                return None
+            normalized.append({"id": message_id, "fingerprint": fingerprint})
+
+        return normalized
+
+    def _normalize_protected_head_count(
+        self, value: Any, max_count: Optional[int] = None
+    ) -> int:
+        try:
+            count = int(value)
+        except Exception:
+            count = 0
+        count = max(0, count)
+        if max_count is not None:
+            count = min(count, max(0, int(max_count)))
+        return count
+
+    def _snapshot_refs_json(
+        self, refs: List[Dict[str, str]], protected_head_count: int = 0
+    ) -> str:
+        protected_count = self._normalize_protected_head_count(
+            protected_head_count, max_count=len(refs)
+        )
+        payload: Any = refs
+        if protected_count > 0:
+            payload = {
+                "refs": refs,
+                "protected_head_count": protected_count,
+            }
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _parse_message_refs_json(
+        self, refs_json: Any
+    ) -> Optional[List[Dict[str, str]]]:
+        if not isinstance(refs_json, str) or not refs_json:
+            return None
+        try:
+            payload = json.loads(refs_json)
+            if isinstance(payload, dict):
+                payload = payload.get("refs")
+            return self._normalize_message_refs(payload)
+        except Exception:
+            return None
+
+    def _parse_protected_head_count_json(self, refs_json: Any) -> int:
+        if not isinstance(refs_json, str) or not refs_json:
+            return 0
+        try:
+            payload = json.loads(refs_json)
+        except Exception:
+            return 0
+        if not isinstance(payload, dict):
+            return 0
+        refs = self._normalize_message_refs(payload.get("refs")) or []
+        return self._normalize_protected_head_count(
+            payload.get("protected_head_count"), max_count=len(refs)
+        )
+
+    def _summary_marker_refs(
+        self, message: Dict[str, Any]
+    ) -> Optional[List[Dict[str, str]]]:
+        if not self._is_summary_message(message):
+            return None
+        metadata = message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return None
+        return self._normalize_message_refs(metadata.get("covered_message_refs"))
+
+    def _summary_marker_protected_head_count(self, message: Dict[str, Any]) -> int:
+        if not self._is_summary_message(message):
+            return 0
+        metadata = message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return 0
+        refs = self._summary_marker_refs(message) or []
+        return self._normalize_protected_head_count(
+            metadata.get("protected_head_count"), max_count=len(refs)
+        )
+
+    def _message_refs_for_prefix(
+        self, messages: List[Dict], covered_count: int
+    ) -> Optional[List[Dict[str, str]]]:
+        """Return refs for the first covered_count original-history messages.
+
+        A summary marker can stand in for an already-validated prefix only when
+        its metadata carries the exact refs selected by inlet. Legacy markers do
+        not provide that proof, so callers must treat them as untrusted coverage.
+        """
+        if covered_count < 0:
+            return None
+        if covered_count == 0:
+            return []
+
+        refs: List[Dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                return None
+            if self._is_external_reference_message(message):
+                continue
+
+            marker_refs = self._summary_marker_refs(message)
+            if marker_refs is not None:
+                overlap_count = min(len(refs), len(marker_refs))
+                if refs[:overlap_count] != marker_refs[:overlap_count]:
+                    return None
+                if len(refs) < len(marker_refs):
+                    missing_marker_refs = marker_refs[len(refs) :]
+                    if len(refs) + len(missing_marker_refs) > covered_count:
+                        return None
+                    refs.extend(missing_marker_refs)
+            else:
+                message_ref = self._message_ref(message)
+                if message_ref is None:
+                    return None
+                refs.append(message_ref)
+
+            if len(refs) == covered_count:
+                return refs
+            if len(refs) > covered_count:
+                return None
+
+        return None
+
+    def _current_branch_refs(
+        self, messages: List[Dict]
+    ) -> Optional[List[Dict[str, str]]]:
+        return self._message_refs_for_prefix(
+            messages,
+            self._get_original_history_count(messages),
+        )
+
+    def _history_graph_refs_by_id(
+        self, history_messages: Any
+    ) -> Optional[Dict[str, Dict[str, str]]]:
+        """Return live refs for every node in OpenWebUI's full history graph."""
+        if not isinstance(history_messages, dict):
+            return None
+
+        refs: Dict[str, Dict[str, str]] = {}
+        for message_id, node in history_messages.items():
+            if not isinstance(node, dict):
+                return None
+            message = deepcopy(node)
+            if isinstance(message_id, str):
+                message.setdefault("id", message_id)
+            message_ref = self._message_ref(message)
+            if message_ref is None:
+                return None
+            refs[message_ref["id"]] = message_ref
+
+        return refs
+
+    def _refs_common_prefix_length(
+        self,
+        left: List[Dict[str, str]],
+        right: List[Dict[str, str]],
+    ) -> int:
+        count = 0
+        for left_ref, right_ref in zip(left, right):
+            if left_ref != right_ref:
+                break
+            count += 1
+        return count
+
+    def _snapshot_coverage_for_current_branch(
+        self,
+        snapshot_refs: List[Dict[str, str]],
+        current_refs: List[Dict[str, str]],
+        max_current_count: int,
+        live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> tuple[int, int, Optional[str]]:
+        """Validate a snapshot against the current branch and full history graph.
+
+        A summary is indivisible text: every stored ref in the snapshot must be
+        explained. It can match the next current-branch ref, or it can be skipped
+        only when the full history graph proves that ref no longer exists. A ref
+        that still exists outside the current ancestor chain is a live sibling
+        branch and makes the snapshot unsafe for this branch.
+        """
+        matched_current_count = 0
+        skipped_deleted_count = 0
+        target_count = min(len(current_refs), max(0, max_current_count))
+        current_refs_by_id = {ref["id"]: ref for ref in current_refs}
+
+        for snapshot_ref in snapshot_refs:
+            snapshot_id = snapshot_ref["id"]
+
+            if matched_current_count < target_count:
+                expected_current_ref = current_refs[matched_current_count]
+                if snapshot_ref == expected_current_ref:
+                    matched_current_count += 1
+                    continue
+                if snapshot_id == expected_current_ref["id"]:
+                    return (
+                        matched_current_count,
+                        skipped_deleted_count,
+                        f"edited current ref at position {matched_current_count}",
+                    )
+
+            current_ref = current_refs_by_id.get(snapshot_id)
+            if current_ref is not None:
+                if current_ref == snapshot_ref:
+                    reason = (
+                        "snapshot covers live current ref beyond safe boundary"
+                        if matched_current_count >= target_count
+                        else "snapshot ref is out of current branch order"
+                    )
+                else:
+                    reason = "snapshot ref matches a current id with old payload"
+                return matched_current_count, skipped_deleted_count, reason
+
+            if live_message_refs_by_id is None:
+                return (
+                    matched_current_count,
+                    skipped_deleted_count,
+                    "unmatched snapshot ref without complete history graph",
+                )
+
+            live_ref = live_message_refs_by_id.get(snapshot_id)
+            if live_ref is not None:
+                reason = (
+                    "snapshot contains live sibling branch ref"
+                    if live_ref == snapshot_ref
+                    else "snapshot contains live ref with stale payload"
+                )
+                return matched_current_count, skipped_deleted_count, reason
+
+            skipped_deleted_count += 1
+
+        return matched_current_count, skipped_deleted_count, None
+
+    def _summary_snapshot_updated_timestamp(self, snapshot: Any) -> float:
+        updated_at = getattr(snapshot, "updated_at", None) or getattr(
+            snapshot, "created_at", None
+        )
+        if not isinstance(updated_at, datetime):
+            return 0.0
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        return updated_at.timestamp()
+
+    def _summary_snapshot_selection_key(self, snapshot: Any) -> tuple[int, float]:
+        return (
+            int(getattr(snapshot, "compressed_message_count", 0) or 0),
+            self._summary_snapshot_updated_timestamp(snapshot),
+        )
+
+    def _annotate_summary_snapshot_selection(
+        self,
+        snapshot: Any,
+        current_coverage_count: int,
+        current_coverage_refs: List[Dict[str, str]],
+        protected_head_count: int,
+    ) -> Any:
+        """Attach current-branch coverage metadata to the selected snapshot."""
+        setattr(snapshot, "_current_coverage_count", current_coverage_count)
+        setattr(snapshot, "_current_coverage_refs", current_coverage_refs)
+        setattr(snapshot, "_current_protected_head_count", protected_head_count)
+        return snapshot
+
+    def _summary_snapshot_current_coverage_count(self, snapshot: Any) -> int:
+        return int(
+            getattr(
+                snapshot,
+                "_current_coverage_count",
+                getattr(snapshot, "compressed_message_count", 0),
+            )
+            or 0
+        )
+
+    def _summary_snapshot_current_coverage_refs(
+        self, snapshot: Any
+    ) -> Optional[List[Dict[str, str]]]:
+        current_refs = self._normalize_message_refs(
+            getattr(snapshot, "_current_coverage_refs", None)
+        )
+        if current_refs is not None:
+            return current_refs
+        return self._parse_message_refs_json(
+            getattr(snapshot, "covered_message_refs_json", None)
+        )
+
+    def _summary_snapshot_current_protected_head_count(self, snapshot: Any) -> int:
+        current_count = getattr(snapshot, "_current_protected_head_count", None)
+        if current_count is not None:
+            return self._normalize_protected_head_count(
+                current_count,
+                max_count=self._summary_snapshot_current_coverage_count(snapshot),
+            )
+        return self._parse_protected_head_count_json(
+            getattr(snapshot, "covered_message_refs_json", None)
+        )
+
+    def _select_applicable_summary_snapshot(
+        self,
+        snapshots: List[Any],
+        messages: List[Dict],
+        require_full_coverage: bool = False,
+        live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
+        max_coverage_count: Optional[int] = None,
+        enforce_keep_first: bool = True,
+    ) -> Optional[Any]:
+        """Choose the best snapshot that is safe for the current active branch."""
+        current_refs = self._current_branch_refs(messages)
+        if current_refs is None:
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Summary Snapshot] Current messages do not expose stable refs; "
+                    "skipping validated summary reuse."
+                )
+            return None
+
+        if require_full_coverage:
+            safe_boundary = len(current_refs)
+        elif max_coverage_count is not None:
+            safe_boundary = min(len(current_refs), max(0, int(max_coverage_count)))
+        else:
+            safe_boundary = min(
+                len(current_refs),
+                max(0, self._calculate_target_compressed_count(messages)),
+            )
+        effective_keep_first = (
+            self._get_effective_keep_first(messages) if enforce_keep_first else 0
+        )
+        best_snapshot = None
+        best_score = None
+
+        for snapshot in sorted(
+            snapshots,
+            key=self._summary_snapshot_selection_key,
+            reverse=True,
+        ):
+            snapshot_refs = self._parse_message_refs_json(
+                getattr(snapshot, "covered_message_refs_json", None)
+            )
+            if not snapshot_refs:
+                continue
+
+            count = int(getattr(snapshot, "compressed_message_count", 0) or 0)
+            if count <= 0 or count != len(snapshot_refs):
+                continue
+            protected_head_count = self._parse_protected_head_count_json(
+                getattr(snapshot, "covered_message_refs_json", None)
+            )
+            if enforce_keep_first and protected_head_count > effective_keep_first:
+                if self.valves.debug_mode:
+                    logger.info(
+                        "[Summary Snapshot] Rejecting snapshot because it depends "
+                        f"on {protected_head_count} protected head messages but "
+                        f"current keep-first only preserves {effective_keep_first}."
+                    )
+                continue
+
+            (
+                matched_current_count,
+                skipped_deleted_count,
+                rejection_reason,
+            ) = self._snapshot_coverage_for_current_branch(
+                snapshot_refs,
+                current_refs,
+                safe_boundary,
+                live_message_refs_by_id=live_message_refs_by_id,
+            )
+            if rejection_reason:
+                if self.valves.debug_mode:
+                    logger.info(
+                        "[Summary Snapshot] Rejecting snapshot: "
+                        f"{rejection_reason}; matched_current_prefix={matched_current_count}, "
+                        f"skipped_deleted_refs={skipped_deleted_count}, "
+                        f"snapshot_tip={getattr(snapshot, 'branch_tip_id', None)}"
+                    )
+                continue
+            if require_full_coverage and matched_current_count != len(current_refs):
+                continue
+            if matched_current_count <= 0:
+                continue
+            if matched_current_count < effective_keep_first:
+                continue
+            if matched_current_count < protected_head_count:
+                continue
+
+            aligned_count = self._align_tail_start_to_atomic_boundary(
+                messages,
+                matched_current_count,
+                max(effective_keep_first, protected_head_count),
+            )
+            if aligned_count != matched_current_count:
+                if self.valves.debug_mode:
+                    logger.info(
+                        "[Summary Snapshot] Rejecting snapshot because coverage "
+                        f"{matched_current_count} cuts an atomic group "
+                        f"(aligned={aligned_count})."
+                    )
+                continue
+
+            score = (
+                matched_current_count,
+                -skipped_deleted_count,
+                self._summary_snapshot_updated_timestamp(snapshot),
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_snapshot = self._annotate_summary_snapshot_selection(
+                    snapshot,
+                    matched_current_count,
+                    current_refs[:matched_current_count],
+                    protected_head_count,
+                )
+                continue
+
+            if self.valves.debug_mode:
+                common = self._refs_common_prefix_length(
+                    snapshot_refs,
+                    current_refs[: min(len(snapshot_refs), len(current_refs))],
+                )
+                logger.info(
+                    "[Summary Snapshot] Skipping lower-ranked/stale snapshot: "
+                    f"count={count}, matched_current_prefix={matched_current_count}, "
+                    f"common_prefix={common}, "
+                    f"snapshot_tip={getattr(snapshot, 'branch_tip_id', None)}"
+                )
+
+        return best_snapshot
+
     def _get_original_history_count(self, messages: List[Dict]) -> int:
         """Map the current visible message list back to original-history size."""
         summary_state = self._get_summary_view_state(messages)
@@ -981,9 +1554,20 @@ class Filter:
         base_progress = summary_state["base_progress"] or 0
 
         if summary_index is None:
-            return len(messages)
+            return sum(
+                1
+                for message in messages
+                if isinstance(message, dict)
+                and not self._is_external_reference_message(message)
+            )
 
-        return base_progress + max(0, len(messages) - summary_index - 1)
+        live_tail_count = sum(
+            1
+            for message in messages[summary_index + 1 :]
+            if isinstance(message, dict)
+            and not self._is_external_reference_message(message)
+        )
+        return base_progress + live_tail_count
 
     def _calculate_target_compressed_count(self, messages: List[Dict]) -> int:
         """Calculate the next summary boundary in original-history coordinates."""
@@ -1028,7 +1612,9 @@ class Filter:
                 if not isinstance(node, dict):
                     break
 
-                ordered_messages.append(deepcopy(node))
+                message = deepcopy(node)
+                message.setdefault("id", cursor)
+                ordered_messages.append(message)
                 cursor = node.get("parentId") or node.get("parent_id")
 
             if ordered_messages:
@@ -1036,7 +1622,7 @@ class Filter:
                 return ordered_messages
 
         sortable_messages = []
-        for index, node in enumerate(history_messages.values()):
+        for index, (message_id, node) in enumerate(history_messages.items()):
             if not isinstance(node, dict):
                 continue
 
@@ -1046,7 +1632,10 @@ class Filter:
             if not isinstance(timestamp, (int, float)):
                 timestamp = index
 
-            sortable_messages.append((float(timestamp), index, deepcopy(node)))
+            message = deepcopy(node)
+            if isinstance(message_id, str):
+                message.setdefault("id", message_id)
+            sortable_messages.append((float(timestamp), index, message))
 
         sortable_messages.sort(key=lambda item: (item[0], item[1]))
         return [message for _, _, message in sortable_messages]
@@ -1066,20 +1655,510 @@ class Filter:
         if not isinstance(chat_payload, dict):
             return []
 
+        history = chat_payload.get("history")
+        if isinstance(history, dict):
+            history_messages = history.get("messages")
+            if isinstance(history_messages, dict) and history_messages:
+                current_id = history.get("currentId") or history.get("current_id")
+                branch_messages = self._reconstruct_active_history_branch(
+                    history_messages, current_id
+                )
+                if branch_messages:
+                    return branch_messages
+
         direct_messages = chat_payload.get("messages")
         if isinstance(direct_messages, list) and direct_messages:
             return deepcopy(direct_messages)
 
+        return []
+
+    async def _load_authorized_full_chat_messages(
+        self,
+        chat_id: str,
+        user_data: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load referenced chat messages through the narrowest available read path."""
+        user_id = user_data.get("id") if isinstance(user_data, dict) else None
+        user_role = user_data.get("role") if isinstance(user_data, dict) else None
+        user_organization_id = (
+            user_data.get("organization_id") if isinstance(user_data, dict) else None
+        )
+        if not chat_id or Chats is None:
+            return []
+        if not user_id:
+            return []
+
+        get_by_user = getattr(Chats, "get_chat_by_id_and_user_id", None)
+        if callable(get_by_user):
+            try:
+                chat_record = await _call_db(get_by_user, chat_id, user_id)
+            except Exception as exc:
+                logger.warning(
+                    f"[Chat Load] Failed authorized fetch for chat {chat_id}: {exc}"
+                )
+                return []
+            if not chat_record:
+                chat_record = await self._load_shared_or_admin_chat_record(
+                    chat_id,
+                    user_id,
+                    user_role,
+                    user_organization_id,
+                )
+                if not chat_record:
+                    return []
+            return self._extract_chat_record_messages(chat_record)
+
+        try:
+            chat_record = await _call_db(Chats.get_chat_by_id, chat_id)
+        except Exception as exc:
+            logger.warning(f"[Chat Load] Failed fallback fetch for chat {chat_id}: {exc}")
+            return []
+        if not chat_record:
+            return []
+
+        owner_id = getattr(chat_record, "user_id", None)
+        if owner_id == user_id:
+            return self._extract_chat_record_messages(chat_record)
+        if self._is_admin_home_organization_chat(
+            chat_record,
+            user_role,
+            user_organization_id,
+        ):
+            return self._extract_chat_record_messages(chat_record)
+        if await self._has_referenced_chat_read_grant(
+            chat_id,
+            user_id,
+            user_organization_id,
+        ):
+            return self._extract_chat_record_messages(chat_record)
+        return []
+
+    async def _load_shared_or_admin_chat_record(
+        self,
+        chat_id: str,
+        user_id: str,
+        user_role: Optional[str],
+        user_organization_id: Optional[str] = None,
+    ) -> Optional[Any]:
+        if user_role == "admin" and ENABLE_ADMIN_CHAT_ACCESS:
+            try:
+                chat_record = await _call_db(Chats.get_chat_by_id, chat_id)
+            except Exception as exc:
+                logger.warning(
+                    f"[Chat Load] Failed admin fallback fetch for chat {chat_id}: {exc}"
+                )
+                return None
+            if self._is_admin_home_organization_chat(
+                chat_record,
+                user_role,
+                user_organization_id,
+            ):
+                return chat_record
+
+        get_for_user = getattr(Chats, "get_chat_by_id_for_user", None)
+        if callable(get_for_user):
+            try:
+                chat_record = await _call_db(get_for_user, chat_id, user_id)
+            except Exception as exc:
+                logger.warning(
+                    f"[Chat Load] Failed user grant fetch for chat {chat_id}: {exc}"
+                )
+                chat_record = None
+            if chat_record:
+                return chat_record
+
+        if user_role == "admin" and ENABLE_ADMIN_CHAT_ACCESS:
+            return None
+
+        if not await self._has_referenced_chat_read_grant(
+            chat_id,
+            user_id,
+            user_organization_id,
+        ):
+            return None
+
+        try:
+            return await _call_db(Chats.get_chat_by_id, chat_id)
+        except Exception as exc:
+            logger.warning(
+                f"[Chat Load] Failed shared fallback fetch for chat {chat_id}: {exc}"
+            )
+            return None
+
+    def _is_admin_home_organization_chat(
+        self,
+        chat_record: Any,
+        user_role: Optional[str],
+        user_organization_id: Optional[str],
+    ) -> bool:
+        return (
+            user_role == "admin"
+            and bool(ENABLE_ADMIN_CHAT_ACCESS)
+            and user_organization_id is not None
+            and getattr(chat_record, "organization_id", None) == user_organization_id
+        )
+
+    async def _has_referenced_chat_read_grant(
+        self,
+        chat_id: str,
+        user_id: str,
+        user_organization_id: Optional[str] = None,
+    ) -> bool:
+        has_access = getattr(AccessGrants, "has_access", None)
+        if not callable(has_access):
+            return False
+
+        try:
+            return bool(
+                await _call_db(
+                    has_access,
+                    user_id=user_id,
+                    resource_type="shared_chat",
+                    resource_id=chat_id,
+                    permission="read",
+                    organization_id=user_organization_id,
+                )
+            )
+        except TypeError as exc:
+            if "organization_id" not in str(exc):
+                logger.warning(
+                    f"[Chat Load] Failed shared access check for chat {chat_id}: {exc}"
+                )
+                return False
+            try:
+                return bool(
+                    await _call_db(
+                        has_access,
+                        user_id=user_id,
+                        resource_type="shared_chat",
+                        resource_id=chat_id,
+                        permission="read",
+                    )
+                )
+            except Exception as fallback_exc:
+                logger.warning(
+                    f"[Chat Load] Failed shared access check for chat {chat_id}: {fallback_exc}"
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                f"[Chat Load] Failed shared access check for chat {chat_id}: {exc}"
+            )
+            return False
+
+    def _extract_chat_record_messages(self, chat_record: Any) -> List[Dict[str, Any]]:
+        chat_payload = getattr(chat_record, "chat", None)
+        if not isinstance(chat_payload, dict):
+            return []
+
+        history = chat_payload.get("history")
+        if isinstance(history, dict):
+            history_messages = history.get("messages")
+            if isinstance(history_messages, dict) and history_messages:
+                current_id = history.get("currentId") or history.get("current_id")
+                branch_messages = self._reconstruct_active_history_branch(
+                    history_messages, current_id
+                )
+                if branch_messages:
+                    return branch_messages
+
+        direct_messages = chat_payload.get("messages")
+        if isinstance(direct_messages, list) and direct_messages:
+            return deepcopy(direct_messages)
+
+        return []
+
+    def _escape_reference_attr(self, value: Any) -> str:
+        return html.escape(str(value if value is not None else ""), quote=True)
+
+    def _escape_reference_text(self, value: Any) -> str:
+        return html.escape(str(value if value is not None else ""), quote=False)
+
+    def _build_simple_referenced_chat_content(self, text: str) -> str:
+        return self._escape_reference_text(text)
+
+    def _build_generated_referenced_summary_content(
+        self,
+        summary: str,
+        remainder_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        if not remainder_messages:
+            return self._build_simple_referenced_chat_content(summary)
+
+        remainder_text = self._format_messages_for_summary(remainder_messages)
+        return self._build_generated_referenced_summary_content_from_text(
+            summary,
+            remainder_text,
+        )
+
+    def _build_generated_referenced_summary_content_from_text(
+        self,
+        summary: str,
+        remainder_text: str = "",
+    ) -> str:
+        sections = [
+            "<generated_reference_summary>\n"
+            + self._escape_reference_text(summary)
+            + "\n</generated_reference_summary>"
+        ]
+        if remainder_text:
+            sections.append(
+                "<recent_original_messages>\n"
+                + self._escape_reference_text(remainder_text)
+                + "\n</recent_original_messages>"
+            )
+        return "\n\n".join(sections)
+
+    def _fit_generated_referenced_summary_content(
+        self,
+        summary: str,
+        remainder_messages: List[Dict[str, Any]],
+        max_tokens: int,
+    ) -> tuple[str, int, bool, int]:
+        """Fit generated reference context while preserving the newest raw tail."""
+        if max_tokens <= 0:
+            return "", 0, bool(summary or remainder_messages), len(remainder_messages)
+
+        content = self._build_generated_referenced_summary_content(
+            summary,
+            remainder_messages,
+        )
+        estimated_tokens = _estimate_text_tokens(content)
+        if estimated_tokens <= max_tokens:
+            return content, estimated_tokens, False, 0
+
+        if not remainder_messages:
+            trimmed, trimmed_tokens, trimmed_any = (
+                self._trim_reference_content_to_token_budget(content, max_tokens)
+            )
+            return trimmed, trimmed_tokens, trimmed_any, 0
+
+        for omitted_count in range(0, len(remainder_messages)):
+            tail_suffix = remainder_messages[omitted_count:]
+            candidate = self._build_generated_referenced_summary_content(
+                summary,
+                tail_suffix,
+            )
+            candidate_tokens = _estimate_text_tokens(candidate)
+            if candidate_tokens <= max_tokens:
+                return candidate, candidate_tokens, True, omitted_count
+
+        latest_tail_text = self._format_messages_for_summary([remainder_messages[-1]])
+        marker = "[truncated generated summary to preserve latest referenced tail]"
+
+        def build_with_summary(summary_text: str) -> str:
+            return self._build_generated_referenced_summary_content_from_text(
+                summary_text,
+                latest_tail_text,
+            )
+
+        fallback = build_with_summary(marker)
+        fallback_tokens = _estimate_text_tokens(fallback)
+        if fallback_tokens > max_tokens:
+            trimmed, trimmed_tokens, _ = self._trim_reference_content_to_token_budget(
+                fallback,
+                max_tokens,
+            )
+            return trimmed, trimmed_tokens, True, max(0, len(remainder_messages) - 1)
+
+        best_content = fallback
+        best_tokens = fallback_tokens
+        low = 0
+        high = len(summary)
+        while low <= high:
+            mid = (low + high) // 2
+            summary_candidate = summary[:mid].rstrip()
+            if mid < len(summary):
+                summary_candidate = (
+                    summary_candidate + "\n[truncated to preserve latest referenced tail]"
+                )
+            candidate = build_with_summary(summary_candidate or marker)
+            candidate_tokens = _estimate_text_tokens(candidate)
+            if candidate_tokens <= max_tokens:
+                best_content = candidate
+                best_tokens = candidate_tokens
+                low = mid + 1
+            else:
+                high = mid - 1
+
+        return best_content, best_tokens, True, max(0, len(remainder_messages) - 1)
+
+    def _build_mixed_referenced_chat_content(
+        self,
+        summary_snapshot: Any,
+        chat_messages: List[Dict[str, Any]],
+        tail_start_index: int,
+    ) -> str:
+        protected_head_count = self._summary_snapshot_current_protected_head_count(
+            summary_snapshot
+        )
+        sections = []
+        if protected_head_count > 0:
+            protected_head_text = self._format_messages_for_summary(
+                chat_messages[:protected_head_count]
+            )
+            sections.append(
+                "<protected_head_original_messages>\n"
+                + self._escape_reference_text(protected_head_text)
+                + "\n</protected_head_original_messages>"
+            )
+
+        sections.append(
+            "<verified_earlier_summary>\n"
+            + self._escape_reference_text(getattr(summary_snapshot, "summary", ""))
+            + "\n</verified_earlier_summary>"
+        )
+
+        tail_messages = chat_messages[max(0, tail_start_index) :]
+        if tail_messages:
+            tail_text = self._format_messages_for_summary(tail_messages)
+            sections.append(
+                "<recent_original_messages>\n"
+                + self._escape_reference_text(tail_text)
+                + "\n</recent_original_messages>"
+            )
+
+        return "\n\n".join(sections)
+
+    def _build_mixed_referenced_summary_input(
+        self,
+        chat_messages: List[Dict[str, Any]],
+        tail_start_index: int,
+    ) -> str:
+        return self._format_messages_for_summary(
+            chat_messages[max(0, tail_start_index) :]
+        )
+
+    def _trim_reference_content_to_token_budget(
+        self, content: str, max_tokens: int
+    ) -> tuple[str, int, bool]:
+        if max_tokens <= 0:
+            return content, _estimate_text_tokens(content), False
+
+        estimated_tokens = _estimate_text_tokens(content)
+        if estimated_tokens <= max_tokens:
+            return content, estimated_tokens, False
+
+        target_chars = max(1, int(len(content) * max_tokens / estimated_tokens))
+        trimmed = f"{content[:target_chars].rstrip()}\n[truncated]"
+        return trimmed, _estimate_text_tokens(trimmed), True
+
+    def _select_native_summary_messages(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], str]:
+        """Choose a folded native source without mixing mismatched histories."""
+        if not db_messages or len(db_messages) < len(body_messages):
+            return body_messages, "outlet-body-native-folded"
+
+        body_refs = self._current_branch_refs(body_messages)
+        if body_refs is None:
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Outlet] Body native history lacks stable refs; "
+                    "using body messages so snapshot save can fail closed."
+                )
+            return body_messages, "outlet-body-native-folded"
+
+        db_refs = self._message_refs_for_prefix(db_messages, len(body_refs))
+        if db_refs is None:
+            return body_messages, "outlet-body-native-folded"
+
+        if db_refs == body_refs or self._native_db_overlap_is_body_compatible(
+            body_messages, db_messages, body_refs, db_refs
+        ):
+            return db_messages, "outlet-db-native-folded"
+
+        if self.valves.debug_mode:
+            logger.info(
+                "[Outlet] DB native history does not match body refs; "
+                "using folded body messages as canonical source."
+            )
+        return body_messages, "outlet-body-native-folded"
+
+    def _native_db_overlap_is_body_compatible(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+        body_refs: List[Dict[str, str]],
+        db_refs: List[Dict[str, str]],
+    ) -> bool:
+        """Allow DB as a native source only when it is a body-proven superset."""
+        if len(body_refs) != len(db_refs):
+            return False
+        if [ref["id"] for ref in body_refs] != [ref["id"] for ref in db_refs]:
+            return False
+
+        ref_index = 0
+        for body_message in body_messages:
+            marker_refs = self._summary_marker_refs(body_message)
+            if marker_refs is not None:
+                marker_count = min(len(marker_refs), len(body_refs) - ref_index)
+                if marker_count <= 0:
+                    continue
+                if (
+                    db_refs[ref_index : ref_index + marker_count]
+                    != body_refs[ref_index : ref_index + marker_count]
+                ):
+                    return False
+                ref_index += marker_count
+                if ref_index >= len(body_refs):
+                    return True
+                continue
+
+            body_ref = self._message_ref(body_message)
+            if body_ref is None:
+                return False
+            if ref_index >= len(db_messages):
+                return False
+            db_message = db_messages[ref_index]
+            db_ref = self._message_ref(db_message)
+            if db_ref is None or db_ref["id"] != body_ref["id"]:
+                return False
+            if db_ref == body_ref:
+                ref_index += 1
+                if ref_index >= len(body_refs):
+                    return True
+                continue
+            if body_message.get("output") not in (None, "", []):
+                return False
+            if self._message_fingerprint_payload(
+                body_message, include_output=False
+            ) != self._message_fingerprint_payload(db_message, include_output=False):
+                return False
+            ref_index += 1
+            if ref_index >= len(body_refs):
+                return True
+
+        return ref_index == len(body_refs)
+
+    async def _load_chat_history_live_refs(
+        self, chat_id: str
+    ) -> Optional[Dict[str, Dict[str, str]]]:
+        """Load refs for all live nodes in a chat's full OpenWebUI history graph."""
+        if not chat_id or Chats is None:
+            return None
+
+        try:
+            chat_record = await _call_db(Chats.get_chat_by_id, chat_id)
+        except Exception as exc:
+            logger.warning(f"[Chat Load] Failed to fetch chat graph {chat_id}: {exc}")
+            return None
+
+        chat_payload = getattr(chat_record, "chat", None)
+        if not isinstance(chat_payload, dict):
+            return None
+
         history = chat_payload.get("history")
         if not isinstance(history, dict):
-            return []
+            return None
 
         history_messages = history.get("messages")
         if not isinstance(history_messages, dict) or not history_messages:
-            return []
+            return None
 
-        current_id = history.get("currentId") or history.get("current_id")
-        return self._reconstruct_active_history_branch(history_messages, current_id)
+        return self._history_graph_refs_by_id(history_messages)
 
     def _shorten_tool_call_id(self, tool_call_id: str, max_length: int = 40) -> str:
         """Keep tool call IDs within provider limits while staying deterministic."""
@@ -1561,24 +2640,265 @@ class Filter:
             except Exception as exc:  # pragma: no cover - best-effort cleanup
                 logger.warning(f"[Database] ⚠️ Failed to close fallback session: {exc}")
 
+    def _has_table(self, inspector: Any, table_name: str) -> bool:
+        if owui_schema:
+            return inspector.has_table(table_name, schema=owui_schema)
+        return inspector.has_table(table_name)
+
+    def _table_column_names(self, inspector: Any, table_name: str) -> set[str]:
+        if owui_schema:
+            columns = inspector.get_columns(table_name, schema=owui_schema)
+        else:
+            columns = inspector.get_columns(table_name)
+        return {column.get("name") for column in columns if column.get("name")}
+
+    def _table_has_unique_columns(
+        self, inspector: Any, table_name: str, column_names: List[str]
+    ) -> bool:
+        expected = tuple(column_names)
+        for constraint in inspector.get_unique_constraints(
+            table_name, schema=owui_schema
+        ):
+            if tuple(constraint.get("column_names") or []) == expected:
+                return True
+
+        for index in inspector.get_indexes(table_name, schema=owui_schema):
+            if not index.get("unique"):
+                continue
+            if tuple(index.get("column_names") or []) == expected:
+                return True
+
+        return False
+
+    def _chat_summary_table_is_branch_aware(self, inspector: Any) -> Optional[bool]:
+        try:
+            column_names = self._table_column_names(inspector, "chat_summary")
+        except Exception as exc:
+            logger.error(
+                "[Database] ⚠️ Unable to inspect existing chat_summary schema; "
+                f"leaving it untouched and disabling summary persistence: {exc}"
+            )
+            return None
+
+        missing_columns = BRANCH_SUMMARY_REQUIRED_COLUMNS - column_names
+        if missing_columns:
+            logger.warning(
+                "[Database] ⚠️ Existing chat_summary table is legacy/incompatible "
+                f"(missing: {', '.join(sorted(missing_columns))}); it will be rebuilt "
+                "and summaries will be regenerated on demand."
+            )
+            return False
+
+        try:
+            has_unique_chat_id = self._table_has_unique_columns(
+                inspector, "chat_summary", ["chat_id"]
+            )
+        except Exception as exc:
+            logger.error(
+                "[Database] ⚠️ Unable to inspect chat_summary indexes; "
+                f"leaving it untouched and disabling summary persistence: {exc}"
+            )
+            return None
+
+        if has_unique_chat_id:
+            logger.warning(
+                "[Database] ⚠️ Existing chat_summary table still has a unique "
+                "constraint on chat_id; it will be rebuilt for branch-aware multi-row storage."
+            )
+            return False
+        return True
+
+    def _chat_summary_row_mapping_get(
+        self, row_mapping: Any, key: str, default: Any = None
+    ) -> Any:
+        getter = getattr(row_mapping, "get", None)
+        if callable(getter):
+            return getter(key, default)
+        try:
+            return row_mapping[key]
+        except Exception:
+            return default
+
+    def _drop_table_if_exists(self, table_name: str):
+        metadata = MetaData()
+        table = Table(
+            table_name,
+            metadata,
+            autoload_with=self._db_engine,
+            schema=owui_schema,
+        )
+        table.drop(bind=self._db_engine, checkfirst=True)
+
+    def _deduplicate_chat_summary_rows(self) -> int:
+        target_table = ChatSummary.__table__
+        deleted_count = 0
+        with self._db_engine.begin() as connection:
+            rows = connection.execute(
+                target_table.select().order_by(
+                    target_table.c.chat_id,
+                    target_table.c.covered_refs_hash,
+                    target_table.c.updated_at.desc(),
+                    target_table.c.id.desc(),
+                )
+            )
+            seen: set[tuple[Any, Any]] = set()
+            duplicate_ids: List[int] = []
+            for row in rows:
+                row_mapping = getattr(row, "_mapping", row)
+                covered_refs_hash = self._chat_summary_row_mapping_get(
+                    row_mapping, "covered_refs_hash"
+                )
+                if not covered_refs_hash:
+                    continue
+                key = (
+                    self._chat_summary_row_mapping_get(row_mapping, "chat_id"),
+                    covered_refs_hash,
+                )
+                if key in seen:
+                    row_id = self._chat_summary_row_mapping_get(row_mapping, "id")
+                    if row_id is not None:
+                        duplicate_ids.append(row_id)
+                else:
+                    seen.add(key)
+
+            if duplicate_ids:
+                connection.execute(
+                    target_table.delete().where(target_table.c.id.in_(duplicate_ids))
+                )
+                deleted_count = len(duplicate_ids)
+
+        if deleted_count:
+            logger.warning(
+                "[Database] Removed duplicate chat_summary rows before creating "
+                f"dedup index: {deleted_count}"
+            )
+        return deleted_count
+
+    def _ensure_chat_summary_dedup_index(self):
+        self._deduplicate_chat_summary_rows()
+        for index in ChatSummary.__table__.indexes:
+            if index.name == CHAT_SUMMARY_DEDUP_INDEX_NAME:
+                index.create(bind=self._db_engine, checkfirst=True)
+                return
+
+    def _migrate_legacy_snapshot_table(self) -> int:
+        metadata = MetaData()
+        source_table = Table(
+            "chat_summary_snapshot",
+            metadata,
+            autoload_with=self._db_engine,
+            schema=owui_schema,
+        )
+        required_source_columns = {
+            "chat_id",
+            "summary",
+            "compressed_message_count",
+            "covered_message_refs_json",
+        }
+        source_columns = set(source_table.c.keys())
+        missing_columns = required_source_columns - source_columns
+        if missing_columns:
+            logger.warning(
+                "[Database] ⚠️ Legacy chat_summary_snapshot table is incompatible "
+                f"(missing: {', '.join(sorted(missing_columns))}); it will be dropped "
+                "and summaries will be regenerated on demand."
+            )
+            return 0
+
+        target_table = ChatSummary.__table__
+        migrated_count = 0
+        with self._db_engine.begin() as connection:
+            rows = connection.execute(source_table.select())
+            for row in rows:
+                row_mapping = getattr(row, "_mapping", row)
+                source_refs_json = row_mapping["covered_message_refs_json"]
+                normalized_refs = self._parse_message_refs_json(source_refs_json)
+                if not normalized_refs:
+                    logger.warning(
+                        "[Database] Skipping unmigratable chat_summary_snapshot row: "
+                        "invalid covered_message_refs_json."
+                    )
+                    continue
+
+                protected_head_count = self._parse_protected_head_count_json(
+                    source_refs_json
+                )
+                refs_json = self._snapshot_refs_json(
+                    normalized_refs, protected_head_count
+                )
+                covered_refs_hash = hashlib.sha256(
+                    refs_json.encode("utf-8")
+                ).hexdigest()
+                existing = connection.execute(
+                    target_table.select()
+                    .where(target_table.c.chat_id == row_mapping["chat_id"])
+                    .where(target_table.c.covered_refs_hash == covered_refs_hash)
+                ).first()
+                if existing:
+                    continue
+
+                now = datetime.now(timezone.utc)
+                connection.execute(
+                    target_table.insert().values(
+                        chat_id=row_mapping["chat_id"],
+                        summary=row_mapping["summary"],
+                        compressed_message_count=row_mapping[
+                            "compressed_message_count"
+                        ],
+                        covered_message_refs_json=refs_json,
+                        covered_refs_hash=covered_refs_hash,
+                        branch_tip_id=self._chat_summary_row_mapping_get(
+                            row_mapping,
+                            "branch_tip_id",
+                            normalized_refs[-1]["id"],
+                        )
+                        or normalized_refs[-1]["id"],
+                        source_current_id=self._chat_summary_row_mapping_get(
+                            row_mapping, "source_current_id"
+                        ),
+                        created_at=self._chat_summary_row_mapping_get(
+                            row_mapping, "created_at", now
+                        )
+                        or now,
+                        updated_at=self._chat_summary_row_mapping_get(
+                            row_mapping, "updated_at", now
+                        )
+                        or now,
+                    )
+                )
+                migrated_count += 1
+
+        return migrated_count
+
     def _init_database(self):
-        """Initializes the database table using Open WebUI's shared connection."""
+        """Initializes the branch-aware summary table using Open WebUI's shared connection."""
+        self._summary_db_available = False
         try:
             if self._db_engine is None:
                 raise RuntimeError(
                     "Open WebUI database engine is unavailable. Ensure Open WebUI is configured with a valid DATABASE_URL."
                 )
 
-            # Check if table exists using SQLAlchemy inspect
+            # Check if tables exist using SQLAlchemy inspect
             inspector = inspect(self._db_engine)
             # Support schema if configured
-            has_table = (
-                inspector.has_table("chat_summary", schema=owui_schema)
-                if owui_schema
-                else inspector.has_table("chat_summary")
-            )
+            has_summary_table = self._has_table(inspector, "chat_summary")
+            has_snapshot_table = self._has_table(inspector, "chat_summary_snapshot")
 
-            if not has_table:
+            if has_summary_table:
+                schema_is_branch_aware = self._chat_summary_table_is_branch_aware(
+                    inspector
+                )
+                if schema_is_branch_aware is None:
+                    return
+                if not schema_is_branch_aware:
+                    ChatSummary.__table__.drop(bind=self._db_engine, checkfirst=True)
+                    has_summary_table = False
+                    logger.info(
+                        "[Database] Rebuilt legacy chat_summary table; old count-only summaries were discarded."
+                    )
+
+            if not has_summary_table:
                 # Create the chat_summary table if it doesn't exist
                 ChatSummary.__table__.create(bind=self._db_engine, checkfirst=True)
                 logger.info(
@@ -1588,6 +2908,17 @@ class Filter:
                 logger.info(
                     "[Database] ✅ Using Open WebUI's shared database connection. chat_summary table already exists."
                 )
+
+            if has_snapshot_table:
+                migrated_count = self._migrate_legacy_snapshot_table()
+                self._drop_table_if_exists("chat_summary_snapshot")
+                logger.info(
+                    "[Database] Removed legacy chat_summary_snapshot table after "
+                    f"migrating {migrated_count} branch-aware summaries into chat_summary."
+                )
+
+            self._ensure_chat_summary_dedup_index()
+            self._summary_db_available = True
 
         except Exception as e:
             logger.error(f"[Database] ❌ Initialization failed: {str(e)}")
@@ -1632,8 +2963,66 @@ class Filter:
         max_summary_tokens: int = Field(
             default=16384,
             ge=1,
-            description="The maximum number of tokens for the summary.",
+            description="The maximum number of tokens for the summary. Must be less than 80% of the summary model input window so at least 20% remains for new messages during follow-up compression.",
         )
+
+        def __init__(self, **data):
+            super().__init__(**data)
+            self.validate_summary_budget()
+
+        @staticmethod
+        def _summary_window_from_values(
+            summary_model: Optional[str],
+            summary_model_max_context: int,
+            model_thresholds: str,
+            max_context_tokens: int,
+        ) -> int:
+            if summary_model_max_context > 0:
+                return summary_model_max_context
+
+            if summary_model:
+                for raw_config in model_thresholds.split(","):
+                    parts = raw_config.strip().split(":")
+                    if len(parts) != 3:
+                        continue
+                    if parts[0].strip() != summary_model:
+                        continue
+                    try:
+                        return int(parts[2].strip())
+                    except ValueError:
+                        break
+
+            return max_context_tokens
+
+        @staticmethod
+        def _validate_summary_budget_values(
+            max_summary_tokens: int,
+            summary_window: int,
+            model_label: str = "summary model",
+        ) -> None:
+            if summary_window <= 0:
+                return
+            if int(max_summary_tokens) * 5 >= int(summary_window) * 4:
+                raise ValueError(
+                    "max_summary_tokens must be less than 80% of the summary "
+                    f"model input window ({summary_window}) for '{model_label}', "
+                    "leaving at least 20% for new messages."
+                )
+
+        def validate_summary_budget(self):
+            summary_window = self._summary_window_from_values(
+                self.summary_model,
+                self.summary_model_max_context,
+                self.model_thresholds,
+                self.max_context_tokens,
+            )
+            self._validate_summary_budget_values(
+                self.max_summary_tokens,
+                summary_window,
+                self.summary_model or "summary model",
+            )
+            return self
+
         summary_temperature: float = Field(
             default=0.1,
             ge=0.0,
@@ -1730,37 +3119,263 @@ class Filter:
                 ref_chat_title = chat_file.get("name", f"Chat {ref_chat_id[:8]}...")
             else:
                 ref_chat_title = chat_file.get("name", "Unknown Chat")
+            ref_chat_log_title = self._escape_reference_text(ref_chat_title)
 
             if not ref_chat_id:
                 continue
 
-            summary_record = await self._load_summary_record(ref_chat_id)
+            chat_messages = await self._load_authorized_full_chat_messages(
+                ref_chat_id, user_data
+            )
+            if not chat_messages:
+                if __event_call__:
+                    await self._log(
+                        f"[Inlet] ⚠️ No messages found for '{ref_chat_log_title}', skipping",
+                        event_call=__event_call__,
+                    )
+                continue
 
-            if summary_record and summary_record.summary:
+            summary_snapshot = await self._load_applicable_summary_snapshot(
+                ref_chat_id,
+                chat_messages,
+                require_full_coverage=True,
+            )
+
+            if summary_snapshot and summary_snapshot.summary:
                 remaining_direct_budget = max(
                     0,
                     remaining_direct_budget
-                    - _estimate_text_tokens(summary_record.summary),
+                    - _estimate_text_tokens(summary_snapshot.summary),
                 )
                 referenced_summaries.append(
                     {
                         "chat_id": ref_chat_id,
                         "title": ref_chat_title,
-                        "summary": summary_record.summary,
+                        "content": self._build_simple_referenced_chat_content(
+                            summary_snapshot.summary
+                        ),
                         "type": "existing",
                     }
                 )
                 if __event_call__:
                     await self._log(
-                        f"[Inlet] ✅ Found existing summary for referenced chat '{ref_chat_title}' ({len(summary_record.summary)} chars)",
+                        f"[Inlet] ✅ Found branch-valid summary for referenced chat '{ref_chat_log_title}' ({len(summary_snapshot.summary)} chars)",
                         event_call=__event_call__,
                     )
             else:
-                chat_messages = await self._load_full_chat_messages(ref_chat_id)
-                if not chat_messages:
+                partial_snapshot = await self._load_applicable_summary_snapshot(
+                    ref_chat_id,
+                    chat_messages,
+                    require_full_coverage=False,
+                    max_coverage_count=len(chat_messages),
+                    enforce_keep_first=False,
+                )
+                if partial_snapshot and partial_snapshot.summary:
+                    covered_count = self._summary_snapshot_current_coverage_count(
+                        partial_snapshot
+                    )
+                    protected_head_count = (
+                        self._summary_snapshot_current_protected_head_count(
+                            partial_snapshot
+                        )
+                    )
+                    tail_start_index = self._align_tail_start_to_atomic_boundary(
+                        chat_messages,
+                        covered_count,
+                        protected_head_count,
+                    )
+                    mixed_content = self._build_mixed_referenced_chat_content(
+                        partial_snapshot,
+                        chat_messages,
+                        tail_start_index,
+                    )
+                    mixed_tokens = _estimate_text_tokens(mixed_content)
+
+                    if mixed_tokens <= max(0, remaining_direct_budget):
+                        referenced_summaries.append(
+                            {
+                                "chat_id": ref_chat_id,
+                                "title": ref_chat_title,
+                                "content": mixed_content,
+                                "type": "partial_summary_tail",
+                            }
+                        )
+                        remaining_direct_budget = max(
+                            0, remaining_direct_budget - mixed_tokens
+                        )
+                        if __event_call__:
+                            await self._log(
+                                f"[Inlet] ✅ Reused partial branch-valid summary for referenced chat '{ref_chat_log_title}' with {len(chat_messages) - tail_start_index} tail message(s)",
+                                event_call=__event_call__,
+                            )
+                        continue
+
+                    summary_input_text = self._build_mixed_referenced_summary_input(
+                        chat_messages,
+                        tail_start_index,
+                    )
+                    included_tail_count = len(chat_messages) - tail_start_index
+                    if summary_model_max_context > 0:
+                        original_included_tail_count = included_tail_count
+                        (
+                            summary_input_text,
+                            included_tail_count,
+                        ) = self._format_prefix_messages_for_summary_prompt_budget(
+                            chat_messages[tail_start_index:],
+                            summary_model_max_context,
+                            partial_snapshot.summary,
+                            summary_model,
+                        )
+                        if (
+                            included_tail_count < original_included_tail_count
+                            and __event_call__
+                        ):
+                            await self._log(
+                                f"[Inlet] ✂️ Referenced chat '{ref_chat_log_title}' mixed tail exceeds summary input budget; summarizing {included_tail_count} contiguous tail message(s)",
+                                event_call=__event_call__,
+                            )
+
+                    summary = ""
+                    generated_with_llm = False
+                    if isinstance(user_data, dict) and user_data.get("id"):
+                        if __event_call__:
+                            await self._log(
+                                f"[Inlet] 🤖 Generating continuation summary for referenced chat '{ref_chat_log_title}' with model '{summary_model}'",
+                                event_call=__event_call__,
+                            )
+                        try:
+                            summary = await self._call_summary_llm(
+                                summary_input_text,
+                                {"model": summary_model},
+                                user_data,
+                                __event_call__,
+                                __request__,
+                                previous_summary=partial_snapshot.summary,
+                            )
+                            generated_with_llm = bool(summary)
+                        except Exception as exc:
+                            logger.warning(
+                                "[Inlet] Referenced chat continuation summary failed for '%s': %s",
+                                ref_chat_log_title,
+                                exc,
+                            )
+                            if __event_call__:
+                                await self._log(
+                                    f"[Inlet] ⚠️ Referenced chat continuation summary failed for '{ref_chat_log_title}', falling back to mixed direct injection: {exc}",
+                                    log_type="warning",
+                                    event_call=__event_call__,
+                                )
+
+                    if summary:
+                        saved_count = tail_start_index + included_tail_count
+                        remainder_messages = (
+                            chat_messages[saved_count:]
+                            if saved_count < len(chat_messages)
+                            else []
+                        )
+                        injection_budget = max(
+                            0,
+                            min(
+                                int(max_summary_tokens),
+                                int(remaining_direct_budget),
+                            ),
+                        )
+                        (
+                            injected_content,
+                            injected_estimate,
+                            injected_trimmed,
+                            omitted_remainder_count,
+                        ) = self._fit_generated_referenced_summary_content(
+                            summary,
+                            remainder_messages,
+                            injection_budget,
+                        )
+
+                        if injected_trimmed:
+                            if __event_call__:
+                                await self._log(
+                                    f"[Inlet] ✂️ Fitted generated referenced context for '{ref_chat_log_title}' to current direct budget ({injection_budget} tokens); omitted {omitted_remainder_count} older unsummarized tail message(s)",
+                                    event_call=__event_call__,
+                                )
+                        elif remainder_messages and __event_call__:
+                            await self._log(
+                                f"[Inlet] 📎 Added {len(remainder_messages)} unsummarized tail message(s) after generated referenced summary for '{ref_chat_log_title}'",
+                                event_call=__event_call__,
+                            )
+
+                        if generated_with_llm and included_tail_count > 0:
+                            covered_refs = self._message_refs_for_prefix(
+                                chat_messages,
+                                saved_count,
+                            )
+                            saved = await self._save_summary(
+                                ref_chat_id,
+                                summary,
+                                saved_count,
+                                covered_refs,
+                                source_current_id=(
+                                    covered_refs[-1]["id"] if covered_refs else None
+                                ),
+                                protected_head_count=protected_head_count,
+                            )
+                            if saved and __event_call__:
+                                await self._log(
+                                    f"[Inlet] 💾 Saved continuation summary cache for '{ref_chat_log_title}'",
+                                    event_call=__event_call__,
+                                )
+
+                        if injected_content and injected_estimate <= injection_budget:
+                            remaining_direct_budget = max(
+                                0, remaining_direct_budget - injected_estimate
+                            )
+                            referenced_summaries.append(
+                                {
+                                    "chat_id": ref_chat_id,
+                                    "title": ref_chat_title,
+                                    "content": injected_content,
+                                    "type": (
+                                        "generated_summary_tail"
+                                        if remainder_messages
+                                        else "generated_summary"
+                                    ),
+                                }
+                            )
+                        elif __event_call__:
+                            await self._log(
+                                f"[Inlet] ⚠️ Skipped injecting generated referenced context for '{ref_chat_log_title}' because no direct budget remains",
+                                log_type="warning",
+                                event_call=__event_call__,
+                            )
+                        continue
+
+                    (
+                        fallback_content,
+                        fallback_tokens,
+                        fallback_trimmed,
+                    ) = self._trim_reference_content_to_token_budget(
+                        mixed_content,
+                        max_summary_tokens,
+                    )
+                    if fallback_trimmed and __event_call__:
+                        await self._log(
+                            f"[Inlet] ✂️ Trimmed mixed direct fallback for referenced chat '{ref_chat_log_title}' to stay near {max_summary_tokens} tokens",
+                            event_call=__event_call__,
+                        )
+
+                    referenced_summaries.append(
+                        {
+                            "chat_id": ref_chat_id,
+                            "title": ref_chat_title,
+                            "content": fallback_content,
+                            "type": "direct_fallback",
+                        }
+                    )
+                    remaining_direct_budget = max(
+                        0, remaining_direct_budget - fallback_tokens
+                    )
                     if __event_call__:
                         await self._log(
-                            f"[Inlet] ⚠️ No messages found for '{ref_chat_title}', skipping",
+                            f"[Inlet] 📎 Falling back to mixed direct contextual injection for '{ref_chat_log_title}'",
                             event_call=__event_call__,
                         )
                     continue
@@ -1774,7 +3389,9 @@ class Filter:
                         {
                             "chat_id": ref_chat_id,
                             "title": ref_chat_title,
-                            "summary": conversation_text,
+                            "content": self._build_simple_referenced_chat_content(
+                                conversation_text
+                            ),
                             "type": "full",
                         }
                     )
@@ -1783,7 +3400,7 @@ class Filter:
                     )
                     if __event_call__:
                         await self._log(
-                            f"[Inlet] 📄 Chat '{ref_chat_title}' fits current model budget ({estimated_tokens} tokens), injecting full content",
+                            f"[Inlet] 📄 Chat '{ref_chat_log_title}' fits current model budget ({estimated_tokens} tokens), injecting full content",
                             event_call=__event_call__,
                         )
                 else:
@@ -1803,7 +3420,7 @@ class Filter:
                         covers_full_history = False
                         if __event_call__:
                             await self._log(
-                                f"[Inlet] ✂️ Chat '{ref_chat_title}' exceeds summary input budget, truncating recent window from {estimated_tokens} to {truncated_tokens} tokens before summarization",
+                                f"[Inlet] ✂️ Chat '{ref_chat_log_title}' exceeds summary input budget, truncating recent window from {estimated_tokens} to {truncated_tokens} tokens before summarization",
                                 event_call=__event_call__,
                             )
 
@@ -1813,7 +3430,7 @@ class Filter:
                     if isinstance(user_data, dict) and user_data.get("id"):
                         if __event_call__:
                             await self._log(
-                                f"[Inlet] 🤖 Generating referenced chat summary for '{ref_chat_title}' with model '{summary_model}'",
+                                f"[Inlet] 🤖 Generating referenced chat summary for '{ref_chat_log_title}' with model '{summary_model}'",
                                 event_call=__event_call__,
                             )
                         try:
@@ -1829,19 +3446,19 @@ class Filter:
                         except Exception as exc:
                             logger.warning(
                                 "[Inlet] Referenced chat summary failed for '%s': %s",
-                                ref_chat_title,
+                                ref_chat_log_title,
                                 exc,
                             )
                             if __event_call__:
                                 await self._log(
-                                    f"[Inlet] ⚠️ Referenced chat summary failed for '{ref_chat_title}', falling back to direct contextual injection: {exc}",
+                                    f"[Inlet] ⚠️ Referenced chat summary failed for '{ref_chat_log_title}', falling back to direct contextual injection: {exc}",
                                     log_type="warning",
                                     event_call=__event_call__,
                                 )
                     else:
                         if __event_call__:
                             await self._log(
-                                f"[Inlet] ⚠️ Missing user context for '{ref_chat_title}', falling back to direct contextual injection without LLM summary",
+                                f"[Inlet] ⚠️ Missing user context for '{ref_chat_log_title}', falling back to direct contextual injection without LLM summary",
                                 event_call=__event_call__,
                             )
 
@@ -1849,7 +3466,7 @@ class Filter:
                         summary = summary_input_text
                         if __event_call__:
                             await self._log(
-                                f"[Inlet] 📎 Falling back to direct contextual injection for '{ref_chat_title}'",
+                                f"[Inlet] 📎 Falling back to direct contextual injection for '{ref_chat_log_title}'",
                                 event_call=__event_call__,
                             )
 
@@ -1861,7 +3478,7 @@ class Filter:
                         summary = summary[:target_chars]
                         if __event_call__:
                             await self._log(
-                                f"[Inlet] ✂️ Trimmed injected context for '{ref_chat_title}' to stay near {max_summary_tokens} tokens",
+                                f"[Inlet] ✂️ Trimmed injected context for '{ref_chat_log_title}' to stay near {max_summary_tokens} tokens",
                                 event_call=__event_call__,
                             )
                         summary_estimate = _estimate_text_tokens(summary)
@@ -1874,7 +3491,9 @@ class Filter:
                         {
                             "chat_id": ref_chat_id,
                             "title": ref_chat_title,
-                            "summary": summary,
+                            "content": self._build_simple_referenced_chat_content(
+                                summary
+                            ),
                             "type": (
                                 "generated_summary"
                                 if generated_with_llm
@@ -1888,14 +3507,23 @@ class Filter:
                         and covers_full_history
                         and covered_message_count > 0
                     ):
+                        covered_refs = self._message_refs_for_prefix(
+                            chat_messages,
+                            covered_message_count,
+                        )
                         await self._save_summary(
                             ref_chat_id,
                             summary,
                             covered_message_count,
+                            covered_refs,
+                            source_current_id=(
+                                covered_refs[-1]["id"] if covered_refs else None
+                            ),
+                            protected_head_count=0,
                         )
                         if __event_call__:
                             await self._log(
-                                f"[Inlet] 💾 Saved summary cache for '{ref_chat_title}'",
+                                f"[Inlet] 💾 Saved summary cache for '{ref_chat_log_title}'",
                                 event_call=__event_call__,
                             )
 
@@ -1904,8 +3532,10 @@ class Filter:
 
         summary_parts = []
         for ref in referenced_summaries:
+            chat_id = self._escape_reference_attr(ref["chat_id"])
+            title = self._escape_reference_attr(ref["title"])
             summary_parts.append(
-                f'<referenced_chat id="{ref["chat_id"]}" name="{ref["title"]}">\n{ref["summary"]}\n</referenced_chat>'
+                f'<referenced_chat id="{chat_id}" name="{title}">\n{ref["content"]}\n</referenced_chat>'
             )
 
         if summary_parts:
@@ -1952,6 +3582,7 @@ class Filter:
             if not ref_chat_id:
                 continue
 
+            chat_messages: Optional[List[Dict[str, Any]]] = None
             summary_input_text = referenced_chat.get("conversation_text", "")
             covers_full_history = bool(referenced_chat.get("covers_full_history", True))
             covered_message_count = int(
@@ -2008,16 +3639,59 @@ class Filter:
             )
 
             if covers_full_history and covered_message_count > 0:
+                if chat_messages is None:
+                    chat_messages = await self._load_full_chat_messages(ref_chat_id)
+                covered_refs = self._message_refs_for_prefix(
+                    chat_messages or [],
+                    covered_message_count,
+                )
                 await self._save_summary(
                     ref_chat_id,
                     summary,
                     covered_message_count,
+                    covered_refs,
+                    protected_head_count=0,
                 )
 
         return generated_summaries
 
-    async def _save_summary(self, chat_id: str, summary: str, compressed_count: int):
-        """Saves the summary to the database (async, compatible with 0.9.0 async sessions)."""
+    async def _save_summary(
+        self,
+        chat_id: str,
+        summary: str,
+        compressed_count: int,
+        covered_message_refs: Optional[List[Dict[str, str]]] = None,
+        source_current_id: Optional[str] = None,
+        protected_head_count: int = 0,
+    ) -> bool:
+        """Save a branch-valid summary row."""
+        if not self._summary_db_available:
+            logger.warning(
+                f"[Storage] Skipping summary save for chat {chat_id}: summary database is unavailable."
+            )
+            return False
+
+        normalized_refs = self._normalize_message_refs(covered_message_refs)
+        refs_json = (
+            self._snapshot_refs_json(normalized_refs, protected_head_count)
+            if normalized_refs
+            else None
+        )
+        # Dedup key must distinguish snapshots that share the same refs but were
+        # saved with a different protected_head_count; hashing refs_json (which
+        # embeds the head count when non-zero) keeps those as separate rows.
+        refs_hash = (
+            hashlib.sha256(refs_json.encode("utf-8")).hexdigest()
+            if refs_json
+            else None
+        )
+        branch_tip_id = normalized_refs[-1]["id"] if normalized_refs else None
+        if not (normalized_refs and refs_json and refs_hash):
+            logger.warning(
+                f"[Storage] Skipping summary save for chat {chat_id}: missing branch message refs."
+            )
+            return False
+
         try:
             async with self._async_db_session() as session:
                 # Detect session type: async sessions expose execute as a coroutinefunction
@@ -2026,30 +3700,31 @@ class Filter:
                     from sqlalchemy import select
 
                     result = await session.execute(
-                        select(ChatSummary).filter_by(chat_id=chat_id)
+                        select(ChatSummary).filter_by(
+                            chat_id=chat_id,
+                            covered_refs_hash=refs_hash,
+                        )
                     )
                     existing = result.scalars().first()
-
                     if existing:
-                        # Optimistic lock: skip if progress hasn't advanced
-                        if compressed_count <= existing.compressed_message_count:
-                            if self.valves.debug_mode:
-                                logger.info(
-                                    f"[Storage] Skipping update: New progress ({compressed_count}) "
-                                    f"<= existing ({existing.compressed_message_count})"
-                                )
-                            return
                         existing.summary = summary
                         existing.compressed_message_count = compressed_count
+                        existing.covered_message_refs_json = refs_json
+                        existing.branch_tip_id = branch_tip_id
+                        existing.source_current_id = source_current_id
                         existing.updated_at = datetime.now(timezone.utc)
                     else:
-                        new_summary = ChatSummary(
-                            chat_id=chat_id,
-                            summary=summary,
-                            compressed_message_count=compressed_count,
+                        session.add(
+                            ChatSummary(
+                                chat_id=chat_id,
+                                summary=summary,
+                                compressed_message_count=compressed_count,
+                                covered_message_refs_json=refs_json,
+                                covered_refs_hash=refs_hash,
+                                branch_tip_id=branch_tip_id,
+                                source_current_id=source_current_id,
+                            )
                         )
-                        session.add(new_summary)
-
                     await session.commit()
 
                     if self.valves.debug_mode:
@@ -2057,31 +3732,33 @@ class Filter:
                         logger.info(
                             f"[Storage] Summary has been {action.lower()} in the database (Chat ID: {chat_id})"
                         )
+                    return True
                 else:
                     # < 0.9.0: sync session (Session)
                     existing = (
-                        session.query(ChatSummary).filter_by(chat_id=chat_id).first()
+                        session.query(ChatSummary)
+                        .filter_by(chat_id=chat_id, covered_refs_hash=refs_hash)
+                        .first()
                     )
-
                     if existing:
-                        if compressed_count <= existing.compressed_message_count:
-                            if self.valves.debug_mode:
-                                logger.info(
-                                    f"[Storage] Skipping update: New progress ({compressed_count}) "
-                                    f"<= existing ({existing.compressed_message_count})"
-                                )
-                            return
                         existing.summary = summary
                         existing.compressed_message_count = compressed_count
+                        existing.covered_message_refs_json = refs_json
+                        existing.branch_tip_id = branch_tip_id
+                        existing.source_current_id = source_current_id
                         existing.updated_at = datetime.now(timezone.utc)
                     else:
-                        new_summary = ChatSummary(
-                            chat_id=chat_id,
-                            summary=summary,
-                            compressed_message_count=compressed_count,
+                        session.add(
+                            ChatSummary(
+                                chat_id=chat_id,
+                                summary=summary,
+                                compressed_message_count=compressed_count,
+                                covered_message_refs_json=refs_json,
+                                covered_refs_hash=refs_hash,
+                                branch_tip_id=branch_tip_id,
+                                source_current_id=source_current_id,
+                            )
                         )
-                        session.add(new_summary)
-
                     session.commit()
 
                     if self.valves.debug_mode:
@@ -2089,48 +3766,69 @@ class Filter:
                         logger.info(
                             f"[Storage] Summary has been {action.lower()} in the database (Chat ID: {chat_id})"
                         )
+                    return True
 
         except Exception as e:
             logger.error(f"[Storage] ❌ Database save failed: {str(e)}")
+            return False
 
-    async def _load_summary_record(self, chat_id: str) -> Optional[ChatSummary]:
-        """Loads the summary record object from the database (async, compatible with 0.9.0)."""
+    async def _load_summary_snapshots(self, chat_id: str) -> List[ChatSummary]:
+        """Load branch-aware summary rows for a chat."""
+        if not self._summary_db_available:
+            return []
+
         try:
             async with self._async_db_session() as session:
-                # Detect session type: async sessions expose execute as a coroutinefunction
                 if iscoroutinefunction(getattr(session, "execute", None)):
-                    # SQLAlchemy 2.0 async style (AsyncSession)
                     from sqlalchemy import select
 
                     result = await session.execute(
                         select(ChatSummary).filter_by(chat_id=chat_id)
                     )
-                    record = result.scalars().first()
-                    if record:
-                        return record
-                else:
-                    # < 0.9.0: sync session (Session)
-                    record = (
-                        session.query(ChatSummary).filter_by(chat_id=chat_id).first()
-                    )
-                    if record:
-                        session.expunge(record)
-                        return record
-        except Exception as e:
-            logger.error(f"[Load] ❌ Database read failed: {str(e)}")
-        return None
+                    snapshots = list(result.scalars().all())
+                    # Detach so attribute access in the selector (after the
+                    # session closes) cannot raise DetachedInstanceError.
+                    try:
+                        session.expunge_all()
+                    except Exception:
+                        pass
+                    return snapshots
 
-    async def _load_summary(self, chat_id: str, body: dict) -> Optional[str]:
-        """Loads the summary text from the database (async, compatible with 0.9.0)."""
-        record = await self._load_summary_record(chat_id)
-        if record:
-            if self.valves.debug_mode:
-                logger.info(f"[Load] Loaded summary from database (Chat ID: {chat_id})")
-                logger.info(
-                    f"[Load] Last updated: {record.updated_at}, Compressed message count: {record.compressed_message_count}"
+                snapshots = (
+                    session.query(ChatSummary).filter_by(chat_id=chat_id).all()
                 )
-            return record.summary
-        return None
+                for snapshot in snapshots:
+                    try:
+                        session.expunge(snapshot)
+                    except Exception:
+                        pass
+                return list(snapshots)
+        except Exception as e:
+            logger.error(f"[Load] ❌ Snapshot read failed: {str(e)}")
+            return []
+
+    async def _load_applicable_summary_snapshot(
+        self,
+        chat_id: str,
+        messages: List[Dict],
+        require_full_coverage: bool = False,
+        live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
+        max_coverage_count: Optional[int] = None,
+        enforce_keep_first: bool = True,
+    ) -> Optional[ChatSummary]:
+        snapshots = await self._load_summary_snapshots(chat_id)
+        if not snapshots:
+            return None
+        if live_message_refs_by_id is None:
+            live_message_refs_by_id = await self._load_chat_history_live_refs(chat_id)
+        return self._select_applicable_summary_snapshot(
+            snapshots,
+            messages,
+            require_full_coverage=require_full_coverage,
+            live_message_refs_by_id=live_message_refs_by_id,
+            max_coverage_count=max_coverage_count,
+            enforce_keep_first=enforce_keep_first,
+        )
 
     def _count_tokens(self, text: str) -> int:
         """Counts the number of tokens in the text."""
@@ -2167,6 +3865,82 @@ class Filter:
 
         return str(content) if content is not None else ""
 
+    def _extract_output_text_content(self, output: Any) -> str:
+        """Extract durable text from folded native assistant output payloads."""
+        if output in (None, "", []):
+            return ""
+
+        if isinstance(output, str):
+            return output
+
+        if isinstance(output, (int, float, bool)):
+            return str(output)
+
+        if isinstance(output, list):
+            return "\n".join(
+                part
+                for part in (
+                    self._extract_output_text_content(item) for item in output
+                )
+                if part
+            )
+
+        if isinstance(output, dict):
+            parts = []
+            item_type = output.get("type")
+            if isinstance(item_type, str) and item_type:
+                parts.append(item_type)
+
+            role = output.get("role")
+            if isinstance(role, str) and role:
+                parts.append(f"role={role}")
+
+            name = output.get("name")
+            if isinstance(name, str) and name:
+                parts.append(f"name={name}")
+
+            call_id = output.get("call_id") or output.get("tool_call_id")
+            if isinstance(call_id, str) and call_id:
+                parts.append(f"call_id={call_id}")
+
+            for key in (
+                "content",
+                "text",
+                "output_text",
+                "output",
+                "result",
+                "arguments",
+                "input",
+            ):
+                if key not in output:
+                    continue
+                value = output.get(key)
+                if value in (None, "", []):
+                    continue
+                text = (
+                    self._extract_text_content(value)
+                    if key == "content"
+                    else self._extract_output_text_content(value)
+                )
+                if not text and isinstance(value, (dict, list)):
+                    text = json.dumps(value, ensure_ascii=False, default=str)
+                if text:
+                    parts.append(f"{key}={text}" if key != "content" else text)
+
+            return "\n".join(parts)
+
+        return str(output)
+
+    def _message_text_for_summary(self, message: Dict[str, Any]) -> str:
+        """Return the text represented by a folded message for summary/accounting."""
+        content = self._extract_text_content(message.get("content", ""))
+        output_text = self._extract_output_text_content(message.get("output"))
+        if output_text:
+            if content:
+                return f"{content}\n\n[Native assistant output]\n{output_text}"
+            return output_text
+        return content
+
     def _message_content_char_length(self, content: Any) -> int:
         return len(self._extract_text_content(content))
 
@@ -2178,7 +3952,7 @@ class Filter:
         start_time = time.time()
         total_tokens = 0
         for msg in messages:
-            content = self._extract_text_content(msg.get("content", ""))
+            content = self._message_text_for_summary(msg)
             total_tokens += self._count_tokens(content)
 
         duration = (time.time() - start_time) * 1000
@@ -2193,7 +3967,7 @@ class Filter:
         """Fast estimation of tokens using mixed-script heuristics."""
         total_tokens = 0
         for msg in messages:
-            total_tokens += self._estimate_content_tokens(msg.get("content", ""))
+            total_tokens += _estimate_text_tokens(self._message_text_for_summary(msg))
 
         return total_tokens
 
@@ -2311,6 +4085,13 @@ class Filter:
 
             tool_calls = message.get("tool_calls")
             if isinstance(tool_calls, list) and tool_calls:
+                return True
+
+            if (
+                message.get("role") == "assistant"
+                and isinstance(message.get("output"), list)
+                and message.get("output")
+            ):
                 return True
 
             if message.get("role") == "tool":
@@ -3221,8 +5002,13 @@ class Filter:
             event_call=__event_call__,
         )
 
-        # Load summary record
-        summary_record = await self._load_summary_record(chat_id)
+        # Load only branch-valid summary rows. Legacy count-only chat_summary
+        # rows are rebuilt during database initialization and are never trusted
+        # as coverage proof.
+        summary_snapshot = await self._load_applicable_summary_snapshot(
+            chat_id,
+            messages,
+        )
 
         # Calculate effective_keep_first to ensure all system messages are protected
         effective_keep_first = self._get_effective_keep_first(messages)
@@ -3230,10 +5016,15 @@ class Filter:
         final_messages = []
         external_refs_injected_count = 0
 
-        if summary_record:
+        if summary_snapshot:
             # Summary exists, build view: [Head] + [Summary Message] + [Tail]
             # Tail is all messages after the last compression point
-            compressed_count = summary_record.compressed_message_count
+            compressed_count = self._summary_snapshot_current_coverage_count(
+                summary_snapshot
+            )
+            covered_refs = self._summary_snapshot_current_coverage_refs(
+                summary_snapshot
+            )
 
             # Ensure compressed_count is reasonable
             if compressed_count > len(messages):
@@ -3265,9 +5056,13 @@ class Filter:
             # 3. Summary message (Inserted as Assistant message)
             external_refs = body.pop("__external_references__", None)
             summary_msg = self._build_summary_message(
-                summary_record.summary,
+                summary_snapshot.summary,
                 lang,
                 start_index,
+                covered_refs,
+                self._summary_snapshot_current_protected_head_count(
+                    summary_snapshot
+                ),
             )
 
             if external_refs:
@@ -3393,12 +5188,12 @@ class Filter:
                     for _ in range(len(dropped_group_indices)):
                         dropped = tail_messages.pop(0)
                         if total_tokens == estimated_tokens:
-                            dropped_tokens += self._estimate_content_tokens(
-                                dropped.get("content", "")
+                            dropped_tokens += _estimate_text_tokens(
+                                self._message_text_for_summary(dropped)
                             )
                         else:
                             dropped_tokens += self._count_tokens(
-                                str(dropped.get("content", ""))
+                                self._message_text_for_summary(dropped)
                             )
 
                     total_tokens -= dropped_tokens
@@ -3520,7 +5315,7 @@ class Filter:
                 chat_id,
                 len(messages),
                 len(final_messages),
-                len(summary_record.summary),
+                len(summary_snapshot.summary),
                 self.valves.keep_first,
                 self.valves.keep_last,
             )
@@ -3640,12 +5435,12 @@ class Filter:
                             continue
 
                         if total_tokens == estimated_tokens:
-                            dropped_tokens += self._estimate_content_tokens(
-                                dropped.get("content", "")
+                            dropped_tokens += _estimate_text_tokens(
+                                self._message_text_for_summary(dropped)
                             )
                         else:
                             dropped_tokens += self._count_tokens(
-                                str(dropped.get("content", ""))
+                                self._message_text_for_summary(dropped)
                             )
                     total_tokens -= dropped_tokens
 
@@ -3782,30 +5577,16 @@ class Filter:
                 event_call=__event_call__,
             )
 
-        # Unfold compact tool messages to align with inlet's exact coordinate system.
-        # Native tool-calling payloads in outlet can miss hidden `output` fields, so
-        # preserve the older DB fallback there only.
+        # Native folded messages carry OpenWebUI history ids; unfolded tool-child
+        # messages created from assistant `output` do not.  Keep native summary
+        # sources folded for branch refs and let the formatter include output
+        # details in the summary prompt.
         function_calling_mode = self._get_function_calling_mode(body)
         if function_calling_mode == "native":
             db_messages = await self._load_full_chat_messages(chat_id)
-            messages_to_unfold = (
-                db_messages
-                if (db_messages and len(db_messages) >= len(messages))
-                else messages
+            summary_messages, message_source = self._select_native_summary_messages(
+                messages, db_messages
             )
-            summary_messages = self._unfold_messages(messages_to_unfold)
-            if messages_to_unfold is db_messages:
-                message_source = (
-                    "outlet-db-unfolded"
-                    if len(summary_messages) != len(db_messages)
-                    else "outlet-db"
-                )
-            else:
-                message_source = (
-                    "outlet-body-unfolded"
-                    if len(summary_messages) != len(messages)
-                    else "outlet-body"
-                )
         else:
             summary_messages = self._unfold_messages(messages)
             message_source = (
@@ -3830,13 +5611,26 @@ class Filter:
         # Fix: when the placeholder is absent, reload it from the DB and reinsert
         # it at the correct position so the alignment only scans the NEW tail.
         if not any(self._is_summary_message(m) for m in summary_messages):
-            existing_record = await self._load_summary_record(chat_id)
-            if existing_record and existing_record.compressed_message_count > 0:
+            existing_snapshot = await self._load_applicable_summary_snapshot(
+                chat_id,
+                summary_messages,
+            )
+            if existing_snapshot and existing_snapshot.compressed_message_count > 0:
+                covered_refs = self._summary_snapshot_current_coverage_refs(
+                    existing_snapshot
+                )
                 boundary = min(
-                    existing_record.compressed_message_count, len(summary_messages)
+                    self._summary_snapshot_current_coverage_count(existing_snapshot),
+                    len(summary_messages),
                 )
                 injected_summary_msg = self._build_summary_message(
-                    existing_record.summary, lang, existing_record.compressed_message_count
+                    existing_snapshot.summary,
+                    lang,
+                    boundary,
+                    covered_refs,
+                    self._summary_snapshot_current_protected_head_count(
+                        existing_snapshot
+                    ),
                 )
                 summary_messages = (
                     summary_messages[:boundary]
@@ -3847,7 +5641,7 @@ class Filter:
                 if self.valves.debug_mode:
                     logger.info(
                         f"[Outlet] Reinjected summary placeholder at boundary={boundary} "
-                        f"(compressed_message_count={existing_record.compressed_message_count})"
+                        f"(snapshot_compressed_message_count={existing_snapshot.compressed_message_count})"
                     )
 
         if self.valves.show_debug_log and __event_call__:
@@ -4270,7 +6064,9 @@ class Filter:
                 return
 
             max_context_tokens = self._get_summary_model_context_limit(summary_model_id)
-            request_limits = self._compute_summary_request_limits(max_context_tokens)
+            request_limits = self._compute_summary_request_limits(
+                max_context_tokens, summary_model_id
+            )
 
             await self._log(
                 f"[🤖 Async Summary Task] Using max limit for model {summary_model_id}: {max_context_tokens} Tokens",
@@ -4291,11 +6087,36 @@ class Filter:
             # conversation_text — no need to inject separately.
             # When summary_index is None the outlet messages come from raw DB history that
             # has never had the summary injected, so we must load it from DB explicitly.
+            previous_summary_base_progress = 0
+            previous_summary_protected_head_count = 0
             if summary_index is None:
-                previous_summary = await self._load_summary(chat_id, body)
+                previous_snapshot = await self._load_applicable_summary_snapshot(
+                    chat_id,
+                    messages,
+                )
+                previous_summary = previous_snapshot.summary if previous_snapshot else None
                 if previous_summary:
+                    previous_summary_base_progress = (
+                        self._summary_snapshot_current_coverage_count(previous_snapshot)
+                    )
+                    previous_summary_protected_head_count = (
+                        self._summary_snapshot_current_protected_head_count(
+                            previous_snapshot
+                        )
+                    )
+                    if previous_summary_base_progress >= end_index:
+                        await self._log(
+                            "[🤖 Async Summary Task] DB-backed previous summary already "
+                            "covers the target compression boundary, skipping",
+                            event_call=__event_call__,
+                        )
+                        return
+                    if previous_summary_base_progress > start_index:
+                        start_index = previous_summary_base_progress
+                        middle_messages = messages[start_index:end_index]
                     await self._log(
-                        "[🤖 Async Summary Task] Loaded previous summary from DB to pass as context (summary not in messages)",
+                        "[🤖 Async Summary Task] Loaded branch-valid previous summary "
+                        "from DB to pass as context (summary not in messages)",
                         event_call=__event_call__,
                     )
             else:
@@ -4356,24 +6177,15 @@ class Filter:
                     )
                     continue
 
-                if protected_prefix > 0:
-                    middle_messages = middle_messages[1:]
-                    protected_prefix = 0
+                if (protected_prefix > 0 or previous_summary) and summary_atomic_groups:
                     await self._log(
-                        "[🤖 Async Summary Task] Dropped embedded previous summary marker from compression input to fit final request payload",
+                        "[🤖 Async Summary Task] Final summary request still exceeds safe "
+                        "budget after trimming to one new atomic group; keeping previous "
+                        "summary and one new group to preserve compression semantics",
                         log_type="warning",
                         event_call=__event_call__,
                     )
-                    continue
-
-                if previous_summary:
-                    previous_summary = None
-                    await self._log(
-                        "[🤖 Async Summary Task] Dropped DB-backed previous summary from prompt to fit final request payload",
-                        log_type="warning",
-                        event_call=__event_call__,
-                    )
-                    continue
+                    break
 
                 await self._log(
                     "[🤖 Async Summary Task] Unable to fit final summary request within model budget after shrinking. Skipping summary generation.",
@@ -4431,10 +6243,29 @@ class Filter:
                 return
 
             if summary_index is None:
-                saved_compressed_count = start_index + len(middle_messages)
+                if previous_summary_base_progress > 0:
+                    saved_compressed_count = previous_summary_base_progress + len(
+                        middle_messages
+                    )
+                    protected_head_count = min(
+                        saved_compressed_count,
+                        previous_summary_protected_head_count,
+                    )
+                else:
+                    saved_compressed_count = start_index + len(middle_messages)
+                    protected_head_count = min(
+                        saved_compressed_count,
+                        self._get_effective_keep_first(messages),
+                    )
             else:
                 saved_compressed_count = base_progress + max(
                     0, len(middle_messages) - protected_prefix
+                )
+                protected_head_count = min(
+                    saved_compressed_count,
+                    self._summary_marker_protected_head_count(
+                        messages[summary_index]
+                    ),
                 )
 
             # 6. Save new summary
@@ -4443,7 +6274,36 @@ class Filter:
                 event_call=__event_call__,
             )
 
-            await self._save_summary(chat_id, new_summary, saved_compressed_count)
+            covered_refs = self._message_refs_for_prefix(
+                messages,
+                saved_compressed_count,
+            )
+            if covered_refs is None:
+                await self._log(
+                    "[🤖 Async Summary Task] ⚠️ Covered range lacks stable message refs; "
+                    "skipping branch summary save",
+                    log_type="warning",
+                    event_call=__event_call__,
+                )
+
+            source_refs = self._current_branch_refs(messages) or []
+            source_current_id = source_refs[-1]["id"] if source_refs else None
+            summary_saved = await self._save_summary(
+                chat_id,
+                new_summary,
+                saved_compressed_count,
+                covered_refs,
+                source_current_id,
+                protected_head_count,
+            )
+            if not summary_saved:
+                await self._log(
+                    "[🤖 Async Summary Task] ⚠️ Summary generated but was not persisted; "
+                    "skipping success status for future-context summary reuse.",
+                    log_type="warning",
+                    event_call=__event_call__,
+                )
+                return
 
             # Send completion status notification
             if __event_emitter__:
@@ -4625,8 +6485,104 @@ class Filter:
         formatted.reverse()
         return "\n".join(formatted)
 
+    def _format_prefix_messages_for_summary_with_count(
+        self, messages: list, max_tokens: int
+    ) -> tuple[str, int]:
+        """Format a contiguous message prefix and report how many messages it covers."""
+        formatted = []
+        total_tokens = 0
+
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            content = self._extract_text_content(msg.get("content", ""))
+            msg_id = msg.get("id", "N/A")
+            msg_name = msg.get("name", "")
+
+            name_part = f" [ID: {msg_id}]" if msg_name else f" [ID: {msg_id}]"
+            formatted_msg = f"#### {role.capitalize()}{name_part}\n{content}\n"
+            formatted_msg_tokens = _estimate_text_tokens(formatted_msg)
+
+            if formatted and total_tokens + formatted_msg_tokens > max_tokens:
+                break
+            formatted.append(formatted_msg)
+            total_tokens += formatted_msg_tokens
+
+        return "\n".join(formatted), len(formatted)
+
+    def _format_prefix_messages_for_summary_prompt_budget(
+        self,
+        messages: list,
+        max_context_tokens: int,
+        previous_summary: Optional[str],
+        model_id: Optional[str] = None,
+    ) -> tuple[str, int]:
+        """Fit a contiguous prefix against the real summary prompt budget."""
+        if not messages:
+            return "", 0
+
+        if max_context_tokens <= 0:
+            return self._format_messages_for_summary(messages), len(messages)
+
+        try:
+            request_limits = self._compute_summary_request_limits(
+                max_context_tokens,
+                model_id,
+            )
+            prompt_budget = request_limits["max_input_tokens"]
+        except ValueError:
+            prompt_budget = max_context_tokens
+
+        full_text = self._format_messages_for_summary(messages)
+        full_prompt_tokens = _estimate_text_tokens(
+            self._build_summary_prompt(
+                full_text,
+                previous_summary=previous_summary,
+            )
+        )
+        if full_prompt_tokens <= prompt_budget:
+            return full_text, len(messages)
+
+        best_text = ""
+        best_count = 0
+        for count in range(1, len(messages) + 1):
+            candidate_text, candidate_count = (
+                self._format_prefix_messages_for_summary_with_count(
+                    messages[:count],
+                    max_context_tokens,
+                )
+            )
+            candidate_prompt_tokens = _estimate_text_tokens(
+                self._build_summary_prompt(
+                    candidate_text,
+                    previous_summary=previous_summary,
+                )
+            )
+            if candidate_prompt_tokens <= prompt_budget:
+                best_text = candidate_text
+                best_count = candidate_count
+                continue
+            if best_count == 0:
+                return candidate_text, max(1, candidate_count)
+            break
+
+        return best_text, best_count
+
+    def _validate_summary_budget_configuration(
+        self, model_id: Optional[str], max_context_tokens: int
+    ) -> None:
+        """Ensure a saved summary cannot consume the whole next summary input."""
+        if max_context_tokens <= 0:
+            return
+
+        max_summary_tokens = max(1, int(self.valves.max_summary_tokens or 1))
+        self.valves._validate_summary_budget_values(
+            max_summary_tokens,
+            max_context_tokens,
+            model_id or "summary model",
+        )
+
     def _compute_summary_request_limits(
-        self, max_context_tokens: int
+        self, max_context_tokens: int, model_id: Optional[str] = None
     ) -> Dict[str, int]:
         """Reserve conservative input/output budgets for summary requests."""
         desired_output_tokens = max(1, int(self.valves.max_summary_tokens or 1))
@@ -4637,6 +6593,8 @@ class Filter:
                 "max_output_tokens": desired_output_tokens,
                 "safety_margin_tokens": 0,
             }
+
+        self._validate_summary_budget_configuration(model_id, max_context_tokens)
 
         safety_margin_tokens = min(4096, max(512, max_context_tokens // 20))
         available_after_margin = max(512, max_context_tokens - safety_margin_tokens)
@@ -4662,7 +6620,7 @@ class Filter:
         formatted = []
         for i, msg in enumerate(messages, 1):
             role = msg.get("role", "unknown")
-            content = self._extract_text_content(msg.get("content", ""))
+            content = self._message_text_for_summary(msg)
 
             # Extract Identity Metadata
             msg_id = msg.get("id", "N/A")
@@ -4961,7 +6919,7 @@ Return only the XML working memory:
         await self._log(f"[🤖 LLM Call] Model: {model}", event_call=__event_call__)
 
         max_context_tokens = self._get_summary_model_context_limit(model)
-        request_limits = self._compute_summary_request_limits(max_context_tokens)
+        request_limits = self._compute_summary_request_limits(max_context_tokens, model)
         max_output_tokens = request_limits["max_output_tokens"]
 
         # Build payload

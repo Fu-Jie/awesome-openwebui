@@ -1,0 +1,7 @@
+{
+  "run_id": "20260624-073616-branch-aware-test-harness",
+  "branch": "upstream",
+  "head_sha": "a1b75d383a2210b7b23215935a4d9fae62b61b21",
+  "verdict": "Ready to merge",
+  "completed_at": "2026-06-24T07:36:16Z"
+}

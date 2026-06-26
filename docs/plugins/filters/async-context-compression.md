@@ -1,6 +1,6 @@
 # Async Context Compression Filter
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v1.6.5 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.0 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -21,10 +21,12 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
 
-## What's new in 1.6.5
+## What's new in 1.7.0
 
-- **Compression style control**: Added a new `compression_style` valve with `aggressive`, `balanced`, and `faithful` modes so you can directly tune summaries for minimum token use or higher context fidelity.
-- **Faithful prompt mode**: `compression_style=faithful` now tells the summary model to spend more of the available budget on key reasoning chains, evaluation criteria, active alternatives, and nuanced context instead of compressing them into abstract notes.
+- **Branch-aware summary reuse**: Cached summaries are now validated against message ids and payload fingerprints before reuse, so summaries from sibling branches or edited content are rejected instead of being injected into the wrong branch.
+- **Single-table branch summary storage**: Branch-valid summary rows are stored in `chat_summary`, while untrusted count-only summaries are regenerated.
+- **Branch-aware referenced chats**: Referenced chats can now reuse the largest valid prefix summary plus the uncovered active-branch tail. If that mixed reference needs a new summary, the continuation summary is saved back to `chat_summary` for the referenced chat and reused later.
+- **Safer upgrade checks**: Legacy tables that still enforce one row per chat are rebuilt, and schema inspection failures leave existing tables untouched instead of running destructive DDL.
 
 ## What's new in 1.6.4
 
@@ -58,8 +60,8 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 - ✅ Asynchronous summarization that does not block chat responses.
 - ✅ Persistent storage via Open WebUI's shared database connection (PostgreSQL, SQLite, etc.).
 - ✅ Flexible retention policy to keep the first and last N messages.
-- ✅ Smart injection of historical summaries back into the context.
-- ✅ External chat reference summarization with cached-summary reuse, direct injection for small chats, and generated summaries for larger chats.
+- ✅ Branch-aware injection of historical summaries back into the context.
+- ✅ External chat reference summarization with branch-valid full summaries, partial summary + active-branch tail reuse, direct injection for small chats, and persisted generated summaries for larger chats.
 - ✅ Structure-aware trimming that preserves document structure (headers, intro, conclusion).
 - ✅ Native tool output trimming for cleaner context when using function calling.
 - ✅ Configurable compression style for token-minimal, balanced, or high-fidelity summaries.
@@ -82,6 +84,8 @@ When the selection dialog opens, search for this plugin, check it, and continue.
   Before, the output limit (`max_summary_tokens`) could be treated like the input window, which made large referenced chats shrink earlier than necessary. Now input fitting uses the summary model's real context window (`summary_model_max_context` or model/global fallback).
 - **Problem 3: Some background summary failures were too easy to miss.**
   Before, a failure during background summary preparation could disappear quietly when frontend debug logging was off. Now important failures are forced to the browser console and also shown through a user-facing status message.
+- **Problem 4: Old summaries could be reused on the wrong branch.**
+  Before, summary reuse was count-based, so a summary created on one OpenWebUI branch could be injected after the user forked or edited earlier messages. Now each stored summary carries ordered message refs and fingerprints; only branch-valid coverage is reused, and live sibling-branch refs are rejected.
 
 ---
 
@@ -99,22 +103,28 @@ flowchart TD
     C -- No --> D[Load current chat summary if available]
     C -- Yes --> E[Inspect each referenced chat]
 
-    E --> F{Existing cached summary?}
-    F -- Yes --> G[Reuse cached summary]
-    F -- No --> H{Fits direct budget?}
-    H -- Yes --> I[Inject full referenced chat text]
-    H -- No --> J[Prepare referenced-chat summary input]
+    E --> F{Full branch-valid cached summary?}
+    F -- Yes --> G[Reuse validated summary]
+    F -- No --> H{Partial valid prefix summary?}
+    H -- Yes --> I[Build summary + active-branch tail]
+    I --> I2{Mixed reference fits direct budget?}
+    I2 -- Yes --> I3[Inject mixed reference block]
+    I2 -- No --> J[Prepare continuation summary input]
+    H -- No --> K{Full referenced chat fits direct budget?}
+    K -- Yes --> K2[Inject full referenced chat text]
+    K -- No --> J
 
-    J --> K{Referenced-chat summary call succeeds?}
-    K -- Yes --> L[Inject generated referenced summary]
-    K -- No --> M[Fallback to direct contextual injection]
+    J --> L{Referenced-chat summary call succeeds?}
+    L -- Yes --> L2[Inject and persist generated referenced summary]
+    L -- No --> M[Fallback to direct contextual injection]
 
     G --> D
-    I --> D
-    L --> D
+    I3 --> D
+    K2 --> D
+    L2 --> D
     M --> D
 
-    D --> N[Build current-chat Head + Summary + Tail]
+    D --> N[Build current-chat Head + Validated Summary + Tail]
     N --> O{Over max_context_tokens?}
     O -- Yes --> P[Trim oldest atomic groups]
     O -- No --> Q[Send final context to the model]
@@ -135,11 +145,14 @@ flowchart TD
 
 - `inlet` only injects and trims context. It does not generate the main chat summary.
 - `outlet` performs summary generation asynchronously and does not block the current reply.
-- External chat references may come from an existing persisted summary, a small chat's full text, or a generated/truncated reference summary.
+- External chat references use the referenced chat's saved active branch (`history.currentId`). The reference attachment does not choose a separate branch.
+- External chat references may come from an existing full branch-valid persisted summary, a partial branch-valid summary plus uncovered active-branch tail, a small chat's full text, or a generated/truncated reference summary.
 - If a referenced-chat summary call fails, the filter falls back to direct context injection instead of failing the whole request.
-- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be.
+- `chat_summary` stores branch-valid summary rows with ordered message refs and payload fingerprints. Historical rows are retained so a future branch can reuse the nearest matching ancestor summary, even when the user forks at an arbitrary earlier point.
+- When a referenced-chat continuation summary is generated from an existing cached summary plus raw tail, it is saved back to the referenced chat's `chat_summary` row coverage so future references can reuse it.
+- `summary_model_max_context` controls summary-input fitting. `max_summary_tokens` only controls how long the generated summary may be, and it must be less than 80% of the summary model input window. This reserve ensures a future compression pass can feed the previous summary plus at least some new messages into the summary model; if the old summary can fill the whole input window by itself, another compression pass cannot make meaningful progress. Invalid settings raise a configuration error; the filter does not silently lower the value.
 - Important background summary failures are surfaced to the browser console (`F12`) and the chat status area.
-- External reference messages are protected during trimming so they are not discarded first.
+- External reference messages are protected during trimming and skipped when building branch message refs, so reference blocks do not poison current-chat summary persistence.
 
 ---
 
@@ -148,7 +161,9 @@ flowchart TD
 ### 1) Database (automatic)
 
 - Uses Open WebUI's shared database connection; no extra configuration needed.
-- The `chat_summary` table is created on first run.
+- The branch-aware `chat_summary` table is created on first run.
+- Older count-only `chat_summary` tables, or tables that still enforce one row per chat with a unique `chat_id`, are rebuilt so summaries can be regenerated safely.
+- If the plugin cannot inspect the existing schema, it leaves tables untouched and disables summary persistence instead of running destructive DDL.
 
 ### 2) Filter order
 
@@ -167,7 +182,7 @@ flowchart TD
 | `keep_last`                    | `6`      | Always keep the last N messages to preserve recent context.                                                                                                           |
 | `summary_model`                | `None`   | Model for summaries. Strongly recommended to set a fast, economical model (e.g., `gemini-2.5-flash`, `deepseek-v3`). Falls back to the current chat model when empty. |
 | `summary_model_max_context`    | `0`      | Input context window used to fit summary requests. If `0`, falls back to `model_thresholds` or global `max_context_tokens`.                                          |
-| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit.                                                                         |
+| `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit, and must be strictly less than 80% of the effective summary input window (`summary_model_max_context`, or its fallback from `model_thresholds` / `max_context_tokens`). The remaining window is reserved so the next compression can include the previous summary plus new messages; invalid settings raise an error instead of being auto-adjusted. |
 | `summary_temperature`          | `0.1`    | Randomness for summary generation. Lower is more deterministic.                                                                                                       |
 | `summary_fail_mode`            | `silent` | Controls what happens when the summary LLM call fails. `silent` logs the error and skips summary generation for that turn; `raise` preserves the previous hard-failure behavior. |
 | `compression_style`            | `balanced` | Controls summary compactness. `aggressive` minimizes tokens, `balanced` keeps key context with moderate detail, and `faithful` preserves more nuance and reasoning context. |
@@ -197,6 +212,6 @@ If this plugin has been useful, a star on [OpenWebUI Extensions](https://github.
 
 ## Changelog
 
-See [`v1.6.5` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.6.5.md) for the release-specific summary.
+See [`v1.7.0` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.0.md) for the release-specific summary.
 
 See the full history on GitHub: [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

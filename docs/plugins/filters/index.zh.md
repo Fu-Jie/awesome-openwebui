@@ -22,7 +22,7 @@ Filter 充当消息管线中的中间件：
 
     通过可调压缩风格、更稳健的摘要回退和更清晰的失败提示，降低长对话的 token 消耗并保持连贯性。
 
-    **版本：** 1.6.5
+    **版本：** 1.7.0
 
     [:octicons-arrow-right-24: 查看文档](async-context-compression.zh.md)
 
