@@ -1582,7 +1582,9 @@ class Filter:
             if self.valves.debug_mode:
                 common = self._refs_common_prefix_length(
                     snapshot_refs,
-                    current_refs[: min(len(snapshot_refs), len(current_refs))],
+                    current_refs_for_snapshot[
+                        : min(len(snapshot_refs), len(current_refs_for_snapshot))
+                    ],
                 )
                 logger.info(
                     "[Summary Snapshot] Skipping lower-ranked/stale snapshot: "
@@ -2317,6 +2319,13 @@ class Filter:
                     )
                 except ImportError:
                     expanded_messages = []
+                except Exception as exc:
+                    logger.debug(
+                        "[Summary Snapshot] Failed to unfold DB assistant output "
+                        "for idless body fallback; rejecting DB ref fallback: %s",
+                        exc,
+                    )
+                    return [], []
 
                 # Match OpenWebUI middleware.process_messages_with_output(): the
                 # model-facing body uses convert_output_to_messages for every

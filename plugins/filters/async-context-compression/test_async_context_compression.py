@@ -1683,6 +1683,29 @@ class TestAsyncContextCompression(unittest.TestCase):
             ["m0", "m1", "m2", "m3"],
         )
 
+    def test_snapshot_selection_debug_handles_idless_tail_with_multiple_snapshots(self):
+        self.filter.valves.keep_last = 0
+        self.filter.valves.debug_mode = True
+        messages = _messages_with_ids([f"m{i}" for i in range(5)]) + [
+            {"role": "assistant", "content": "idless visible tail"}
+        ]
+        larger_snapshot = _snapshot(
+            "larger summary",
+            self.filter._message_refs_for_prefix(messages, 4),
+        )
+        smaller_snapshot = _snapshot(
+            "smaller summary",
+            self.filter._message_refs_for_prefix(messages, 3),
+        )
+
+        selected = self.filter._select_applicable_summary_snapshot(
+            [larger_snapshot, smaller_snapshot],
+            messages,
+            live_message_refs_by_id=_live_refs_by_id(self.filter, messages[:5]),
+        )
+
+        self.assertIs(selected, larger_snapshot)
+
     def test_db_branch_snapshot_fallback_rejects_mismatched_idless_body(self):
         self.filter.valves.keep_last = 0
         db_messages = _messages_with_ids([f"m{i}" for i in range(5)])
@@ -1740,6 +1763,115 @@ class TestAsyncContextCompression(unittest.TestCase):
             )
         )
         self.assertEqual(result["messages"], body_messages)
+
+    def test_inlet_reuses_same_length_idless_body_that_omits_db_output(self):
+        self.filter.valves.keep_last = 0
+        db_messages = [
+            {"id": "m0", "role": "user", "content": "message m0"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": "visible answer",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    }
+                ],
+                "output": [{"role": "assistant", "content": "hidden folded output"}],
+            },
+            {"id": "m2", "role": "user", "content": "message m2"},
+        ]
+        body_messages = [
+            {"role": "user", "content": "message m0"},
+            {
+                "role": "assistant",
+                "content": "visible answer",
+                "tool_calls": deepcopy(db_messages[1]["tool_calls"]),
+            },
+            {"role": "user", "content": "message m2"},
+        ]
+        snapshots = [
+            _snapshot(
+                "same length output omitted summary",
+                self.filter._message_refs_for_prefix(db_messages, 2),
+            )
+        ]
+
+        async def fake_load_snapshots(chat_id):
+            return snapshots
+
+        async def fake_load_live_refs(chat_id):
+            return _live_refs_by_id(self.filter, db_messages)
+
+        async def fake_load_full_chat_messages(chat_id):
+            return db_messages
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_summary_snapshots = fake_load_snapshots
+        self.filter._load_chat_history_live_refs = fake_load_live_refs
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-1",
+                    "model": "test-model",
+                    "messages": body_messages,
+                }
+            )
+        )
+        final_messages = result["messages"]
+
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("same length output omitted summary", final_messages[0]["content"])
+        self.assertEqual(final_messages[1]["content"], "message m2")
+
+        mismatched_body = deepcopy(body_messages)
+        mismatched_body[1]["tool_calls"][0]["function"]["name"] = "other"
+        self.assertIsNone(
+            self.filter._body_to_db_coverage_map_for_ref_fallback(
+                mismatched_body,
+                db_messages,
+            )
+        )
+
+    def test_unfold_db_branch_fallback_rejects_conversion_errors(self):
+        misc_module = _ensure_module("open_webui.utils.misc")
+
+        def convert_output_to_messages(output, raw=False):
+            raise RuntimeError("bad folded output")
+
+        misc_module.convert_output_to_messages = convert_output_to_messages
+
+        db_messages = [
+            {"id": "m0", "role": "user", "content": "message m0"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": "folded",
+                "output": [{"type": "message", "content": []}],
+            },
+        ]
+        body_messages = [
+            {"role": "user", "content": "message m0"},
+            {"role": "assistant", "content": "converted output"},
+        ]
+
+        self.assertIsNone(
+            self.filter._body_to_db_coverage_map_for_ref_fallback(
+                body_messages,
+                db_messages,
+            )
+        )
 
     def test_inlet_maps_folded_db_snapshot_to_unfolded_tool_body_tail(self):
         self.filter.valves.keep_last = 0
@@ -1845,6 +1977,34 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertEqual(
             [message["content"] for message in final_messages[1:]],
             ["message m2", "message m3"],
+        )
+
+    def test_unfolded_db_message_allows_trimmed_assistant_only_with_metadata(self):
+        unfolded_db_message = {
+            "role": "assistant",
+            "content": "full assistant answer with embedded tool details",
+        }
+        trimmed_body_message = {
+            "role": "assistant",
+            "content": "collapsed assistant answer",
+            "metadata": {"tool_outputs_trimmed": True},
+        }
+        unmarked_body_message = {
+            "role": "assistant",
+            "content": "collapsed assistant answer",
+        }
+
+        self.assertTrue(
+            self.filter._body_message_matches_unfolded_db_message(
+                trimmed_body_message,
+                unfolded_db_message,
+            )
+        )
+        self.assertFalse(
+            self.filter._body_message_matches_unfolded_db_message(
+                unmarked_body_message,
+                unfolded_db_message,
+            )
         )
 
     def test_inlet_maps_reasoning_output_body_to_folded_db_snapshot(self):
@@ -2836,6 +2996,36 @@ class TestAsyncContextCompression(unittest.TestCase):
                                 },
                             },
                         }
+                    }
+                )
+
+        original_chats = module.Chats
+        module.Chats = FakeChats
+        try:
+            messages = asyncio.run(self.filter._load_full_chat_messages("chat-1"))
+        finally:
+            module.Chats = original_chats
+
+        self.assertEqual([message["id"] for message in messages], ["m1", "m3", "m4"])
+        self.assertFalse(any("error" in message for message in messages))
+
+    def test_load_full_chat_messages_filters_failed_assistant_from_direct_messages(self):
+        class FakeChats:
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return types.SimpleNamespace(
+                    chat={
+                        "messages": [
+                            {"id": "m1", "role": "user", "content": "Question"},
+                            {
+                                "id": "m2",
+                                "role": "assistant",
+                                "content": "",
+                                "error": {"message": "provider failed"},
+                            },
+                            {"id": "m3", "role": "user", "content": "Retry"},
+                            {"id": "m4", "role": "assistant", "content": "OK"},
+                        ]
                     }
                 )
 
