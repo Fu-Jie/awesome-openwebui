@@ -4448,6 +4448,53 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertIn("console.error", frontend_calls[0]["data"]["code"])
         self.assertIn("context too long", frontend_calls[0]["data"]["code"])
 
+    def test_call_summary_llm_times_out_provider_request(self):
+        self.filter.valves.summary_model = "fake-summary-model"
+        self.filter.valves.max_summary_tokens = 1024
+        self.filter.valves.show_debug_log = False
+        self.filter.valves.summary_fail_mode = "raise"
+        self.filter.valves.summary_llm_timeout_seconds = 0.01
+
+        async def fake_generate_chat_completion(request, payload, user):
+            await asyncio.sleep(10)
+            return {"choices": [{"message": {"content": "too late"}}]}
+
+        async def noop_log(*args, **kwargs):
+            return None
+
+        original_generate = module.generate_chat_completion
+        original_get_user = getattr(module.Users, "get_user_by_id", None)
+
+        module.generate_chat_completion = fake_generate_chat_completion
+        module.Users.get_user_by_id = staticmethod(
+            lambda user_id: types.SimpleNamespace(email="user@example.com")
+        )
+        self.filter._log = noop_log
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 8192
+        }
+        self.filter._build_summary_prompt = (
+            lambda conversation_text, previous_summary=None: conversation_text
+        )
+
+        try:
+            with self.assertRaises(Exception) as exc_info:
+                asyncio.run(
+                    self.filter._call_summary_llm(
+                        "conversation",
+                        {"model": "fake-summary-model"},
+                        {"id": "user-1"},
+                    )
+                )
+        finally:
+            module.generate_chat_completion = original_generate
+            if original_get_user is None:
+                delattr(module.Users, "get_user_by_id")
+            else:
+                module.Users.get_user_by_id = original_get_user
+
+        self.assertIn("timed out after 0.01 seconds", str(exc_info.exception))
+
     def test_extract_summary_text_supports_alternate_response_shapes(self):
         self.assertEqual(
             self.filter._extract_summary_text_from_response(

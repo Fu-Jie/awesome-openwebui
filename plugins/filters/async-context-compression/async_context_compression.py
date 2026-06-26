@@ -3248,6 +3248,11 @@ class Filter:
             ge=1,
             description="The maximum number of tokens for the summary. Must be less than 80% of the summary model input window so at least 20% remains for new messages during follow-up compression.",
         )
+        summary_llm_timeout_seconds: float = Field(
+            default=180.0,
+            ge=0,
+            description="Maximum seconds to wait for the summary LLM request. Set to 0 to disable the timeout.",
+        )
 
         def __init__(self, **data):
             super().__init__(**data)
@@ -7325,7 +7330,14 @@ Return only the XML working memory:
             request = __request__ or Request(scope={"type": "http", "app": webui_app})
 
             # Call generate_chat_completion
-            response = await generate_chat_completion(request, payload, user)
+            summary_timeout = float(self.valves.summary_llm_timeout_seconds or 0)
+            if summary_timeout > 0:
+                response = await asyncio.wait_for(
+                    generate_chat_completion(request, payload, user),
+                    timeout=summary_timeout,
+                )
+            else:
+                response = await generate_chat_completion(request, payload, user)
 
             # Handle JSONResponse (some backends return JSONResponse instead of dict)
             if hasattr(response, "body"):
@@ -7376,7 +7388,12 @@ Return only the XML working memory:
         except Exception as e:
             error_msg = str(e)
             # Handle specific error messages
-            if "Model not found" in error_msg:
+            if isinstance(e, asyncio.TimeoutError):
+                timeout_display = f"{float(self.valves.summary_llm_timeout_seconds):g}"
+                error_message = (
+                    f"Summary LLM request timed out after {timeout_display} seconds."
+                )
+            elif "Model not found" in error_msg:
                 error_message = f"Summary model '{model}' not found."
             else:
                 error_message = f"Summary LLM Error ({model}): {error_msg}"
