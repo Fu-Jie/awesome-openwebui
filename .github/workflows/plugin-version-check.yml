@@ -104,6 +104,12 @@ jobs:
             return hasDescription;
 
       - name: Comment on PR
+        # Fork PRs get a read-only GITHUB_TOKEN even with pull-requests: write,
+        # so createComment/updateComment may 403. Don't let that fail the whole
+        # version check — the enforce steps below are the real gate.
+        # Fork PR 的 GITHUB_TOKEN 会被强制降为只读，评论可能 403；
+        # 不让此步骤失败拖垮整个版本检查（真正的 gate 在下方 enforce 步骤）。
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
