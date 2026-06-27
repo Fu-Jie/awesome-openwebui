@@ -474,6 +474,47 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertIn("Active style: `balanced`", prompt)
         self.assertNotIn("Active style: `verbose`", prompt)
 
+    def test_build_summary_message_marks_summary_state_as_historical(self):
+        summary_message = self.filter._build_summary_message(
+            "<working_memory><current_goal>old task</current_goal></working_memory>",
+            "en-US",
+            1,
+        )
+
+        self.assertIn(
+            "describe historical state at the summarized point only",
+            summary_message["content"],
+        )
+        self.assertIn(
+            "must not override later messages",
+            summary_message["content"],
+        )
+
+    def test_build_summary_message_strips_next_reply_guidance_from_injected_context(
+        self,
+    ):
+        stale_summary = """<working_memory>
+  <current_goal>构建「以旧换新」市场进入战略框架</current_goal>
+  <open_loops>
+    <item>旧任务仍未完成</item>
+  </open_loops>
+  <next_reply_guidance>
+    <item>继续输出四项以旧换新任务清单</item>
+  </next_reply_guidance>
+</working_memory>"""
+
+        summary_message = self.filter._build_summary_message(
+            stale_summary,
+            "zh-CN",
+            3,
+        )
+
+        self.assertIn("历史状态", summary_message["content"])
+        self.assertIn("构建「以旧换新」市场进入战略框架", summary_message["content"])
+        self.assertIn("旧任务仍未完成", summary_message["content"])
+        self.assertNotIn("next_reply_guidance", summary_message["content"])
+        self.assertNotIn("继续输出四项以旧换新任务清单", summary_message["content"])
+
     def test_inlet_logs_tool_trimming_outcome_when_no_oversized_outputs(self):
         self.filter.valves.show_debug_log = True
         self.filter.valves.enable_tool_output_trimming = True
