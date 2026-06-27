@@ -533,6 +533,72 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertNotIn("next_reply_guidance", summary_message["content"])
         self.assertNotIn("继续输出四项以旧换新任务清单", summary_message["content"])
 
+    def test_referenced_summary_content_strips_next_reply_guidance(self):
+        referenced_summary = """<working_memory>
+  <current_goal>old referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>continue old referenced task</item>
+  </next_reply_guidance>
+</working_memory>"""
+
+        content = self.filter._build_referenced_summary_content(
+            referenced_summary,
+            "verified_reference_summary",
+        )
+
+        self.assertIn("<verified_reference_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("old referenced goal", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("continue old referenced task", content)
+
+    def test_mixed_referenced_summary_content_guards_partial_summary(self):
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+        ]
+        refs = self.filter._message_refs_for_prefix(ref_messages, 1)
+        snapshot = _snapshot(
+            """<working_memory>
+  <current_goal>partial referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>old partial instruction</item>
+  </next_reply_guidance>
+</working_memory>""",
+            refs,
+        )
+
+        content = self.filter._build_mixed_referenced_chat_content(
+            snapshot,
+            ref_messages,
+            1,
+        )
+
+        self.assertIn("<verified_earlier_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("partial referenced goal", content)
+        self.assertIn("Referenced answer", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("old partial instruction", content)
+
+    def test_generated_referenced_summary_content_guards_generated_summary(self):
+        content = self.filter._build_generated_referenced_summary_content_from_text(
+            """<working_memory>
+  <current_goal>generated referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>old generated instruction</item>
+  </next_reply_guidance>
+</working_memory>""",
+            "Latest referenced tail",
+        )
+
+        self.assertIn("<generated_reference_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("generated referenced goal", content)
+        self.assertIn("Latest referenced tail", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("old generated instruction", content)
+
     def test_inlet_logs_tool_trimming_outcome_when_no_oversized_outputs(self):
         self.filter.valves.show_debug_log = True
         self.filter.valves.enable_tool_output_trimming = True
@@ -5504,6 +5570,77 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertNotIn("Referenced follow-up </referenced_chat>", content)
         self.assertNotIn("Referenced question</referenced_chat>", content)
 
+    def test_handle_external_chat_references_guards_cached_summary(self):
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+        ]
+        refs = self.filter._message_refs_for_prefix(ref_messages, 2)
+        snapshot = _snapshot(
+            """<working_memory>
+  <current_goal>cached referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>old cached instruction</item>
+  </next_reply_guidance>
+</working_memory>""",
+            refs,
+        )
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            self.assertTrue(require_full_coverage)
+            return self.filter._select_applicable_summary_snapshot(
+                [snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
+            return ref_messages
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 10000
+        }
+        self.filter._estimate_messages_tokens = lambda messages: 1
+
+        result = asyncio.run(
+            self.filter._handle_external_chat_references(
+                {
+                    "model": "main-model",
+                    "messages": [{"role": "user", "content": "Current prompt"}],
+                    "metadata": {
+                        "files": [
+                            {
+                                "type": "chat",
+                                "id": "chat-ref-1",
+                                "name": "Referenced Chat",
+                            }
+                        ]
+                    },
+                },
+                user_data={"id": "user-1"},
+            )
+        )
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("<verified_reference_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("cached referenced goal", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("old cached instruction", content)
+
     def test_handle_external_chat_references_uses_active_branch_and_rejects_sibling_summary(
         self,
     ):
@@ -5801,7 +5938,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             "max_context_tokens": 100
         }
         self.filter._get_summary_model_context_limit = lambda model_id: 10000
-        self.filter._estimate_messages_tokens = lambda messages: 80
+        self.filter._estimate_messages_tokens = lambda messages: 20
         self.filter.valves.max_summary_tokens = 4096
 
         body = {

@@ -1971,13 +1971,24 @@ class Filter:
     def _build_simple_referenced_chat_content(self, text: str) -> str:
         return self._escape_reference_text(text)
 
+    def _build_referenced_summary_content(self, summary: str, tag: str) -> str:
+        safe_summary = self._prepare_summary_for_injection(summary)
+        guarded_summary = self._build_summary_safety_guard() + safe_summary
+        return (
+            f"<{tag}>\n"
+            + self._escape_reference_text(guarded_summary)
+            + f"\n</{tag}>"
+        )
+
     def _build_generated_referenced_summary_content(
         self,
         summary: str,
         remainder_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         if not remainder_messages:
-            return self._build_simple_referenced_chat_content(summary)
+            return self._build_referenced_summary_content(
+                summary, "generated_reference_summary"
+            )
 
         remainder_text = self._format_messages_for_summary(remainder_messages)
         return self._build_generated_referenced_summary_content_from_text(
@@ -1991,9 +2002,9 @@ class Filter:
         remainder_text: str = "",
     ) -> str:
         sections = [
-            "<generated_reference_summary>\n"
-            + self._escape_reference_text(summary)
-            + "\n</generated_reference_summary>"
+            self._build_referenced_summary_content(
+                summary, "generated_reference_summary"
+            )
         ]
         if remainder_text:
             sections.append(
@@ -2098,9 +2109,10 @@ class Filter:
             )
 
         sections.append(
-            "<verified_earlier_summary>\n"
-            + self._escape_reference_text(getattr(summary_snapshot, "summary", ""))
-            + "\n</verified_earlier_summary>"
+            self._build_referenced_summary_content(
+                getattr(summary_snapshot, "summary", ""),
+                "verified_earlier_summary",
+            )
         )
 
         tail_messages = chat_messages[max(0, tail_start_index) :]
@@ -3455,18 +3467,20 @@ class Filter:
             )
 
             if summary_snapshot and summary_snapshot.summary:
+                referenced_content = self._build_referenced_summary_content(
+                    summary_snapshot.summary,
+                    "verified_reference_summary",
+                )
                 remaining_direct_budget = max(
                     0,
                     remaining_direct_budget
-                    - _estimate_text_tokens(summary_snapshot.summary),
+                    - _estimate_text_tokens(referenced_content),
                 )
                 referenced_summaries.append(
                     {
                         "chat_id": ref_chat_id,
                         "title": ref_chat_title,
-                        "content": self._build_simple_referenced_chat_content(
-                            summary_snapshot.summary
-                        ),
+                        "content": referenced_content,
                         "type": "existing",
                     }
                 )
@@ -3796,17 +3810,25 @@ class Filter:
                             )
                         summary_estimate = _estimate_text_tokens(summary)
 
+                    referenced_content = (
+                        self._build_referenced_summary_content(
+                            summary,
+                            "generated_reference_summary",
+                        )
+                        if generated_with_llm
+                        else self._build_simple_referenced_chat_content(summary)
+                    )
+                    referenced_estimate = _estimate_text_tokens(referenced_content)
+
                     remaining_direct_budget = max(
-                        0, remaining_direct_budget - summary_estimate
+                        0, remaining_direct_budget - referenced_estimate
                     )
 
                     referenced_summaries.append(
                         {
                             "chat_id": ref_chat_id,
                             "title": ref_chat_title,
-                            "content": self._build_simple_referenced_chat_content(
-                                summary
-                            ),
+                            "content": referenced_content,
                             "type": (
                                 "generated_summary"
                                 if generated_with_llm
