@@ -389,6 +389,7 @@ from sqlalchemy import (
     MetaData,
     Table,
     inspect,
+    text as sqlalchemy_text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.engine import Engine
@@ -3076,6 +3077,53 @@ class Filter:
         )
         table.drop(bind=self._db_engine, checkfirst=True)
 
+    def _drop_legacy_chat_summary_indexes(self):
+        """Drop indexes that share names SQLAlchemy will reuse for the new table.
+
+        PostgreSQL keeps an index alive even after its parent table is dropped
+        when the index name collides with one the new schema recreates (e.g. the
+        legacy unique index ``ix_chat_summary_chat_id``), which makes the
+        subsequent CREATE INDEX fail with ``DuplicateTable``.  Drop any such
+        leftover indexes before recreating the table.
+        """
+        # Index names the new ChatSummary table will create (Column index=True
+        # → ix_<table>_<column>, plus the explicit unique dedup index).
+        names_to_drop = {
+            "ix_chat_summary_chat_id",
+            "ix_chat_summary_covered_refs_hash",
+            "ix_chat_summary_branch_tip_id",
+            CHAT_SUMMARY_DEDUP_INDEX_NAME,
+        }
+        try:
+            inspector = inspect(self._db_engine)
+            existing = set()
+            for idx in inspector.get_indexes(
+                "chat_summary", schema=owui_schema
+            ):
+                name = idx.get("name")
+                if name:
+                    existing.add(name)
+        except Exception as exc:
+            logger.warning(
+                f"[Database] ⚠️ Could not list chat_summary indexes before rebuild: {exc}"
+            )
+            return
+
+        to_drop = names_to_drop & existing
+        if not to_drop:
+            return
+
+        with self._db_engine.begin() as connection:
+            for name in sorted(to_drop):
+                # Identifier quoting via SQLAlchemy text + bindparam is awkward
+                # for DDL; names are internal constants so plain format is safe.
+                connection.execute(
+                    sqlalchemy_text(f'DROP INDEX IF EXISTS "{name}"')
+                )
+        logger.info(
+            f"[Database] Dropped legacy chat_summary indexes before rebuild: {sorted(to_drop)}"
+        )
+
     def _deduplicate_chat_summary_rows(self) -> int:
         target_table = ChatSummary.__table__
         deleted_count = 0
@@ -3239,6 +3287,12 @@ class Filter:
                 if schema_is_branch_aware is None:
                     return
                 if not schema_is_branch_aware:
+                    # PostgreSQL may leave behind indexes that share the name
+                    # SQLAlchemy will reuse for the new table (e.g. the legacy
+                    # unique index ix_chat_summary_chat_id).  Drop them first so
+                    # CREATE TABLE / CREATE INDEX does not collide with
+                    # "relation ... already exists" (DuplicateTable).
+                    self._drop_legacy_chat_summary_indexes()
                     ChatSummary.__table__.drop(bind=self._db_engine, checkfirst=True)
                     has_summary_table = False
                     logger.info(
