@@ -6771,6 +6771,24 @@ class Filter:
                 messages,
                 saved_compressed_count,
             )
+            # [TEMP DIAGNOSIS] figure out why _save_summary fails for plain chat
+            _diag_msgs_with_id = sum(
+                1
+                for m in messages
+                if isinstance(m, dict) and (m.get("id") or m.get("message_id"))
+            )
+            _diag_marker_count = sum(
+                1 for m in messages if isinstance(m, dict) and self._is_summary_message(m)
+            )
+            await self._log(
+                "[🤖 Async Summary Task] 🔍 [DIAG] refs diagnosis: "
+                f"saved_compressed_count={saved_compressed_count} | "
+                f"covered_refs={'None' if covered_refs is None else f'list[len={len(covered_refs)}]'} | "
+                f"messages_len={len(messages)} | messages_with_id={_diag_msgs_with_id} | "
+                f"summary_marker_count={_diag_marker_count} | "
+                f"summary_db_available={getattr(self, '_summary_db_available', 'N/A')}",
+                event_call=__event_call__,
+            )
             if covered_refs is None:
                 await self._log(
                     "[🤖 Async Summary Task] ⚠️ Covered range lacks stable message refs; "
