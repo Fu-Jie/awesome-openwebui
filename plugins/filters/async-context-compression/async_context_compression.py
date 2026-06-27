@@ -3120,6 +3120,86 @@ class Filter:
                 f"[Database] Cleared legacy chat_summary index names before rebuild: {dropped}"
             )
 
+    def _dedup_chat_summary_metadata_indexes(self):
+        """Remove colliding index definitions from the shared declarative metadata.
+
+        OpenWebUI reuses a single declarative base across plugin reloads.  When
+        an older ChatSummary definition (with a unique index on ``chat_id``)
+        is replaced by a newer one (plain ``index=True`` on ``chat_id``), the
+        ``extend_existing=True`` table arg merges columns but leaves BOTH index
+        definitions alive in ``owui_Base.metadata`` — and they share the name
+        ``ix_chat_summary_chat_id``.  CREATE TABLE then emits two CREATE INDEX
+        statements with the same name, the second one failing with
+        ``DuplicateTable``.
+
+        For each index name present more than once on the chat_summary table,
+        keep the one declared by the current class (in
+        ``ChatSummary.__table__.indexes`` set by class body evaluation) and
+        discard the duplicates.  If all copies claim to be "current" (same
+        object identity is impossible since they differ), prefer the non-unique
+        one to match the new schema intent.
+        """
+        table = ChatSummary.__table__
+        # Group every index on the table by name.
+        by_name: dict[str, list[Any]] = {}
+        for idx in list(table.indexes):
+            name = getattr(idx, "name", None)
+            if name:
+                by_name.setdefault(name, []).append(idx)
+
+        # Also scan the shared metadata table in case extend_existing attached
+        # stale indexes that are not in ChatSummary.__table__.indexes.
+        metadata_table = owui_Base.metadata.tables.get("chat_summary")
+        if metadata_table is not None and metadata_table is not table:
+            for idx in list(metadata_table.indexes):
+                name = getattr(idx, "name", None)
+                if name:
+                    bucket = by_name.setdefault(name, [])
+                    if idx not in bucket:
+                        bucket.append(idx)
+
+        stale_indexes: list[tuple[str, Any]] = []
+        for name, bucket in by_name.items():
+            if len(bucket) <= 1:
+                continue
+            # Prefer the non-unique copy: the current schema declares
+            # chat_id/covered_refs_hash/branch_tip_id as plain index=True and
+            # only the explicit dedup index is unique.  A stale unique copy on
+            # a name that should now be non-unique is the legacy leftover.
+            non_unique = [i for i in bucket if not getattr(i, "unique", False)]
+            unique = [i for i in bucket if getattr(i, "unique", False)]
+            # When we have both unique and non-unique copies of the same name,
+            # keep one non-unique (current) and drop the rest.
+            if non_unique and unique:
+                keep = non_unique[0]
+                drop = [i for i in bucket if i is not keep]
+            else:
+                # All copies share uniqueness flag — drop all but the first.
+                keep = bucket[0]
+                drop = [i for i in bucket if i is not keep]
+            for idx in drop:
+                stale_indexes.append((name, idx))
+
+        if not stale_indexes:
+            return
+
+        for name, idx in stale_indexes:
+            try:
+                table.indexes.discard(idx)
+            except Exception as exc:
+                logger.warning(
+                    f"[Database] ⚠️ Could not detach stale metadata index {name}: {exc}"
+                )
+            if metadata_table is not None:
+                try:
+                    metadata_table.indexes.discard(idx)
+                except Exception:
+                    pass
+        logger.info(
+            f"[Database] Detached stale chat_summary metadata indexes: "
+            f"{[name for name, _ in stale_indexes]}"
+        )
+
     def _deduplicate_chat_summary_rows(self) -> int:
         target_table = ChatSummary.__table__
         deleted_count = 0
@@ -3296,6 +3376,11 @@ class Filter:
                     )
 
             if not has_summary_table:
+                # Clear stale index definitions from the shared declarative
+                # metadata before CREATE TABLE — otherwise SQLAlchemy may emit
+                # two CREATE INDEX statements that share a name (legacy unique
+                # vs. new non-unique) and abort the whole CREATE TABLE.
+                self._dedup_chat_summary_metadata_indexes()
                 # Create the chat_summary table if it doesn't exist
                 ChatSummary.__table__.create(bind=self._db_engine, checkfirst=True)
                 logger.info(
