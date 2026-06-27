@@ -1,6 +1,6 @@
 # Async Context Compression Filter
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.1 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.2 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -27,6 +27,14 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 - **Single-table persistence**: Branch-specific reusable coverage is stored as multiple rows in `chat_summary`; there is no separate current-pointer row. Branch-valid historical rows are retained so a future fork can reuse the nearest matching ancestor, even when the user branches from an older point.
 - **Protected-head tracking**: Summary rows remember how many leading messages were kept outside the summary. If the current `keep_first` policy no longer preserves those messages, the row is not reused as branch-valid coverage.
 - **Safe upgrade behavior**: Legacy summaries without coverage metadata are not trusted as coverage. The first turn after upgrading may send more raw context until a branch-valid summary row is generated.
+
+## What's new in 1.7.2
+
+- **Summary injection safety guard**: Injected summaries now explicitly state that goals, open loops, and tool state inside the summary are historical context only, not new instructions.
+- **Stale next-reply guidance removal**: The filter strips `<next_reply_guidance>` blocks before summaries become model-visible context, preventing old summary guidance from steering a later request.
+- **Locale-wide guard coverage**: The historical-summary warning is applied consistently across all supported summary prompt translations.
+- **Safer referenced chat summaries**: Cached, partial, and newly generated referenced-chat summaries now receive the same guard and stale-guidance stripping as main chat summaries.
+- **Regression coverage**: Tests cover normal summary injection, every translation locale, cached referenced summaries, mixed summary plus raw tail references, and generated referenced summaries.
 
 ## What's new in 1.7.1
 
@@ -213,6 +221,6 @@ If this plugin has been useful, a star on [OpenWebUI Extensions](https://github.
 
 ## Changelog
 
-See [`v1.7.1` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.1.md) for the release-specific summary.
+See [`v1.7.2` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.2.md) for the release-specific summary.
 
 See the full history on GitHub: [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)
