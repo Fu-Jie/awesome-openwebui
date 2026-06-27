@@ -6018,6 +6018,26 @@ class Filter:
                 else "outlet-body"
             )
 
+        # When the body lacks per-message ids (the common case for plain chat,
+        # where OpenWebUI does not put message node ids into the request body),
+        # _save_summary cannot build branch refs and fails closed.  Fall back to
+        # the DB active branch, which carries ids, when the unfolded body shape
+        # matches the persisted branch.  This mirrors the idless reuse path in
+        # _load_applicable_summary_snapshot so plain-chat summaries persist.
+        if self._current_branch_refs(summary_messages) is None and chat_id:
+            db_messages_fallback = await self._load_full_chat_messages(chat_id)
+            (
+                compatible_db_messages,
+                _db_to_body_boundaries,
+                _ignored_terminal_assistant,
+            ) = self._compatible_db_branch_for_body_ref_fallback(
+                summary_messages,
+                db_messages_fallback,
+            )
+            if compatible_db_messages is not None:
+                summary_messages = compatible_db_messages
+                message_source = f"{message_source}+db-refs"
+
         restored_count_before = len(summary_messages)
         summary_messages = self._restore_pending_inlet_messages(
             chat_id, summary_messages
@@ -6758,6 +6778,12 @@ class Filter:
                     log_type="warning",
                     event_call=__event_call__,
                 )
+                await self._emit_summary_terminal_status(
+                    __event_emitter__,
+                    lang,
+                    "summary generated but was not persisted",
+                )
+                return
 
             source_refs = self._current_branch_refs(messages) or []
             source_current_id = source_refs[-1]["id"] if source_refs else None
