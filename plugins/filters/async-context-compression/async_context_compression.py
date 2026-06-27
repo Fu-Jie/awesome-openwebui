@@ -3268,7 +3268,22 @@ class Filter:
             self._summary_db_available = True
 
         except Exception as e:
-            logger.error(f"[Database] ❌ Initialization failed: {str(e)}")
+            logger.error(
+                f"[Database] ❌ Initialization failed: {str(e)}\n"
+                f"[Database] ❌ Exception type: {type(e).__name__}\n"
+                f"[Database] ❌ _db_engine={self._db_engine}\n"
+                f"[Database] ❌ owui_db={getattr(self, '_owui_db', None)}\n"
+                f"[Database] ❌ Traceback:",
+                exc_info=True,
+            )
+            # [TEMP DIAGNOSIS] surface the init failure on the OpenWebUI event channel
+            try:
+                import traceback as _tb
+                self._summary_db_init_error = (
+                    f"{type(e).__name__}: {e}\n" + "".join(_tb.format_exc())
+                )
+            except Exception:
+                self._summary_db_init_error = str(e)
 
     class Valves(BaseModel):
         priority: int = Field(
@@ -6786,7 +6801,8 @@ class Filter:
                 f"covered_refs={'None' if covered_refs is None else f'list[len={len(covered_refs)}]'} | "
                 f"messages_len={len(messages)} | messages_with_id={_diag_msgs_with_id} | "
                 f"summary_marker_count={_diag_marker_count} | "
-                f"summary_db_available={getattr(self, '_summary_db_available', 'N/A')}",
+                f"summary_db_available={getattr(self, '_summary_db_available', 'N/A')} | "
+                f"summary_db_init_error={getattr(self, '_summary_db_init_error', 'none')}",
                 event_call=__event_call__,
             )
             if covered_refs is None:
