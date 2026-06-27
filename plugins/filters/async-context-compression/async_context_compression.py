@@ -389,7 +389,6 @@ from sqlalchemy import (
     MetaData,
     Table,
     inspect,
-    text as sqlalchemy_text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.engine import Engine
@@ -3080,49 +3079,46 @@ class Filter:
     def _drop_legacy_chat_summary_indexes(self):
         """Drop indexes that share names SQLAlchemy will reuse for the new table.
 
-        PostgreSQL keeps an index alive even after its parent table is dropped
-        when the index name collides with one the new schema recreates (e.g. the
-        legacy unique index ``ix_chat_summary_chat_id``), which makes the
-        subsequent CREATE INDEX fail with ``DuplicateTable``.  Drop any such
-        leftover indexes before recreating the table.
+        PostgreSQL may keep an index alive even after its parent table is
+        dropped (e.g. when a previous, partially-failed init left a legacy
+        unique index ``ix_chat_summary_chat_id`` behind), which makes the
+        subsequent CREATE INDEX fail with ``DuplicateTable``.  Best-effort,
+        idempotent cleanup of any candidate colliding names before recreating
+        the table.  ``DROP INDEX IF EXISTS`` is a no-op when the index is
+        already gone, so this is safe on both PostgreSQL and SQLite.
         """
         # Index names the new ChatSummary table will create (Column index=True
-        # → ix_<table>_<column>, plus the explicit unique dedup index).
-        names_to_drop = {
+        # → ix_<table>_<column>, plus the explicit unique dedup index).  Also
+        # cover the legacy unique index name old versions used on chat_id.
+        names_to_drop = [
             "ix_chat_summary_chat_id",
             "ix_chat_summary_covered_refs_hash",
             "ix_chat_summary_branch_tip_id",
             CHAT_SUMMARY_DEDUP_INDEX_NAME,
-        }
-        try:
-            inspector = inspect(self._db_engine)
-            existing = set()
-            for idx in inspector.get_indexes(
-                "chat_summary", schema=owui_schema
-            ):
-                name = idx.get("name")
-                if name:
-                    existing.add(name)
-        except Exception as exc:
-            logger.warning(
-                f"[Database] ⚠️ Could not list chat_summary indexes before rebuild: {exc}"
-            )
-            return
+        ]
 
-        to_drop = names_to_drop & existing
-        if not to_drop:
-            return
+        from sqlalchemy import text as sqlalchemy_text
 
+        dropped: list[str] = []
         with self._db_engine.begin() as connection:
-            for name in sorted(to_drop):
-                # Identifier quoting via SQLAlchemy text + bindparam is awkward
-                # for DDL; names are internal constants so plain format is safe.
-                connection.execute(
-                    sqlalchemy_text(f'DROP INDEX IF EXISTS "{name}"')
+            for name in names_to_drop:
+                qualified = (
+                    f'{owui_schema}."{name}"' if owui_schema else f'"{name}"'
                 )
-        logger.info(
-            f"[Database] Dropped legacy chat_summary indexes before rebuild: {sorted(to_drop)}"
-        )
+                try:
+                    connection.execute(
+                        sqlalchemy_text(f"DROP INDEX IF EXISTS {qualified}")
+                    )
+                    dropped.append(name)
+                except Exception as exc:
+                    # Non-fatal: we only want to clear the way for CREATE INDEX.
+                    logger.warning(
+                        f"[Database] ⚠️ Could not drop legacy index {name}: {exc}"
+                    )
+        if dropped:
+            logger.info(
+                f"[Database] Cleared legacy chat_summary index names before rebuild: {dropped}"
+            )
 
     def _deduplicate_chat_summary_rows(self) -> int:
         target_table = ChatSummary.__table__
@@ -3325,19 +3321,9 @@ class Filter:
             logger.error(
                 f"[Database] ❌ Initialization failed: {str(e)}\n"
                 f"[Database] ❌ Exception type: {type(e).__name__}\n"
-                f"[Database] ❌ _db_engine={self._db_engine}\n"
-                f"[Database] ❌ owui_db={getattr(self, '_owui_db', None)}\n"
                 f"[Database] ❌ Traceback:",
                 exc_info=True,
             )
-            # [TEMP DIAGNOSIS] surface the init failure on the OpenWebUI event channel
-            try:
-                import traceback as _tb
-                self._summary_db_init_error = (
-                    f"{type(e).__name__}: {e}\n" + "".join(_tb.format_exc())
-                )
-            except Exception:
-                self._summary_db_init_error = str(e)
 
     class Valves(BaseModel):
         priority: int = Field(
@@ -6839,25 +6825,6 @@ class Filter:
             covered_refs = self._message_refs_for_prefix(
                 messages,
                 saved_compressed_count,
-            )
-            # [TEMP DIAGNOSIS] figure out why _save_summary fails for plain chat
-            _diag_msgs_with_id = sum(
-                1
-                for m in messages
-                if isinstance(m, dict) and (m.get("id") or m.get("message_id"))
-            )
-            _diag_marker_count = sum(
-                1 for m in messages if isinstance(m, dict) and self._is_summary_message(m)
-            )
-            await self._log(
-                "[🤖 Async Summary Task] 🔍 [DIAG] refs diagnosis: "
-                f"saved_compressed_count={saved_compressed_count} | "
-                f"covered_refs={'None' if covered_refs is None else f'list[len={len(covered_refs)}]'} | "
-                f"messages_len={len(messages)} | messages_with_id={_diag_msgs_with_id} | "
-                f"summary_marker_count={_diag_marker_count} | "
-                f"summary_db_available={getattr(self, '_summary_db_available', 'N/A')} | "
-                f"summary_db_init_error={getattr(self, '_summary_db_init_error', 'none')}",
-                event_call=__event_call__,
             )
             if covered_refs is None:
                 await self._log(
