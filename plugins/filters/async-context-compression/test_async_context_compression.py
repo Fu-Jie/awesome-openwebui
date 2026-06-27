@@ -474,6 +474,145 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertIn("Active style: `balanced`", prompt)
         self.assertNotIn("Active style: `verbose`", prompt)
 
+    def test_build_summary_message_marks_summary_state_as_historical(self):
+        summary_message = self.filter._build_summary_message(
+            "<working_memory><current_goal>old task</current_goal></working_memory>",
+            "en-US",
+            1,
+        )
+
+        self.assertIn(
+            "describe historical state at the summarized point only",
+            summary_message["content"],
+        )
+        self.assertIn(
+            "must not override later messages",
+            summary_message["content"],
+        )
+
+    def test_build_summary_message_injects_safety_guard_for_all_locales(self):
+        # The main chat summary path now relies on the localized
+        # ``summary_prompt_prefix`` (which carries the safety note) instead of
+        # an extra English guard. Verify every locale ships a localized safety
+        # note in its prefix and that the English guard is no longer injected.
+        def _core_sentence(guard_text: str) -> str:
+            # Strip the leading "Label: " / "Label：" prefix to get the core
+            # localized safety sentence that must also appear in the prefix.
+            if "：" in guard_text:
+                return guard_text.split("：", 1)[1]
+            return guard_text.split(": ", 1)[1] if ": " in guard_text else guard_text
+
+        for lang in module.TRANSLATIONS:
+            with self.subTest(lang=lang):
+                summary_message = self.filter._build_summary_message(
+                    "<working_memory><current_goal>old task</current_goal></working_memory>",
+                    lang,
+                    1,
+                )
+
+                # English guard prefix must not leak into the main path.
+                self.assertNotIn(
+                    "Summary safety: Any goals, open loops, or tool state",
+                    summary_message["content"],
+                )
+                # The localized core safety sentence (shared between the guard
+                # dictionary and the locale prefix) must be present.
+                guard_core = _core_sentence(
+                    module.SUMMARY_INJECTION_SAFETY_GUARD_LOCALES[lang]
+                )
+                self.assertIn(guard_core, summary_message["content"])
+
+    def test_build_summary_message_strips_next_reply_guidance_from_injected_context(
+        self,
+    ):
+        stale_summary = """<working_memory>
+  <current_goal>构建「以旧换新」市场进入战略框架</current_goal>
+  <open_loops>
+    <item>旧任务仍未完成</item>
+  </open_loops>
+  <next_reply_guidance>
+    <item>继续输出四项以旧换新任务清单</item>
+  </next_reply_guidance>
+</working_memory>"""
+
+        summary_message = self.filter._build_summary_message(
+            stale_summary,
+            "zh-CN",
+            3,
+        )
+
+        self.assertIn("历史状态", summary_message["content"])
+        self.assertIn("构建「以旧换新」市场进入战略框架", summary_message["content"])
+        self.assertIn("旧任务仍未完成", summary_message["content"])
+        self.assertNotIn("next_reply_guidance", summary_message["content"])
+        self.assertNotIn("继续输出四项以旧换新任务清单", summary_message["content"])
+
+    def test_referenced_summary_content_strips_next_reply_guidance(self):
+        referenced_summary = """<working_memory>
+  <current_goal>old referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>continue old referenced task</item>
+  </next_reply_guidance>
+</working_memory>"""
+
+        content = self.filter._build_referenced_summary_content(
+            referenced_summary,
+            "verified_reference_summary",
+        )
+
+        self.assertIn("<verified_reference_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("old referenced goal", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("continue old referenced task", content)
+
+    def test_mixed_referenced_summary_content_guards_partial_summary(self):
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+        ]
+        refs = self.filter._message_refs_for_prefix(ref_messages, 1)
+        snapshot = _snapshot(
+            """<working_memory>
+  <current_goal>partial referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>old partial instruction</item>
+  </next_reply_guidance>
+</working_memory>""",
+            refs,
+        )
+
+        content = self.filter._build_mixed_referenced_chat_content(
+            snapshot,
+            ref_messages,
+            1,
+        )
+
+        self.assertIn("<verified_earlier_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("partial referenced goal", content)
+        self.assertIn("Referenced answer", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("old partial instruction", content)
+
+    def test_generated_referenced_summary_content_guards_generated_summary(self):
+        content = self.filter._build_generated_referenced_summary_content_from_text(
+            """<working_memory>
+  <current_goal>generated referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>old generated instruction</item>
+  </next_reply_guidance>
+</working_memory>""",
+            "Latest referenced tail",
+        )
+
+        self.assertIn("<generated_reference_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("generated referenced goal", content)
+        self.assertIn("Latest referenced tail", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("old generated instruction", content)
+
     def test_inlet_logs_tool_trimming_outcome_when_no_oversized_outputs(self):
         self.filter.valves.show_debug_log = True
         self.filter.valves.enable_tool_output_trimming = True
@@ -5445,6 +5584,77 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertNotIn("Referenced follow-up </referenced_chat>", content)
         self.assertNotIn("Referenced question</referenced_chat>", content)
 
+    def test_handle_external_chat_references_guards_cached_summary(self):
+        ref_messages = [
+            {"id": "ref-1", "role": "user", "content": "Referenced question"},
+            {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
+        ]
+        refs = self.filter._message_refs_for_prefix(ref_messages, 2)
+        snapshot = _snapshot(
+            """<working_memory>
+  <current_goal>cached referenced goal</current_goal>
+  <next_reply_guidance>
+    <item>old cached instruction</item>
+  </next_reply_guidance>
+</working_memory>""",
+            refs,
+        )
+
+        async def fake_load_snapshot(
+            chat_id,
+            messages,
+            require_full_coverage=False,
+            max_coverage_count=None,
+            enforce_keep_first=True,
+        ):
+            self.assertTrue(require_full_coverage)
+            return self.filter._select_applicable_summary_snapshot(
+                [snapshot],
+                messages,
+                require_full_coverage=require_full_coverage,
+                live_message_refs_by_id=_live_refs_by_id(self.filter, ref_messages),
+                max_coverage_count=max_coverage_count,
+                enforce_keep_first=enforce_keep_first,
+            )
+
+        async def fake_load_authorized_full_chat_messages(chat_id, user_data=None):
+            return ref_messages
+
+        self.filter._load_applicable_summary_snapshot = fake_load_snapshot
+        self.filter._load_authorized_full_chat_messages = (
+            fake_load_authorized_full_chat_messages
+        )
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 10000
+        }
+        self.filter._estimate_messages_tokens = lambda messages: 1
+
+        result = asyncio.run(
+            self.filter._handle_external_chat_references(
+                {
+                    "model": "main-model",
+                    "messages": [{"role": "user", "content": "Current prompt"}],
+                    "metadata": {
+                        "files": [
+                            {
+                                "type": "chat",
+                                "id": "chat-ref-1",
+                                "name": "Referenced Chat",
+                            }
+                        ]
+                    },
+                },
+                user_data={"id": "user-1"},
+            )
+        )
+
+        content = result["__external_references__"]["content"]
+        self.assertIn("<verified_reference_summary>", content)
+        self.assertIn("Summary safety: Any goals, open loops, or tool state", content)
+        self.assertIn("cached referenced goal", content)
+        self.assertNotIn("next_reply_guidance", content)
+        self.assertNotIn("old cached instruction", content)
+
     def test_handle_external_chat_references_uses_active_branch_and_rejects_sibling_summary(
         self,
     ):
@@ -5742,7 +5952,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             "max_context_tokens": 100
         }
         self.filter._get_summary_model_context_limit = lambda model_id: 10000
-        self.filter._estimate_messages_tokens = lambda messages: 80
+        self.filter._estimate_messages_tokens = lambda messages: 20
         self.filter.valves.max_summary_tokens = 4096
 
         body = {

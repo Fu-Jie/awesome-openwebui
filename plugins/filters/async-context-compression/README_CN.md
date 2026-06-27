@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.1 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.2 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -29,6 +29,14 @@
 - **单表持久化**：分支专属的可复用覆盖范围以多行形式写入 `chat_summary`；不再保留单独的 current pointer 行。插件会保留 branch-valid 历史摘要行，使用户从更早位置分叉时仍能复用当前分支上最接近的祖先摘要。
 - **受保护头部追踪**：摘要行会记录有多少开头消息是在摘要之外按原文保留的。如果当前 `keep_first` 策略已经不再保留这些消息，该摘要行不会作为 branch-valid 覆盖范围复用。
 - **安全升级行为**：没有覆盖范围元数据的 legacy summary 不再被当成可信覆盖。升级后的第一轮对话可能会发送更多原始上下文，直到生成 branch-valid 摘要行。
+
+## 1.7.2 版本更新
+
+- **摘要注入安全边界**：注入给模型的 summary 现在会明确说明，summary 里的目标、待办和工具状态只代表历史上下文，不是新的指令。
+- **移除过期 next-reply guidance**：summary 进入模型可见上下文前会移除 `<next_reply_guidance>`，避免旧摘要里的下一步建议影响后续新请求。
+- **覆盖所有语言版本**：所有支持的 summary prompt locale 都会带同一类历史摘要安全说明，避免不同语言下边界不一致。
+- **引用聊天 summary 同步保护**：缓存、部分覆盖和新生成的 referenced-chat summary 都会使用同样的 guard 和过期 guidance 清理逻辑。
+- **回归测试覆盖**：新增普通 summary 注入、全部 locale、缓存引用 summary、summary 加原文 tail 的混合引用，以及生成型引用 summary 的测试。
 
 ## 1.7.1 版本更新
 
@@ -254,6 +262,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.7.1` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.1_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.7.2` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.2_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)
