@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.7.0
+version: 1.7.1
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -1376,11 +1376,21 @@ class Filter:
         current_coverage_count: int,
         current_coverage_refs: List[Dict[str, str]],
         protected_head_count: int,
+        body_coverage_count: Optional[int] = None,
     ) -> Any:
         """Attach current-branch coverage metadata to the selected snapshot."""
         setattr(snapshot, "_current_coverage_count", current_coverage_count)
         setattr(snapshot, "_current_coverage_refs", current_coverage_refs)
         setattr(snapshot, "_current_protected_head_count", protected_head_count)
+        setattr(
+            snapshot,
+            "_current_body_coverage_count",
+            (
+                current_coverage_count
+                if body_coverage_count is None
+                else max(0, int(body_coverage_count))
+            ),
+        )
         return snapshot
 
     def _summary_snapshot_current_coverage_count(self, snapshot: Any) -> int:
@@ -1389,6 +1399,16 @@ class Filter:
                 snapshot,
                 "_current_coverage_count",
                 getattr(snapshot, "compressed_message_count", 0),
+            )
+            or 0
+        )
+
+    def _summary_snapshot_current_body_coverage_count(self, snapshot: Any) -> int:
+        return int(
+            getattr(
+                snapshot,
+                "_current_body_coverage_count",
+                self._summary_snapshot_current_coverage_count(snapshot),
             )
             or 0
         )
@@ -1427,7 +1447,7 @@ class Filter:
     ) -> Optional[Any]:
         """Choose the best snapshot that is safe for the current active branch."""
         current_refs = self._current_branch_refs(messages)
-        if current_refs is None:
+        if current_refs is None and require_full_coverage:
             if self.valves.debug_mode:
                 logger.info(
                     "[Summary Snapshot] Current messages do not expose stable refs; "
@@ -1438,10 +1458,20 @@ class Filter:
         if require_full_coverage:
             safe_boundary = len(current_refs)
         elif max_coverage_count is not None:
-            safe_boundary = min(len(current_refs), max(0, int(max_coverage_count)))
+            original_count = (
+                len(current_refs)
+                if current_refs is not None
+                else self._get_original_history_count(messages)
+            )
+            safe_boundary = min(original_count, max(0, int(max_coverage_count)))
         else:
+            original_count = (
+                len(current_refs)
+                if current_refs is not None
+                else self._get_original_history_count(messages)
+            )
             safe_boundary = min(
-                len(current_refs),
+                original_count,
                 max(0, self._calculate_target_compressed_count(messages)),
             )
         effective_keep_first = (
@@ -1464,6 +1494,22 @@ class Filter:
             count = int(getattr(snapshot, "compressed_message_count", 0) or 0)
             if count <= 0 or count != len(snapshot_refs):
                 continue
+
+            current_refs_for_snapshot = current_refs
+            if current_refs_for_snapshot is None:
+                current_refs_for_snapshot = self._message_refs_for_prefix(
+                    messages,
+                    count,
+                )
+                if current_refs_for_snapshot is None:
+                    if self.valves.debug_mode:
+                        logger.info(
+                            "[Summary Snapshot] Rejecting snapshot because current "
+                            f"messages do not expose stable refs through covered "
+                            f"prefix count={count}."
+                        )
+                    continue
+
             protected_head_count = self._parse_protected_head_count_json(
                 getattr(snapshot, "covered_message_refs_json", None)
             )
@@ -1482,7 +1528,7 @@ class Filter:
                 rejection_reason,
             ) = self._snapshot_coverage_for_current_branch(
                 snapshot_refs,
-                current_refs,
+                current_refs_for_snapshot,
                 safe_boundary,
                 live_message_refs_by_id=live_message_refs_by_id,
             )
@@ -1528,7 +1574,7 @@ class Filter:
                 best_snapshot = self._annotate_summary_snapshot_selection(
                     snapshot,
                     matched_current_count,
-                    current_refs[:matched_current_count],
+                    current_refs_for_snapshot[:matched_current_count],
                     protected_head_count,
                 )
                 continue
@@ -1536,7 +1582,9 @@ class Filter:
             if self.valves.debug_mode:
                 common = self._refs_common_prefix_length(
                     snapshot_refs,
-                    current_refs[: min(len(snapshot_refs), len(current_refs))],
+                    current_refs_for_snapshot[
+                        : min(len(snapshot_refs), len(current_refs_for_snapshot))
+                    ],
                 )
                 logger.info(
                     "[Summary Snapshot] Skipping lower-ranked/stale snapshot: "
@@ -1640,6 +1688,23 @@ class Filter:
         sortable_messages.sort(key=lambda item: (item[0], item[1]))
         return [message for _, _, message in sortable_messages]
 
+    def _is_failed_assistant_message(self, message: Dict[str, Any]) -> bool:
+        """Mirror OpenWebUI middleware's failed-assistant filter."""
+        return (
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and "error" in message
+        )
+
+    def _filter_model_visible_history_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        return [
+            message
+            for message in messages
+            if not self._is_failed_assistant_message(message)
+        ]
+
     async def _load_full_chat_messages(self, chat_id: str) -> List[Dict[str, Any]]:
         """Load the full persisted chat history for summary decisions when available."""
         if not chat_id or Chats is None:
@@ -1664,11 +1729,15 @@ class Filter:
                     history_messages, current_id
                 )
                 if branch_messages:
-                    return branch_messages
+                    return self._filter_model_visible_history_messages(
+                        branch_messages
+                    )
 
         direct_messages = chat_payload.get("messages")
         if isinstance(direct_messages, list) and direct_messages:
-            return deepcopy(direct_messages)
+            return self._filter_model_visible_history_messages(
+                deepcopy(direct_messages)
+            )
 
         return []
 
@@ -2132,6 +2201,220 @@ class Filter:
                 return True
 
         return ref_index == len(body_refs)
+
+    def _body_message_matches_db_branch_message(
+        self,
+        body_message: Dict[str, Any],
+        db_message: Dict[str, Any],
+    ) -> bool:
+        """Compare a request-body message with its persisted active-branch peer."""
+        if not isinstance(body_message, dict) or not isinstance(db_message, dict):
+            return False
+        if self._is_summary_message(body_message) or self._is_summary_message(
+            db_message
+        ):
+            return False
+        if self._is_external_reference_message(
+            body_message
+        ) or self._is_external_reference_message(db_message):
+            return False
+
+        body_ref = self._message_ref(body_message)
+        db_ref = self._message_ref(db_message)
+        if db_ref is None:
+            return False
+        if body_ref is not None and body_ref["id"] != db_ref["id"]:
+            return False
+
+        if self._message_fingerprint_payload(
+            body_message
+        ) == self._message_fingerprint_payload(db_message):
+            return True
+
+        # OpenWebUI request bodies can omit folded assistant `output` while the
+        # DB history still carries it. The model-visible role/content/tool-call
+        # shape must still match before DB refs are trusted for an idless body.
+        if body_message.get("output") not in (None, "", []):
+            return False
+
+        return self._message_fingerprint_payload(
+            body_message,
+            include_output=False,
+        ) == self._message_fingerprint_payload(
+            db_message,
+            include_output=False,
+        )
+
+    def _body_message_matches_unfolded_db_message(
+        self,
+        body_message: Dict[str, Any],
+        unfolded_db_message: Dict[str, Any],
+    ) -> bool:
+        """Compare a body message against an unfolded DB message."""
+        if not isinstance(body_message, dict) or not isinstance(
+            unfolded_db_message, dict
+        ):
+            return False
+        if body_message.get("role") != unfolded_db_message.get("role"):
+            return False
+
+        body_ref = self._message_ref(body_message)
+        db_ref = self._message_ref(unfolded_db_message)
+        if body_ref is not None and db_ref is not None and body_ref["id"] != db_ref["id"]:
+            return False
+
+        body_tool_call_id = body_message.get("tool_call_id")
+        db_tool_call_id = unfolded_db_message.get("tool_call_id")
+        if isinstance(body_tool_call_id, str) or isinstance(db_tool_call_id, str):
+            if body_tool_call_id != db_tool_call_id:
+                return False
+
+        if self._message_fingerprint_payload(
+            body_message,
+            include_output=False,
+        ) == self._message_fingerprint_payload(
+            unfolded_db_message,
+            include_output=False,
+        ):
+            return True
+
+        metadata = body_message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        if body_message.get("role") == "tool" and metadata.get("is_trimmed"):
+            return True
+
+        if (
+            body_message.get("role") == "assistant"
+            and metadata.get("tool_outputs_trimmed")
+        ):
+            return True
+
+        return False
+
+    def _unfold_db_branch_for_body_ref_fallback(
+        self,
+        db_messages: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], List[int]]:
+        """Unfold DB messages and map folded DB boundaries to unfolded indices."""
+        unfolded_messages: List[Dict[str, Any]] = []
+        db_to_body_boundaries = [0]
+
+        for message in db_messages:
+            before_count = len(unfolded_messages)
+
+            if (
+                isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and isinstance(message.get("output"), list)
+                and message.get("output")
+            ):
+                expanded_messages = []
+                try:
+                    from open_webui.utils.misc import convert_output_to_messages
+
+                    expanded_messages = convert_output_to_messages(
+                        message["output"], raw=True
+                    )
+                except ImportError:
+                    expanded_messages = []
+                except Exception as exc:
+                    logger.debug(
+                        "[Summary Snapshot] Failed to unfold DB assistant output "
+                        "for idless body fallback; rejecting DB ref fallback: %s",
+                        exc,
+                    )
+                    return [], []
+
+                # Match OpenWebUI middleware.process_messages_with_output(): the
+                # model-facing body uses convert_output_to_messages for every
+                # assistant `output`, including reasoning-only outputs.
+                if expanded_messages:
+                    unfolded_messages.extend(deepcopy(expanded_messages))
+                else:
+                    clean_message = {k: v for k, v in message.items() if k != "output"}
+                    unfolded_messages.append(clean_message)
+            elif isinstance(message, dict):
+                clean_message = {k: v for k, v in message.items() if k != "output"}
+                unfolded_messages.append(clean_message)
+            else:
+                unfolded_messages.append(message)
+
+            if len(unfolded_messages) == before_count:
+                unfolded_messages.append(deepcopy(message))
+            db_to_body_boundaries.append(len(unfolded_messages))
+
+        self._normalize_native_tool_call_ids(unfolded_messages)
+        return unfolded_messages, db_to_body_boundaries
+
+    def _body_to_db_coverage_map_for_ref_fallback(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> Optional[List[int]]:
+        """Return DB-count -> body-boundary map when DB refs can stand in."""
+        if not body_messages or not db_messages:
+            return None
+
+        if len(body_messages) == len(db_messages) and all(
+            self._body_message_matches_db_branch_message(body_message, db_message)
+            for body_message, db_message in zip(body_messages, db_messages)
+        ):
+            return list(range(len(db_messages) + 1))
+
+        unfolded_messages, db_to_body_boundaries = (
+            self._unfold_db_branch_for_body_ref_fallback(db_messages)
+        )
+        if len(body_messages) != len(unfolded_messages):
+            return None
+
+        if not all(
+            self._body_message_matches_unfolded_db_message(
+                body_message,
+                unfolded_message,
+            )
+            for body_message, unfolded_message in zip(
+                body_messages,
+                unfolded_messages,
+            )
+        ):
+            return None
+
+        return db_to_body_boundaries
+
+    def _compatible_db_branch_for_body_ref_fallback(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> tuple[Optional[List[Dict[str, Any]]], Optional[List[int]], bool]:
+        """Find the persisted branch shape matching the model-visible body.
+
+        OpenWebUI inserts the new assistant placeholder before middleware
+        filters run, then middleware rebuilds the LLM payload only up to the
+        latest user message. When the plugin reads history.currentId it sees
+        that terminal assistant too; exclude it only if the request body proves
+        the user-tip branch is the matching source.
+        """
+        db_to_body_boundaries = self._body_to_db_coverage_map_for_ref_fallback(
+            body_messages,
+            db_messages,
+        )
+        if db_to_body_boundaries is not None:
+            return db_messages, db_to_body_boundaries, False
+
+        if not db_messages or db_messages[-1].get("role") != "assistant":
+            return None, None, False
+
+        user_tip_messages = db_messages[:-1]
+        db_to_body_boundaries = self._body_to_db_coverage_map_for_ref_fallback(
+            body_messages,
+            user_tip_messages,
+        )
+        if db_to_body_boundaries is None:
+            return None, None, False
+
+        return user_tip_messages, db_to_body_boundaries, True
 
     async def _load_chat_history_live_refs(
         self, chat_id: str
@@ -2964,6 +3247,11 @@ class Filter:
             default=16384,
             ge=1,
             description="The maximum number of tokens for the summary. Must be less than 80% of the summary model input window so at least 20% remains for new messages during follow-up compression.",
+        )
+        summary_llm_timeout_seconds: float = Field(
+            default=180.0,
+            ge=0,
+            description="Maximum seconds to wait for the summary LLM request. Set to 0 to disable the timeout.",
         )
 
         def __init__(self, **data):
@@ -3821,7 +4109,7 @@ class Filter:
             return None
         if live_message_refs_by_id is None:
             live_message_refs_by_id = await self._load_chat_history_live_refs(chat_id)
-        return self._select_applicable_summary_snapshot(
+        selected = self._select_applicable_summary_snapshot(
             snapshots,
             messages,
             require_full_coverage=require_full_coverage,
@@ -3829,6 +4117,58 @@ class Filter:
             max_coverage_count=max_coverage_count,
             enforce_keep_first=enforce_keep_first,
         )
+        if selected is not None:
+            return selected
+
+        if require_full_coverage or self._current_branch_refs(messages) is not None:
+            return None
+
+        db_messages = await self._load_full_chat_messages(chat_id)
+        (
+            compatible_db_messages,
+            db_to_body_boundaries,
+            ignored_terminal_assistant,
+        ) = self._compatible_db_branch_for_body_ref_fallback(
+            messages,
+            db_messages,
+        )
+        if compatible_db_messages is None or db_to_body_boundaries is None:
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Summary Snapshot] DB active branch fallback skipped: "
+                    f"request body is not a compatible idless view "
+                    f"(body_count={len(messages)}, db_count={len(db_messages)})."
+                )
+            return None
+
+        selected = self._select_applicable_summary_snapshot(
+            snapshots,
+            compatible_db_messages,
+            require_full_coverage=require_full_coverage,
+            live_message_refs_by_id=live_message_refs_by_id,
+            max_coverage_count=max_coverage_count,
+            enforce_keep_first=enforce_keep_first,
+        )
+        if selected is not None:
+            db_coverage_count = self._summary_snapshot_current_coverage_count(selected)
+            if db_coverage_count >= len(db_to_body_boundaries):
+                return None
+            self._annotate_summary_snapshot_selection(
+                selected,
+                db_coverage_count,
+                self._summary_snapshot_current_coverage_refs(selected) or [],
+                self._summary_snapshot_current_protected_head_count(selected),
+                body_coverage_count=db_to_body_boundaries[db_coverage_count],
+            )
+            if self.valves.debug_mode:
+                logger.info(
+                    "[Summary Snapshot] Selected snapshot using DB active branch refs "
+                    "for request body without stable message ids "
+                    f"(db_coverage={db_coverage_count}, "
+                    f"body_coverage={db_to_body_boundaries[db_coverage_count]}, "
+                    f"ignored_terminal_assistant={ignored_terminal_assistant})."
+                )
+        return selected
 
     def _count_tokens(self, text: str) -> int:
         """Counts the number of tokens in the text."""
@@ -5022,6 +5362,9 @@ class Filter:
             compressed_count = self._summary_snapshot_current_coverage_count(
                 summary_snapshot
             )
+            body_compressed_count = (
+                self._summary_snapshot_current_body_coverage_count(summary_snapshot)
+            )
             covered_refs = self._summary_snapshot_current_coverage_refs(
                 summary_snapshot
             )
@@ -5038,7 +5381,7 @@ class Filter:
             # 2. Tail messages (Tail) - All messages starting from the last compression point.
             # Align legacy/raw progress to an atomic boundary so old summary rows do not
             # reintroduce orphaned tool messages into the retained tail.
-            raw_start_index = max(compressed_count, effective_keep_first)
+            raw_start_index = max(body_compressed_count, effective_keep_first)
             start_index = self._align_tail_start_to_atomic_boundary(
                 messages, raw_start_index, effective_keep_first
             )
@@ -5858,14 +6201,16 @@ class Filter:
                                 lang, "status_high_usage"
                             )
 
-                        await __event_emitter__(
+                        await self._emit_status_event(
+                            __event_emitter__,
                             {
                                 "type": "status",
                                 "data": {
                                     "description": status_msg,
                                     "done": True,
                                 },
-                            }
+                            },
+                            "[🔍 Background Calculation] context usage status",
                         )
 
             # Check if compression is needed
@@ -5930,18 +6275,19 @@ class Filter:
                     event_call=__event_call__,
                     force=True,
                 )
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang, "status_summary_error", error=str(e)[:100]
-                            ),
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang, "status_summary_error", error=str(e)[:100]
+                        ),
+                        "done": True,
+                    },
+                },
+                "[🔍 Background Calculation] error status",
+            )
             logger.exception("[🔍 Background Calculation] Unhandled exception")
 
     def _clean_model_id(self, model_id: Optional[str]) -> Optional[str]:
@@ -5950,6 +6296,47 @@ class Filter:
             return None
         cleaned = model_id.strip().strip('"').strip("'")
         return cleaned if cleaned else None
+
+    async def _emit_status_event(
+        self,
+        __event_emitter__: Optional[Callable[[Any], Awaitable[None]]],
+        event: Dict[str, Any],
+        context: str,
+    ) -> bool:
+        if not __event_emitter__:
+            return False
+
+        try:
+            await __event_emitter__(event)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "%s emission failed: %s: %s",
+                context,
+                type(exc).__name__,
+                exc,
+            )
+            return False
+
+    async def _emit_summary_terminal_status(
+        self,
+        __event_emitter__: Callable[[Any], Awaitable[None]],
+        lang: str,
+        reason: str,
+    ) -> None:
+        await self._emit_status_event(
+            __event_emitter__,
+            {
+                "type": "status",
+                "data": {
+                    "description": self._get_translation(
+                        lang, "status_summary_error", error=str(reason)[:100]
+                    ),
+                    "done": True,
+                },
+            },
+            "[🤖 Async Summary Task] terminal status",
+        )
 
     async def _generate_summary_async(
         self,
@@ -6212,18 +6599,19 @@ class Filter:
             # 6. Call LLM to generate new summary
 
             # Send status notification for starting summary generation
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang, "status_generating_summary"
-                            ),
-                            "done": False,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang, "status_generating_summary"
+                        ),
+                        "done": False,
+                    },
+                },
+                "[🤖 Async Summary Task] generating status",
+            )
 
             new_summary = await self._call_summary_llm(
                 conversation_text,
@@ -6239,6 +6627,11 @@ class Filter:
                     "[🤖 Async Summary Task] ⚠️ Summary generation returned empty result, skipping save",
                     log_type="warning",
                     event_call=__event_call__,
+                )
+                await self._emit_summary_terminal_status(
+                    __event_emitter__,
+                    lang,
+                    "summary generation returned empty result",
                 )
                 return
 
@@ -6303,23 +6696,29 @@ class Filter:
                     log_type="warning",
                     event_call=__event_call__,
                 )
+                await self._emit_summary_terminal_status(
+                    __event_emitter__,
+                    lang,
+                    "summary generated but was not persisted",
+                )
                 return
 
             # Send completion status notification
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang,
-                                "status_loaded_summary",
-                                count=len(middle_messages),
-                            ),
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang,
+                            "status_loaded_summary",
+                            count=len(middle_messages),
+                        ),
+                        "done": True,
+                    },
+                },
+                "[🤖 Async Summary Task] completion status",
+            )
 
             await self._log(
                 f"[🤖 Async Summary Task] ✅ Complete! New summary length: {len(new_summary)} characters",
@@ -6446,18 +6845,19 @@ class Filter:
                     force=True,
                 )
 
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": self._get_translation(
-                                lang, "status_summary_error", error=str(e)[:100]
-                            ),
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status_event(
+                __event_emitter__,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_translation(
+                            lang, "status_summary_error", error=str(e)[:100]
+                        ),
+                        "done": True,
+                    },
+                },
+                "[🤖 Async Summary Task] error status",
+            )
 
             import traceback
 
@@ -6956,7 +7356,14 @@ Return only the XML working memory:
             request = __request__ or Request(scope={"type": "http", "app": webui_app})
 
             # Call generate_chat_completion
-            response = await generate_chat_completion(request, payload, user)
+            summary_timeout = float(self.valves.summary_llm_timeout_seconds or 0)
+            if summary_timeout > 0:
+                response = await asyncio.wait_for(
+                    generate_chat_completion(request, payload, user),
+                    timeout=summary_timeout,
+                )
+            else:
+                response = await generate_chat_completion(request, payload, user)
 
             # Handle JSONResponse (some backends return JSONResponse instead of dict)
             if hasattr(response, "body"):
@@ -7007,7 +7414,12 @@ Return only the XML working memory:
         except Exception as e:
             error_msg = str(e)
             # Handle specific error messages
-            if "Model not found" in error_msg:
+            if isinstance(e, asyncio.TimeoutError):
+                timeout_display = f"{float(self.valves.summary_llm_timeout_seconds):g}"
+                error_message = (
+                    f"Summary LLM request timed out after {timeout_display} seconds."
+                )
+            elif "Model not found" in error_msg:
                 error_message = f"Summary model '{model}' not found."
             else:
                 error_message = f"Summary LLM Error ({model}): {error_msg}"

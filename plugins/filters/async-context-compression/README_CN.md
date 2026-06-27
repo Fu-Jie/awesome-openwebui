@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.0 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.1 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -30,12 +30,14 @@
 - **受保护头部追踪**：摘要行会记录有多少开头消息是在摘要之外按原文保留的。如果当前 `keep_first` 策略已经不再保留这些消息，该摘要行不会作为 branch-valid 覆盖范围复用。
 - **安全升级行为**：没有覆盖范围元数据的 legacy summary 不再被当成可信覆盖。升级后的第一轮对话可能会发送更多原始上下文，直到生成 branch-valid 摘要行。
 
-## 1.7.0 版本更新
+## 1.7.1 版本更新
 
 - **分支感知摘要复用**：缓存摘要会先用有序 message refs 和 payload fingerprints 校验，来自 sibling 分支或编辑前历史的摘要不会注入到错误分支。
 - **单表摘要存储**：branch-valid 历史摘要行直接保存在 `chat_summary`，所有分支摘要都在这张表里。
 - **分支感知引用聊天**：引用聊天现在可以复用当前 active branch 上最大的有效前缀摘要，并拼接未覆盖的原文 tail。如果因此生成 continuation summary，会写回被引用聊天自己的 `chat_summary`，后续引用可直接复用。
-- **更安全的 schema 升级**：legacy count-only 摘要不会被当成可信覆盖，旧的一 chat 一行 schema 会重建，后续重新生成安全摘要。
+- **修复无 id 请求的摘要复用**：当 request body 没有稳定 message id 时，插件会先用数据库里的 active branch 严格对齐校验，再决定是否复用已有摘要，避免长对话误退回原始全文。
+- **处理末尾 assistant 占位消息**：OpenWebUI 可能先把“正在生成中”的 assistant 占位消息写入数据库，但实际发给模型的 body 只到最新 user message。现在只有在 body 能证明匹配 user-tip 分支时，才会忽略这个末尾占位消息。
+- **更安全的 schema 和 DB fallback 行为**：legacy count-only 摘要不会被当成可信覆盖，旧的一 chat 一行 schema 会安全重建；folded output 转换异常会 fail closed，idless fallback 的 debug 日志不会中断请求。
 
 ## 1.6.5 版本更新
 
@@ -197,6 +199,7 @@ flowchart TD
 | `summary_model`       | `None`  | 用于生成摘要的模型 ID。**强烈建议**配置快速、经济、上下文窗口大的模型（如 `gemini-2.5-flash`、`deepseek-v3`）。留空则尝试复用当前对话模型。 |
 | `summary_model_max_context` | `0`     | 摘要请求可使用的输入上下文窗口。如果为 0，则回退到 `model_thresholds` 或全局 `max_context_tokens`。                                          |
 | `max_summary_tokens`  | `16384` | 生成摘要时允许的最大输出 Token 数。它不是摘要输入窗口上限，并且必须严格小于有效摘要输入窗口（`summary_model_max_context`，或从 `model_thresholds` / `max_context_tokens` 回退得到的窗口）的 80%。剩余窗口用于下次压缩时同时容纳旧摘要和新消息；不满足要求会报错，不会自动调整。 |
+| `summary_llm_timeout_seconds` | `180.0` | 摘要 LLM 请求最长等待秒数；超过后本轮跳过摘要生成。设置为 `0` 可关闭超时。 |
 | `summary_temperature` | `0.1`   | 控制摘要生成的随机性，较低的值结果更稳定。                                                                                                  |
 | `summary_fail_mode`   | `silent` | 控制摘要 LLM 调用失败时的行为。`silent` 会记录错误并跳过本轮摘要；`raise` 会保留之前的硬抛错行为。                                         |
 | `compression_style`   | `balanced` | 控制摘要压缩风格。`aggressive` 更省 token，`balanced` 在紧凑和保真之间取中间值，`faithful` 会尽量保留更多细节、论证和上下文层次。 |
@@ -251,6 +254,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.7.0` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.0_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.7.1` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.1_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

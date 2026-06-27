@@ -1,6 +1,6 @@
 # Async Context Compression Filter
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.0 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.1 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -28,12 +28,14 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 - **Protected-head tracking**: Summary rows remember how many leading messages were kept outside the summary. If the current `keep_first` policy no longer preserves those messages, the row is not reused as branch-valid coverage.
 - **Safe upgrade behavior**: Legacy summaries without coverage metadata are not trusted as coverage. The first turn after upgrading may send more raw context until a branch-valid summary row is generated.
 
-## What's new in 1.7.0
+## What's new in 1.7.1
 
 - **Branch-aware summary reuse**: Cached summaries are validated against ordered message refs and payload fingerprints before reuse, so sibling-branch or edited-history summaries are not injected into the wrong branch.
 - **Single-table summary storage**: Branch-valid historical rows are stored directly in `chat_summary`; all branch summaries live in that table.
 - **Branch-aware referenced chats**: Referenced chats can now reuse the largest valid prefix summary plus the uncovered active-branch tail. If that mixed reference needs a new summary, the continuation summary is saved back to `chat_summary` for the referenced chat and reused later.
-- **Safer schema upgrades**: Legacy count-only summaries are not trusted as coverage, and old one-row-per-chat schemas are rebuilt so summaries can be regenerated safely.
+- **Idless request summary reuse**: Request bodies without stable message ids can now be matched against the persisted DB active branch before rejecting cached summaries, preventing long chats from falling back to raw history unnecessarily.
+- **Terminal assistant placeholder handling**: When OpenWebUI has inserted the in-progress assistant placeholder into the DB branch but the model-visible request ends at the latest user message, the filter can ignore that terminal placeholder only after the body proves it matches the user-tip branch.
+- **Safer schema and DB fallback behavior**: Legacy count-only summaries are not trusted as coverage, old one-row-per-chat schemas are rebuilt safely, folded output conversion failures fail closed, and debug logging is safe for idless fallback.
 
 ## What's new in 1.6.4
 
@@ -181,6 +183,7 @@ flowchart TD
 | `summary_model`                | `None`   | Model for summaries. Strongly recommended to set a fast, economical model (e.g., `gemini-2.5-flash`, `deepseek-v3`). Falls back to the current chat model when empty. |
 | `summary_model_max_context`    | `0`      | Input context window used to fit summary requests. If `0`, falls back to `model_thresholds` or global `max_context_tokens`.                                          |
 | `max_summary_tokens`           | `16384`  | Maximum output length for the generated summary. This is not the summary-input context limit, and must be strictly less than 80% of the effective summary input window (`summary_model_max_context`, or its fallback from `model_thresholds` / `max_context_tokens`). The remaining window is reserved so the next compression can include the previous summary plus new messages; invalid settings raise an error instead of being auto-adjusted. |
+| `summary_llm_timeout_seconds`  | `180.0`  | Maximum time to wait for the summary LLM request before skipping summary generation for that turn. Set to `0` to disable the timeout.                                 |
 | `summary_temperature`          | `0.1`    | Randomness for summary generation. Lower is more deterministic.                                                                                                       |
 | `summary_fail_mode`            | `silent` | Controls what happens when the summary LLM call fails. `silent` logs the error and skips summary generation for that turn; `raise` preserves the previous hard-failure behavior. |
 | `compression_style`            | `balanced` | Controls summary compactness. `aggressive` minimizes tokens, `balanced` keeps key context with moderate detail, and `faithful` preserves more nuance and reasoning context. |
@@ -210,6 +213,6 @@ If this plugin has been useful, a star on [OpenWebUI Extensions](https://github.
 
 ## Changelog
 
-See [`v1.7.0` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.0.md) for the release-specific summary.
+See [`v1.7.1` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.1.md) for the release-specific summary.
 
 See the full history on GitHub: [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

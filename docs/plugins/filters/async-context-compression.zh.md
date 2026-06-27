@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.0 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.1 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -23,12 +23,14 @@
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
 
-## 1.7.0 版本更新
+## 1.7.1 版本更新
 
 - **分支感知摘要复用**：缓存摘要现在会先用 message id 和 payload fingerprint 验证覆盖范围。来自 sibling 分支或编辑前内容的旧摘要会被拒绝，不会注入到错误分支。
 - **单表分支摘要存储**：branch-valid 摘要行统一写入 `chat_summary`，缺少覆盖元数据的 count-only 摘要会重新生成。
 - **分支感知引用聊天**：引用聊天现在可以复用当前 active branch 上最大的有效前缀摘要，并拼接未覆盖的原文 tail。如果因此生成 continuation summary，会写回被引用聊天自己的 `chat_summary`，后续引用可直接复用。
-- **更安全的升级检查**：仍通过 `chat_id` unique 限制每个 chat 只能一行的旧表会被重建；如果无法反射检查现有 schema，会保留表不动并禁用摘要持久化，不会执行破坏性 DDL。
+- **修复无 id 请求的摘要复用**：当 request body 没有稳定 message id 时，插件会先用数据库里的 active branch 严格对齐校验，再决定是否复用已有摘要，避免长对话误退回原始全文。
+- **处理末尾 assistant 占位消息**：OpenWebUI 可能先把“正在生成中”的 assistant 占位消息写入数据库，但实际发给模型的 body 只到最新 user message。现在只有在 body 能证明匹配 user-tip 分支时，才会忽略这个末尾占位消息。
+- **更安全的 schema 和 DB fallback 行为**：仍通过 `chat_id` unique 限制每个 chat 只能一行的旧表会被安全重建；folded output 转换异常会 fail closed，idless fallback 的 debug 日志不会中断请求。
 
 ## 1.6.4 版本更新
 
@@ -247,6 +249,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.7.0` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.0_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.7.1` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.1_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)
