@@ -1899,13 +1899,40 @@ class Filter:
                 # browser console.  When anchor_source is "currentId (fallback)"
                 # the branch-divergence fix is NOT active (anchor missing),
                 # and mismatches can occur after regeneration/edit.
+                #
+                # "diverged" here means TRUE branch divergence: the anchor
+                # (user_message_id) is NOT on the currentId ancestor chain.
+                # Simply comparing anchor != currentId is useless because they
+                # are always different nodes (user vs assistant message).  We
+                # walk up parentId from currentId; if we reach the anchor, both
+                # are on the same branch (currentId is a descendant of the
+                # user_message_id, the normal case).  If not, the body and DB
+                # walk are on different branches — the v1.7.3 fix is actively
+                # steering the DB walk onto the body's branch.
                 current_id_in_history = history.get("currentId") or history.get("current_id")
+                same_branch = False
+                if walk_anchor and current_id_in_history:
+                    cursor = current_id_in_history
+                    visited = set()
+                    while (
+                        cursor
+                        and cursor in history_messages
+                        and cursor not in visited
+                    ):
+                        if cursor == walk_anchor:
+                            same_branch = True
+                            break
+                        visited.add(cursor)
+                        cursor = (
+                            history_messages[cursor].get("parentId")
+                            or history_messages[cursor].get("parent_id")
+                        )
                 self._last_db_walk_anchor = {
                     "anchor": walk_anchor,
                     "source": anchor_source,
                     "currentId": current_id_in_history,
                     "diverged": (
-                        walk_anchor != current_id_in_history
+                        not same_branch
                         if walk_anchor and current_id_in_history
                         else False
                     ),
@@ -5805,13 +5832,20 @@ class Filter:
         )
 
         # Diagnostic: emit the actual DB walk result — which anchor was used
-        # (user_message_id vs currentId fallback) and whether it diverged from
-        # history.currentId.  "diverged=true" means the branch-divergence fix
-        # is actively steering the walk onto the body's branch; if the summary
-        # is then rejected with a role mismatch, the fix is incomplete.
+        # (user_message_id vs currentId fallback) and whether the anchor is on
+        # the same branch as currentId.  "TRUE DIVERGENCE" means the
+        # user_message_id is NOT an ancestor of currentId, so the body and DB
+        # walk are on different branches — the v1.7.3 fix is actively steering
+        # the DB walk onto the body's branch.  If a "same branch" result is
+        # shown, the fix and the legacy currentId walk would produce the same
+        # branch (the fix is a no-op for this request).
         if self._last_db_walk_anchor is not None:
             anc = self._last_db_walk_anchor
-            diverged_marker = " ⚠️ DIVERGED from currentId" if anc.get("diverged") else ""
+            diverged_marker = (
+                " ⚠️ TRUE DIVERGENCE (anchor not on currentId branch)"
+                if anc.get("diverged")
+                else " (same branch as currentId)"
+            )
             await self._log(
                 f"[Inlet] 🧭 DB walk used {anc.get('source')}: "
                 f"anchor={anc.get('anchor')!r} currentId={anc.get('currentId')!r}"
