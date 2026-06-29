@@ -186,3 +186,12 @@ Here is the result <antArtifact>hidden metadata</antArtifact>.
 **示例**:
 *   **Before**: `| Col 1 | Col 2`
 *   **After**: `| Col 1 | Col 2 |`
+
+## 11. 词内强调修复 (Intra-word Emphasis Fix)
+**功能**: 当 LLM 在词边界内标记仅含标点的添加时（如语法/拼写差异输出中的 `series**,**` 表示添加了逗号），大多数 Markdown 解析器会拒绝渲染该强调，因为开头的定界符位于词内。本插件会将开头标记移动到词的开头，让添加的标点能与单词一起渲染。仅对包含纯标点内容的情况生效，合法的 `**bold**` / `word**bold**` 等标记不会被改动；代码块与行内代码也受到保护。
+**默认**: 关闭 (`enable_intra_word_emphasis_fix = False`)
+**示例**:
+*   **Before**: `series**,**` (加粗的逗号无法渲染)
+*   **After**: `**series,**` (整个 "series," 加粗渲染)
+
+支持 `**` (加粗)、`~~` (删除线)、`__` (加粗)、`***` / `___` (加粗+斜体) 等所有多字符强调标记。

@@ -52,7 +52,7 @@ Filter 充当消息管线中的中间件：
 
     修复 LLM 输出中常见的 Markdown 格式问题，包括 Mermaid 语法、代码块和 LaTeX 公式。
 
-    **版本：** 1.2.8
+    **版本：** 1.2.9
 
     [:octicons-arrow-right-24: 查看文档](markdown_normalizer.zh.md)
 

@@ -1,6 +1,6 @@
 # Markdown 格式化过滤器 (Markdown Normalizer)
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.2.8 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.2.9 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -26,6 +26,10 @@
 
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
+
+## 🔥 最新更新 v1.2.9
+
+* **词内强调修复 (issue [#97](https://github.com/Fu-Jie/openwebui-extensions/issues/97))**：新增 `enable_intra_word_emphasis_fix` 配置项。当 LLM 在词边界内标记仅含标点的添加时——例如 `series**,**`（添加的逗号用粗体）或 `word~~,~~`（添加的删除线）——大多数 Markdown 解析器会因为开头定界符位于词内而拒绝渲染该强调。插件现在会将开头标记移动到词的开头（`series**,**` → `**series,**`），让添加的标点能与单词一起渲染。非常适合语法/拼写差异输出。仅对包含纯标点内容的情况进行转换，因此合法的 `**bold**` / `word**bold**` 标记不会被改动。默认关闭。
 
 ## 🔥 最新更新 v1.2.8
 
@@ -60,6 +64,7 @@
 - **Details 标签排版修复**：`<details>` 块要求极为严格的空行才能正确渲染内部内容。插件会自动在 `</details>` 以及自闭合 `<details />` 标签后注入安全的换行符。
 * **Mermaid 语法急救**：自动修复最常见的 Mermaid 错误——为未加引号的节点标签（如 `A --> B(Some text)`）自动补充双引号，甚至支持多行标签和引用，确保拓扑图 100% 渲染。
 * **强调语法间距修复**：修复加粗/斜体语法内部多余的空格（如 `** 文本 **` 变为 `**文本**`，否则 OpenWebUI 无法加粗），同时智能忽略数学算式（如 `2 * 3 * 4`）。
+* **词内强调修复**：当 LLM 在词边界内标记仅含标点的添加时（如 `series**,**` 表示添加了逗号），大多数解析器会拒绝渲染该强调。插件会将开头标记移动到词的开头（`series**,**` → `**series,**`），让添加的标点能与单词一起渲染。适合语法/拼写差异输出。
 * **智能转义字符清理**：将模型过度转义生成的字面量 `\n` 和 `\t` 转化为真正的换行和缩进（仅在安全的纯文本区域执行）。
 * **LaTeX 现代化转换**：自动将旧式的 LaTeX 定界符（`\[...\]` 和 `\(...\)`）升级为现代 Markdown 标准（`$$...$$` 和 `$ ... $`）。
 * **思维标签大一统**：无论模型输出的是 `<think>` 还是 `<thinking>`，统一标准化为 `<thought>` 标签。
@@ -100,6 +105,7 @@
 | `enable_table_fix` | `True` | 修复表格中缺失的闭合管道符。 |
 | `enable_xml_tag_cleanup` | `True` | 清理残留的 XML 分析标签。 |
 | `enable_emphasis_spacing_fix` | `False` | 修复强调语法（加粗/斜体）内部的多余空格。 |
+| `enable_intra_word_emphasis_fix` | `False` | 将开头的强调标记移动到词的开头（如 `series**,**` → `**series,**`），让仅含标点的添加能正常渲染。适合语法/拼写差异输出。 |
 | `show_status` | `True` | 当触发任何修复规则时，在页面底部显示提示气泡。 |
 | `show_debug_log` | `False` | 在浏览器控制台 (F12) 打印修改前后的详细对比日志。 |
 

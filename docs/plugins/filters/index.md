@@ -52,7 +52,7 @@ Filters act as middleware in the message pipeline:
 
     Fixes common Markdown formatting issues in LLM outputs, including Mermaid syntax, code blocks, and LaTeX formulas.
 
-    **Version:** 1.2.8
+    **Version:** 1.2.9
 
     [:octicons-arrow-right-24: Documentation](markdown_normalizer.md)
 
