@@ -1099,6 +1099,64 @@ class Filter:
         message_id = message.get("id") or message.get("message_id")
         return message_id if isinstance(message_id, str) and message_id else None
 
+    def _normalize_role(self, role: Any) -> str:
+        """Normalize chat-completion roles for position-based comparison.
+
+        OpenWebUI persists tool outputs under role 'tool', but some rebuild
+        paths may surface them as 'function' (legacy OpenAI shape).  Collapse
+        both to 'tool' so a body↔DB role sequence stays comparable even when
+        the exact role string differs across rebuild paths.
+        """
+        if not isinstance(role, str):
+            return ""
+        if role == "function":
+            return "tool"
+        return role
+
+    def _body_position_matches_db_message(
+        self,
+        body_message: Dict[str, Any],
+        db_message: Dict[str, Any],
+    ) -> bool:
+        """Position-based match used when content-level comparison is unsafe.
+
+        OpenWebUI's ``process_messages_with_output`` regenerates assistant
+        ``content`` from the ``output`` array before the inlet filter runs,
+        so for DB messages that carry an ``output`` array the body content
+        structurally differs from the persisted content (e.g. reasoning is
+        folded into a ``<details type="reasoning">`` block in the DB but
+        stripped from the body).  Content comparison cannot succeed there.
+
+        This helper validates the parts that ``process_messages_with_output``
+        preserves verbatim:
+        - role (normalized)
+        - tool_calls (rebuilt from output, but the function names/args match)
+        - tool_call_id
+
+        For DB messages WITHOUT an ``output`` array the content is not
+        rebuilt, so it must still match exactly — this catches genuine edits
+        (user-edited body payloads, corrupted tool calls) that position+role
+        alignment alone would miss.
+        """
+        if self._normalize_role(body_message.get("role")) != self._normalize_role(
+            db_message.get("role")
+        ):
+            return False
+
+        if body_message.get("tool_calls") != db_message.get("tool_calls"):
+            return False
+
+        if body_message.get("tool_call_id") != db_message.get("tool_call_id"):
+            return False
+
+        db_output = db_message.get("output")
+        has_db_output = isinstance(db_output, list) and bool(db_output)
+        if not has_db_output:
+            if body_message.get("content") != db_message.get("content"):
+                return False
+
+        return True
+
     def _message_fingerprint(self, message: Dict[str, Any]) -> str:
         """Fingerprint the model-visible payload to detect in-place edits."""
         payload = self._message_fingerprint_payload(message)
@@ -2430,22 +2488,54 @@ class Filter:
         unfolded_messages, db_to_body_boundaries = (
             self._unfold_db_branch_for_body_ref_fallback(db_messages)
         )
-        if len(body_messages) != len(unfolded_messages):
-            return None
-
-        if not all(
-            self._body_message_matches_unfolded_db_message(
-                body_message,
-                unfolded_message,
-            )
-            for body_message, unfolded_message in zip(
-                body_messages,
-                unfolded_messages,
+        if (
+            len(body_messages) == len(unfolded_messages)
+            and all(
+                self._body_message_matches_unfolded_db_message(
+                    body_message,
+                    unfolded_message,
+                )
+                for body_message, unfolded_message in zip(
+                    body_messages,
+                    unfolded_messages,
+                )
             )
         ):
-            return None
+            return db_to_body_boundaries
 
-        return db_to_body_boundaries
+        # Path 3 (position-based fallback): when the body carries no
+        # OpenWebUI message ids and matches the DB active branch 1:1 in
+        # count and role sequence, accept the DB refs by position.
+        #
+        # This covers reasoning models (and any future rebuild path) where
+        # OpenWebUI regenerates assistant ``content`` from the ``output``
+        # array via ``convert_output_to_messages`` before the inlet filter
+        # runs, so the body content structurally differs from the persisted
+        # DB content (e.g. reasoning is folded into a
+        # ``<details type="reasoning">`` block in the DB but stripped from
+        # the body).  Content-level comparison cannot succeed in that case.
+        #
+        # Guards against false positives:
+        # - ``unfolded_messages`` non-empty rules out conversion failures
+        #   (when ``_unfold_db_branch_for_body_ref_fallback`` cannot parse
+        #   the output array it returns ``[]``; we keep rejecting in that
+        #   case so a corrupt output never silently passes).
+        # - ``_body_position_matches_db_message`` still requires exact
+        #   ``content`` match for DB messages WITHOUT ``output`` (catches
+        #   user-edited bodies) and always requires ``tool_calls`` /
+        #   ``tool_call_id`` to match (catches tampered tool calls).
+        if (
+            unfolded_messages
+            and all(not self._get_message_id(m) for m in body_messages)
+            and len(body_messages) == len(db_messages)
+            and all(
+                self._body_position_matches_db_message(body_message, db_message)
+                for body_message, db_message in zip(body_messages, db_messages)
+            )
+        ):
+            return list(range(len(db_messages) + 1))
+
+        return None
 
     def _compatible_db_branch_for_body_ref_fallback(
         self,

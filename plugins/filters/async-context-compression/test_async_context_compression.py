@@ -1983,6 +1983,117 @@ class TestAsyncContextCompression(unittest.TestCase):
             )
         )
 
+    def test_inlet_applies_summary_for_reasoning_model_via_position_fallback(self):
+        """Issue #98: reasoning models rebuild assistant content from output,
+        so body content (no reasoning) ≠ DB content (folded reasoning).  The
+        position-based fallback must accept the snapshot so the summary is
+        actually injected on the inlet."""
+        self.filter.valves.keep_last = 0
+        db_messages = [
+            {"id": "m0", "role": "user", "content": "message m0"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": '<details type="reasoning">hidden reasoning chain</details>\nvisible answer',
+                "output": [
+                    {"type": "reasoning", "summary": [{"type": "output_text", "text": "hidden reasoning chain"}]},
+                    {"type": "message", "content": [{"type": "output_text", "text": "visible answer"}]},
+                ],
+            },
+            {"id": "m2", "role": "user", "content": "message m2"},
+        ]
+        # Body content is what process_messages_with_output produces:
+        # reasoning stripped (reasoning_format=None), only "visible answer".
+        body_messages = [
+            {"role": "user", "content": "message m0"},
+            {"role": "assistant", "content": "visible answer"},
+            {"role": "user", "content": "message m2"},
+        ]
+        snapshots = [
+            _snapshot(
+                "reasoning model summary",
+                self.filter._message_refs_for_prefix(db_messages, 2),
+            )
+        ]
+
+        async def fake_load_snapshots(chat_id):
+            return snapshots
+
+        async def fake_load_live_refs(chat_id):
+            return _live_refs_by_id(self.filter, db_messages)
+
+        async def fake_load_full_chat_messages(chat_id):
+            return db_messages
+
+        async def noop(*args, **kwargs):
+            return None
+
+        self.filter._load_summary_snapshots = fake_load_snapshots
+        self.filter._load_chat_history_live_refs = fake_load_live_refs
+        self.filter._load_full_chat_messages = fake_load_full_chat_messages
+        self.filter._log = noop
+        self.filter._emit_debug_log = noop
+        self.filter._get_model_thresholds = lambda model_id: {
+            "max_context_tokens": 0
+        }
+
+        result = asyncio.run(
+            self.filter.inlet(
+                {
+                    "chat_id": "chat-1",
+                    "model": "test-model",
+                    "messages": body_messages,
+                }
+            )
+        )
+        final_messages = result["messages"]
+
+        self.assertTrue(self.filter._is_summary_message(final_messages[0]))
+        self.assertIn("reasoning model summary", final_messages[0]["content"])
+        self.assertEqual(final_messages[1]["content"], "message m2")
+
+    def test_position_fallback_rejects_edited_content_when_db_has_no_output(self):
+        """Position fallback must still reject when DB has no output array
+        and the body content was edited (not rebuilt by OWUI)."""
+        self.filter.valves.keep_last = 0
+        db_messages = _messages_with_ids([f"m{i}" for i in range(3)])
+        body_messages = [
+            {"role": "user", "content": "message m0"},
+            {"role": "assistant", "content": "EDITED, not the original"},
+            {"role": "user", "content": "message m2"},
+        ]
+
+        result = self.filter._body_to_db_coverage_map_for_ref_fallback(
+            body_messages,
+            db_messages,
+        )
+        self.assertIsNone(result)
+
+    def test_position_fallback_accepts_reasoning_content_mismatch(self):
+        """Position fallback accepts content differences ONLY for DB messages
+        that carry an output array (i.e. content was rebuilt by OWUI)."""
+        db_messages = [
+            {"id": "m0", "role": "user", "content": "message m0"},
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": "<details type=\"reasoning\">reasoning</details>\nanswer",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "answer"}]}],
+            },
+            {"id": "m2", "role": "user", "content": "message m2"},
+        ]
+        body_messages = [
+            {"role": "user", "content": "message m0"},
+            {"role": "assistant", "content": "answer"},  # rebuilt, reasoning stripped
+            {"role": "user", "content": "message m2"},
+        ]
+
+        result = self.filter._body_to_db_coverage_map_for_ref_fallback(
+            body_messages,
+            db_messages,
+        )
+        self.assertEqual(result, [0, 1, 2, 3])
+
     def test_unfold_db_branch_fallback_rejects_conversion_errors(self):
         misc_module = _ensure_module("open_webui.utils.misc")
 
