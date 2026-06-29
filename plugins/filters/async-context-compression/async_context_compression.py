@@ -864,6 +864,13 @@ BRANCH_SUMMARY_REQUIRED_COLUMNS = {
 class Filter:
     def __init__(self):
         self.valves = self.Valves()
+        # Diagnostic stash: set by _body_to_db_coverage_map_for_ref_fallback
+        # when Path 3 rejects, read by inlet() to emit to the browser console.
+        self._last_path3_rejection = None
+        # Diagnostic stash: set by _load_full_chat_messages to record which
+        # anchor was used for the DB walk and whether it diverged from
+        # history.currentId.  Read by inlet() to emit to the browser console.
+        self._last_db_walk_anchor = None
         self._owui_db = owui_db
         self._db_engine = owui_engine
         self._fallback_session_factory = (
@@ -1881,10 +1888,28 @@ class Filter:
             history_messages = history.get("messages")
             if isinstance(history_messages, dict) and history_messages:
                 walk_anchor = None
+                anchor_source = None
                 if isinstance(anchor_message_id, str) and anchor_message_id in history_messages:
                     walk_anchor = anchor_message_id
+                    anchor_source = "user_message_id"
                 if not walk_anchor:
                     walk_anchor = history.get("currentId") or history.get("current_id")
+                    anchor_source = "currentId (fallback)"
+                # Stash the anchor diagnostic so inlet() can emit it to the
+                # browser console.  When anchor_source is "currentId (fallback)"
+                # the branch-divergence fix is NOT active (anchor missing),
+                # and mismatches can occur after regeneration/edit.
+                current_id_in_history = history.get("currentId") or history.get("current_id")
+                self._last_db_walk_anchor = {
+                    "anchor": walk_anchor,
+                    "source": anchor_source,
+                    "currentId": current_id_in_history,
+                    "diverged": (
+                        walk_anchor != current_id_in_history
+                        if walk_anchor and current_id_in_history
+                        else False
+                    ),
+                }
                 branch_messages = self._reconstruct_active_history_branch(
                     history_messages, walk_anchor
                 )
@@ -2614,10 +2639,21 @@ class Filter:
             )
             if first_mismatch is not None:
                 mismatch_index, mismatch_reason = first_mismatch
+                # Stash for the inlet to emit to the browser console so users
+                # can see exactly which position/field caused the rejection
+                # without digging through backend logs.
+                self._last_path3_rejection = (
+                    mismatch_index,
+                    mismatch_reason,
+                )
                 logger.info(
                     "[Summary Snapshot] Path 3 position fallback rejected at "
                     f"index={mismatch_index}: {mismatch_reason}"
                 )
+            else:
+                self._last_path3_rejection = None
+        else:
+            self._last_path3_rejection = None
 
         return None
 
@@ -5753,11 +5789,59 @@ class Filter:
             if isinstance(__metadata__, dict)
             else None
         )
+        # Diagnostic: show which anchor the DB walk will use, and whether it
+        # diverges from history.currentId.  When these differ, the filter is
+        # relying on the v1.7.3 branch-divergence fix to walk the SAME branch
+        # the body came from.  If currentId fallback is used instead (anchor
+        # missing), branch mismatches can silently reject the summary.
+        await self._log(
+            f"[Inlet] 📍 DB walk anchor: user_message_id={inlet_user_message_id!r}",
+            event_call=__event_call__,
+        )
         summary_snapshot = await self._load_applicable_summary_snapshot(
             chat_id,
             messages,
             anchor_message_id=inlet_user_message_id,
         )
+
+        # Diagnostic: emit the actual DB walk result — which anchor was used
+        # (user_message_id vs currentId fallback) and whether it diverged from
+        # history.currentId.  "diverged=true" means the branch-divergence fix
+        # is actively steering the walk onto the body's branch; if the summary
+        # is then rejected with a role mismatch, the fix is incomplete.
+        if self._last_db_walk_anchor is not None:
+            anc = self._last_db_walk_anchor
+            diverged_marker = " ⚠️ DIVERGED from currentId" if anc.get("diverged") else ""
+            await self._log(
+                f"[Inlet] 🧭 DB walk used {anc.get('source')}: "
+                f"anchor={anc.get('anchor')!r} currentId={anc.get('currentId')!r}"
+                f"{diverged_marker}",
+                event_call=__event_call__,
+            )
+            self._last_db_walk_anchor = None
+
+        # Diagnostic: show whether a branch-valid summary was found.  When
+        # this is None despite a summary existing in the DB, the branch-validity
+        # check rejected it — look for the Path 3 rejection log below to see why.
+        await self._log(
+            f"[Inlet] 📦 Summary snapshot: {'FOUND (will inject)' if summary_snapshot else 'NONE (full context sent)'}",
+            event_call=__event_call__,
+        )
+
+        # Diagnostic: if Path 3 (position-based fallback) rejected the body,
+        # surface the exact mismatch index/reason in the browser console so
+        # users can see WHY the summary was dropped without digging through
+        # backend logs.  This is the key signal for branch-divergence bugs:
+        # a "role mismatch" at equal length means the DB walk and body walk
+        # are on different branches.
+        if self._last_path3_rejection is not None:
+            rej_index, rej_reason = self._last_path3_rejection
+            await self._log(
+                f"[Inlet] ⚠️ Path 3 rejected at index={rej_index}: {rej_reason}",
+                log_type="warning",
+                event_call=__event_call__,
+            )
+            self._last_path3_rejection = None
 
         # Calculate effective_keep_first to ensure all system messages are protected
         effective_keep_first = self._get_effective_keep_first(messages)
