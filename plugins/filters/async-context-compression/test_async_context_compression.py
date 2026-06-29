@@ -313,7 +313,7 @@ class _FakeBranchSummaryStore:
         self.rows.append(row)
         return row
 
-    async def load(self, chat_id, messages, require_full_coverage=False):
+    async def load(self, chat_id, messages, require_full_coverage=False, **kwargs):
         return self.filter._select_applicable_summary_snapshot(
             list(self.rows),
             messages,
@@ -1092,6 +1092,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             chat_id,
             messages,
             require_full_coverage=False,
+            **kwargs,
         ):
             return self.filter._select_applicable_summary_snapshot(
                 snapshots,
@@ -1157,6 +1158,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             chat_id,
             messages,
             require_full_coverage=False,
+            **kwargs,
         ):
             return self.filter._select_applicable_summary_snapshot(
                 snapshots,
@@ -1559,6 +1561,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             chat_id,
             messages,
             require_full_coverage=False,
+            **kwargs,
         ):
             return self.filter._select_applicable_summary_snapshot(
                 snapshots,
@@ -1619,6 +1622,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             chat_id,
             messages,
             require_full_coverage=False,
+            **kwargs,
         ):
             return self.filter._select_applicable_summary_snapshot(
                 snapshots,
@@ -1716,7 +1720,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -1783,7 +1787,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -1870,7 +1874,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -1944,7 +1948,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -2022,7 +2026,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -2184,7 +2188,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -2322,7 +2326,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -2381,6 +2385,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             chat_id,
             messages,
             require_full_coverage=False,
+            **kwargs,
         ):
             return self.filter._select_applicable_summary_snapshot(
                 snapshots,
@@ -2458,6 +2463,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             chat_id,
             messages,
             require_full_coverage=False,
+            **kwargs,
         ):
             return self.filter._select_applicable_summary_snapshot(
                 snapshots,
@@ -3762,7 +3768,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def noop_log(*args, **kwargs):
             return None
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return []
 
         def fake_locked_summary_task(
@@ -4405,7 +4411,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             )
         )
         self.filter._count_tokens = lambda text: len(text)
-        async def fake_load_applicable_summary_snapshot(chat_id, messages):
+        async def fake_load_applicable_summary_snapshot(chat_id, messages, **kwargs):
             return types.SimpleNamespace(summary="P" * 300)
 
         self.filter._load_applicable_summary_snapshot = (
@@ -4453,7 +4459,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         previous_snapshot = _snapshot("previous branch summary", previous_refs)
         captured = {}
 
-        async def fake_load_applicable_summary_snapshot(chat_id, loaded_messages):
+        async def fake_load_applicable_summary_snapshot(chat_id, loaded_messages, **kwargs):
             self.assertEqual(loaded_messages, messages)
             return previous_snapshot
 
@@ -5636,6 +5642,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             self.assertIn(require_full_coverage, (True, False))
             if require_full_coverage:
@@ -5717,6 +5724,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             self.assertTrue(require_full_coverage)
             return self.filter._select_applicable_summary_snapshot(
@@ -5848,6 +5856,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             self.assertEqual(
                 [message["id"] for message in messages],
@@ -5923,6 +5932,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             if require_full_coverage:
                 return None
@@ -5994,6 +6004,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             if saved and require_full_coverage:
                 saved_snapshot = _snapshot(
@@ -6135,6 +6146,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             if require_full_coverage:
                 return None
@@ -6286,6 +6298,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             if require_full_coverage:
                 return None
@@ -6420,6 +6433,7 @@ class TestAsyncContextCompression(unittest.TestCase):
             require_full_coverage=False,
             max_coverage_count=None,
             enforce_keep_first=True,
+            **kwargs,
         ):
             if require_full_coverage:
                 return None
@@ -6546,7 +6560,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         async def noop_save_summary(*args, **kwargs):
             return None
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return [{"id": "ref-1", "role": "user", "content": "msg 1"}]
 
         self.filter._save_summary = noop_save_summary
@@ -6622,7 +6636,7 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.filter._save_summary = fake_save_summary
         self.filter._log = noop_log
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return [
                 {"id": "ref-1", "role": "user", "content": "Referenced question"},
                 {"id": "ref-2", "role": "assistant", "content": "Referenced answer"},
@@ -6696,7 +6710,7 @@ class TestAsyncContextCompression(unittest.TestCase):
 
         self.filter._save_summary = fake_save_summary
         self.filter._log = noop_log
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return [
             {"role": "user", "content": "msg 1"},
             {"role": "assistant", "content": "msg 2"},

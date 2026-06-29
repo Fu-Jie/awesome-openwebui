@@ -573,7 +573,7 @@ class TestIssue98E2E(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -762,7 +762,7 @@ class TestIssue98E2E(unittest.TestCase):
         async def fake_load_live_refs(chat_id):
             return _live_refs_by_id(self.filter, db_messages)
 
-        async def fake_load_full_chat_messages(chat_id):
+        async def fake_load_full_chat_messages(chat_id, **kwargs):
             return db_messages
 
         async def noop(*args, **kwargs):
@@ -786,6 +786,252 @@ class TestIssue98E2E(unittest.TestCase):
 
         self.assertTrue(self.filter._is_summary_message(result["messages"][0]))
         self.assertIn("ollama reasoning summary", result["messages"][0]["content"])
+
+    # ── Scenario 9: Branch divergence (user_message_id vs currentId) ───
+    # Regression for Tuxie's bug: after a regeneration, currentId points at
+    # the regenerated branch tip while the inlet body was built by OpenWebUI
+    # from metadata['user_message_id'].  Walking the parentId chain from the
+    # wrong anchor produces a different role sequence (mid-chain divergence).
+    #
+    # The assistant message carries an ``output`` array (reasoning model) so
+    # that ``process_messages_with_output`` rebuilds it IDESS in the body.
+    # This forces the primary ref-based selection to fail (``_current_branch_refs``
+    # returns None) and routes through Path 3 — the path that needs the DB
+    # branch to match the body.
+
+    @staticmethod
+    def _build_branch_fork_history():
+        """Build a chat history map with a regeneration fork.
+
+        Topology:
+            U1 ── A1(out) ── U2          (original branch; A1 has output array)
+                  └── A1'(out)           (regenerated A1; currentId points here)
+
+        - ``currentId`` = "a1prime"  (regenerated branch tip)
+        - ``user_message_id`` = "u2" (on the ORIGINAL branch)
+
+        OpenWebUI's ``load_messages_from_db(chat_id, "u2")`` walks:
+            U1 → A1 → U2   (3 messages, original branch)
+
+        Walking from ``currentId`` ("a1prime") gives:
+            U1 → A1'        (2 messages, regenerated branch)
+
+        These are DIFFERENT branches — Path 3 count/role check diverges.
+        """
+        return {
+            "currentId": "a1prime",
+            "messages": {
+                "u1": {"id": "u1", "role": "user", "content": "Hello", "parentId": None},
+                "a1": {
+                    "id": "a1",
+                    "role": "assistant",
+                    "content": '<details type="reasoning">\nthinking\n</details>\nHi there',
+                    "parentId": "u1",
+                    "output": [
+                        {"type": "reasoning", "summary": [{"type": "output_text", "text": "thinking"}]},
+                        {"type": "message", "content": [{"type": "output_text", "text": "Hi there"}]},
+                    ],
+                },
+                "u2": {"id": "u2", "role": "user", "content": "Bye", "parentId": "a1"},
+                "a2": {"id": "a2", "role": "assistant", "content": "Goodbye", "parentId": "u2"},
+                "a1prime": {
+                    "id": "a1prime",
+                    "role": "assistant",
+                    "content": '<details type="reasoning">\nmore thinking\n</details>\nGreetings!',
+                    "parentId": "u1",
+                    "output": [
+                        {"type": "reasoning", "summary": [{"type": "output_text", "text": "more thinking"}]},
+                        {"type": "message", "content": [{"type": "output_text", "text": "Greetings!"}]},
+                    ],
+                },
+            },
+        }
+
+    def _install_chat_record(self, history):
+        """Patch module-level Chats.get_chat_by_id to return a record with .chat."""
+        chat_payload = {"history": history}
+        record = types.SimpleNamespace(chat=chat_payload)
+
+        chats_module = sys.modules.get("open_webui.models.chats")
+        original_chats = chats_module.Chats if chats_module else None
+
+        class _FakeChats:
+            @staticmethod
+            def get_chat_by_id(chat_id):
+                return record
+
+        if chats_module:
+            chats_module.Chats = _FakeChats
+        module.Chats = _FakeChats
+        return original_chats, chats_module
+
+    def _restore_chats(self, original_chats, chats_module):
+        if chats_module:
+            chats_module.Chats = original_chats
+        module.Chats = original_chats
+
+    def test_load_full_chat_walks_from_anchor_when_provided(self):
+        """_load_full_chat_messages must walk from anchor_message_id (user_message_id),
+        NOT from currentId, when the anchor is available."""
+        history = self._build_branch_fork_history()
+        original_chats, chats_module = self._install_chat_record(history)
+        try:
+            # With anchor = user_message_id "u2" → walks original branch
+            result = asyncio.run(
+                self.filter._load_full_chat_messages(
+                    "chat-fork", anchor_message_id="u2"
+                )
+            )
+            ids = [m.get("id") for m in result]
+            self.assertEqual(ids, ["u1", "a1", "u2"],
+                             "Must walk from user_message_id (original branch)")
+
+            # Without anchor → falls back to currentId "a1prime" (regenerated branch)
+            result_no_anchor = asyncio.run(
+                self.filter._load_full_chat_messages("chat-fork")
+            )
+            ids_no_anchor = [m.get("id") for m in result_no_anchor]
+            self.assertEqual(ids_no_anchor, ["u1", "a1prime"],
+                             "Without anchor, must fall back to currentId (outlet path)")
+        finally:
+            self._restore_chats(original_chats, chats_module)
+
+    def test_branch_divergence_inlet_injects_summary(self):
+        """Full inlet with branch divergence: body built from user_message_id branch,
+        currentId points at a different branch.  Summary must still be injected
+        because the DB walk now follows the same anchor as the body.
+
+        The assistant message has an ``output`` array so the body is mixed-id
+        (rebuilt assistant is idless) → primary ref-based selection fails →
+        Path 3 is reached → needs DB branch walked from user_message_id.
+        """
+        history = self._build_branch_fork_history()
+        original_chats, chats_module = self._install_chat_record(history)
+        try:
+            # DB messages on the user_message_id branch (u1 → a1 → u2)
+            db_branch_messages = [
+                history["messages"]["u1"],
+                history["messages"]["a1"],
+                history["messages"]["u2"],
+            ]
+            # Body as OpenWebUI would build it from user_message_id="u2"
+            body_messages = _build_body_from_db(db_branch_messages, reasoning_format=None)
+            # Confirm the body is mixed-id (assistant rebuilt idless)
+            self.assertIsNone(self.filter._get_message_id(body_messages[1]))
+
+            snapshots = [
+                _snapshot(
+                    "branch-fork summary",
+                    self.filter._message_refs_for_prefix(db_branch_messages, 2),
+                )
+            ]
+
+            async def fake_load_snapshots(chat_id):
+                return snapshots
+
+            async def fake_load_live_refs(chat_id):
+                return _live_refs_by_id(self.filter, db_branch_messages)
+
+            async def noop(*args, **kwargs):
+                return None
+
+            self.filter._load_summary_snapshots = fake_load_snapshots
+            self.filter._load_chat_history_live_refs = fake_load_live_refs
+            # Do NOT mock _load_full_chat_messages — let it use the real
+            # Chats.get_chat_by_id with the anchor_message_id fix.
+            self.filter._log = noop
+            self.filter._emit_debug_log = noop
+            self.filter._get_model_thresholds = lambda model_id: {
+                "max_context_tokens": 100000,
+                "compression_threshold_tokens": 1000,
+            }
+
+            result = asyncio.run(self.filter.inlet(
+                {
+                    "chat_id": "chat-fork",
+                    "model": "test-model",
+                    "messages": body_messages,
+                },
+                __metadata__={
+                    "chat_id": "chat-fork",
+                    "user_message_id": "u2",
+                },
+            ))
+
+            self.assertTrue(
+                self.filter._is_summary_message(result["messages"][0]),
+                f"Summary must be injected despite branch divergence. "
+                f"Got: {[m.get('role') for m in result['messages']]}",
+            )
+            self.assertIn("branch-fork summary", result["messages"][0]["content"])
+        finally:
+            self._restore_chats(original_chats, chats_module)
+
+    def test_branch_divergence_without_anchor_fails(self):
+        """Without the anchor (no user_message_id in metadata), the DB walk
+        follows currentId and the branch diverges — summary is NOT injected.
+
+        This proves the fix is load-bearing: removing the anchor makes inlet
+        injection fail on regenerated chats.
+        """
+        history = self._build_branch_fork_history()
+        original_chats, chats_module = self._install_chat_record(history)
+        try:
+            db_branch_messages = [
+                history["messages"]["u1"],
+                history["messages"]["a1"],
+                history["messages"]["u2"],
+            ]
+            body_messages = _build_body_from_db(db_branch_messages, reasoning_format=None)
+
+            snapshots = [
+                _snapshot(
+                    "branch-fork summary",
+                    self.filter._message_refs_for_prefix(db_branch_messages, 2),
+                )
+            ]
+
+            async def fake_load_snapshots(chat_id):
+                return snapshots
+
+            async def fake_load_live_refs(chat_id):
+                return _live_refs_by_id(self.filter, db_branch_messages)
+
+            async def noop(*args, **kwargs):
+                return None
+
+            self.filter._load_summary_snapshots = fake_load_snapshots
+            self.filter._load_chat_history_live_refs = fake_load_live_refs
+            self.filter._log = noop
+            self.filter._emit_debug_log = noop
+            self.filter._get_model_thresholds = lambda model_id: {
+                "max_context_tokens": 100000,
+                "compression_threshold_tokens": 1000,
+            }
+
+            # NO user_message_id in metadata → anchor is None → walks currentId
+            result = asyncio.run(self.filter.inlet(
+                {
+                    "chat_id": "chat-fork",
+                    "model": "test-model",
+                    "messages": body_messages,
+                },
+                __metadata__={
+                    "chat_id": "chat-fork",
+                    # user_message_id deliberately omitted
+                },
+            ))
+
+            # currentId walk gives [u1, a1prime] (2 messages, wrong branch).
+            # body has 3 messages from the original branch.
+            # Path 3 rejects (count mismatch 3 vs 2) → no summary injected.
+            self.assertFalse(
+                self.filter._is_summary_message(result["messages"][0]),
+                "Without user_message_id anchor, branch divergence must reject "
+                "(proving the anchor fix is load-bearing).",
+            )
+        finally:
+            self._restore_chats(original_chats, chats_module)
 
 
 if __name__ == "__main__":

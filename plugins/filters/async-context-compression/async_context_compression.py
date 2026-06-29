@@ -1845,8 +1845,24 @@ class Filter:
             if not self._is_failed_assistant_message(message)
         ]
 
-    async def _load_full_chat_messages(self, chat_id: str) -> List[Dict[str, Any]]:
-        """Load the full persisted chat history for summary decisions when available."""
+    async def _load_full_chat_messages(
+        self,
+        chat_id: str,
+        anchor_message_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load the full persisted chat history for summary decisions when available.
+
+        OpenWebUI builds the inlet request body by walking the ``parentId``
+        chain from ``metadata['user_message_id']`` (see
+        ``load_messages_from_db`` in ``utils/middleware.py``).  ``currentId``
+        instead points at the tip of the currently-displayed branch — which,
+        after a regeneration or edit, can be a *different* branch than the one
+        the request body walks.  When ``anchor_message_id`` (the
+        ``user_message_id`` from the inlet metadata) is available, walk from
+        it so our DB reconstruction matches OpenWebUI's body reconstruction.
+        Fall back to ``currentId`` for outlet / non-inlet callers where the
+        just-completed assistant message should be included.
+        """
         if not chat_id or Chats is None:
             return []
 
@@ -1864,9 +1880,13 @@ class Filter:
         if isinstance(history, dict):
             history_messages = history.get("messages")
             if isinstance(history_messages, dict) and history_messages:
-                current_id = history.get("currentId") or history.get("current_id")
+                walk_anchor = None
+                if isinstance(anchor_message_id, str) and anchor_message_id in history_messages:
+                    walk_anchor = anchor_message_id
+                if not walk_anchor:
+                    walk_anchor = history.get("currentId") or history.get("current_id")
                 branch_messages = self._reconstruct_active_history_branch(
-                    history_messages, current_id
+                    history_messages, walk_anchor
                 )
                 if branch_messages:
                     return self._filter_model_visible_history_messages(
@@ -4476,6 +4496,7 @@ class Filter:
         live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
         max_coverage_count: Optional[int] = None,
         enforce_keep_first: bool = True,
+        anchor_message_id: Optional[str] = None,
     ) -> Optional[ChatSummary]:
         snapshots = await self._load_summary_snapshots(chat_id)
         if not snapshots:
@@ -4496,7 +4517,9 @@ class Filter:
         if require_full_coverage or self._current_branch_refs(messages) is not None:
             return None
 
-        db_messages = await self._load_full_chat_messages(chat_id)
+        db_messages = await self._load_full_chat_messages(
+            chat_id, anchor_message_id=anchor_message_id
+        )
         (
             compatible_db_messages,
             db_to_body_boundaries,
@@ -5719,9 +5742,21 @@ class Filter:
         # Load only branch-valid summary rows. Legacy count-only chat_summary
         # rows are rebuilt during database initialization and are never trusted
         # as coverage proof.
+        #
+        # OpenWebUI builds the inlet body by walking the parentId chain from
+        # ``metadata['user_message_id']`` (load_messages_from_db).  Pass it as
+        # the DB walk anchor so our reconstruction follows the SAME branch the
+        # body came from — ``history['currentId']`` can point at a different
+        # (regenerated/edited) branch and cause a mid-chain role divergence.
+        inlet_user_message_id = (
+            __metadata__.get("user_message_id")
+            if isinstance(__metadata__, dict)
+            else None
+        )
         summary_snapshot = await self._load_applicable_summary_snapshot(
             chat_id,
             messages,
+            anchor_message_id=inlet_user_message_id,
         )
 
         # Calculate effective_keep_first to ensure all system messages are protected
