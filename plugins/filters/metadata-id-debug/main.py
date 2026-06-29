@@ -9,6 +9,8 @@ license: MIT
 import json
 from typing import Any, Awaitable, Callable, Optional
 
+from pydantic import BaseModel, Field
+
 
 class Filter:
     class Valves(BaseModel):
