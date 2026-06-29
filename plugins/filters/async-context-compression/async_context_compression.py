@@ -1835,23 +1835,6 @@ class Filter:
         sortable_messages.sort(key=lambda item: (item[0], item[1]))
         return [message for _, _, message in sortable_messages]
 
-    def _is_failed_assistant_message(self, message: Dict[str, Any]) -> bool:
-        """Mirror OpenWebUI middleware's failed-assistant filter."""
-        return (
-            isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and "error" in message
-        )
-
-    def _filter_model_visible_history_messages(
-        self, messages: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        return [
-            message
-            for message in messages
-            if not self._is_failed_assistant_message(message)
-        ]
-
     async def _load_full_chat_messages(
         self,
         chat_id: str,
@@ -1941,15 +1924,11 @@ class Filter:
                     history_messages, walk_anchor
                 )
                 if branch_messages:
-                    return self._filter_model_visible_history_messages(
-                        branch_messages
-                    )
+                    return branch_messages
 
         direct_messages = chat_payload.get("messages")
         if isinstance(direct_messages, list) and direct_messages:
-            return self._filter_model_visible_history_messages(
-                deepcopy(direct_messages)
-            )
+            return deepcopy(direct_messages)
 
         return []
 

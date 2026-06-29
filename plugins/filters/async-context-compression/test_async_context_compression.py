@@ -3217,7 +3217,11 @@ class TestAsyncContextCompression(unittest.TestCase):
         self.assertEqual([message["id"] for message in messages], ["m1", "m2", "m3"])
         self.assertEqual(messages[2]["role"], "tool")
 
-    def test_load_full_chat_messages_filters_failed_assistant_from_history_branch(self):
+    def test_load_full_chat_messages_keeps_failed_assistant_to_match_owui_body(self):
+        # OpenWebUI's middleware.load_messages_from_db does NOT filter failed
+        # assistant messages — it only strips fields to (role, content, output,
+        # files).  The filter's DB walk must match that behaviour so the
+        # index-by-index alignment with the request body holds.  See issue #98.
         class FakeChats:
             @staticmethod
             def get_chat_by_id(chat_id):
@@ -3262,10 +3266,15 @@ class TestAsyncContextCompression(unittest.TestCase):
         finally:
             module.Chats = original_chats
 
-        self.assertEqual([message["id"] for message in messages], ["m1", "m3", "m4"])
-        self.assertFalse(any("error" in message for message in messages))
+        # m2 (failed assistant) MUST be retained — dropping it would shift
+        # every subsequent index and cause role-mismatch against the body.
+        self.assertEqual(
+            [message["id"] for message in messages], ["m1", "m2", "m3", "m4"]
+        )
+        self.assertEqual([message["role"] for message in messages],
+                         ["user", "assistant", "user", "assistant"])
 
-    def test_load_full_chat_messages_filters_failed_assistant_from_direct_messages(self):
+    def test_load_full_chat_messages_keeps_failed_assistant_in_direct_messages(self):
         class FakeChats:
             @staticmethod
             def get_chat_by_id(chat_id):
@@ -3292,8 +3301,11 @@ class TestAsyncContextCompression(unittest.TestCase):
         finally:
             module.Chats = original_chats
 
-        self.assertEqual([message["id"] for message in messages], ["m1", "m3", "m4"])
-        self.assertFalse(any("error" in message for message in messages))
+        self.assertEqual(
+            [message["id"] for message in messages], ["m1", "m2", "m3", "m4"]
+        )
+        self.assertEqual([message["role"] for message in messages],
+                         ["user", "assistant", "user", "assistant"])
 
     def test_load_authorized_chat_messages_uses_owner_helper(self):
         class FakeChats:
