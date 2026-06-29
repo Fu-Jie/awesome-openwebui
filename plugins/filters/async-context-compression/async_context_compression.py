@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.7.2
+version: 1.7.3
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -1156,6 +1156,47 @@ class Filter:
                 return False
 
         return True
+
+    def _first_body_position_mismatch(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> Optional[tuple]:
+        """Return (index, reason) of the first position mismatch, or None.
+
+        Mirrors :meth:`_body_position_matches_db_message` but returns a
+        human-readable reason instead of a boolean, so the inlet can log
+        exactly which position and field caused Path 3 to reject the body.
+        """
+        for index, (body_message, db_message) in enumerate(
+            zip(body_messages, db_messages)
+        ):
+            if self._normalize_role(body_message.get("role")) != self._normalize_role(
+                db_message.get("role")
+            ):
+                return index, (
+                    f"role mismatch (body={body_message.get('role')!r}, "
+                    f"db={db_message.get('role')!r})"
+                )
+            if body_message.get("tool_calls") != db_message.get("tool_calls"):
+                return index, "tool_calls mismatch"
+            if body_message.get("tool_call_id") != db_message.get("tool_call_id"):
+                return index, (
+                    f"tool_call_id mismatch "
+                    f"(body={body_message.get('tool_call_id')!r}, "
+                    f"db={db_message.get('tool_call_id')!r})"
+                )
+            db_output = db_message.get("output")
+            has_db_output = isinstance(db_output, list) and bool(db_output)
+            if not has_db_output:
+                if body_message.get("content") != db_message.get("content"):
+                    body_preview = str(body_message.get("content"))[:120]
+                    db_preview = str(db_message.get("content"))[:120]
+                    return index, (
+                        f"content mismatch on no-output message "
+                        f"(body={body_preview!r}, db={db_preview!r})"
+                    )
+        return None
 
     def _message_fingerprint(self, message: Dict[str, Any]) -> str:
         """Fingerprint the model-visible payload to detect in-place edits."""
@@ -2503,9 +2544,9 @@ class Filter:
         ):
             return db_to_body_boundaries
 
-        # Path 3 (position-based fallback): when the body carries no
-        # OpenWebUI message ids and matches the DB active branch 1:1 in
-        # count and role sequence, accept the DB refs by position.
+        # Path 3 (position-based fallback): when the body matches the DB
+        # active branch 1:1 in count and role / tool_calls / tool_call_id
+        # sequence, accept the DB refs by position.
         #
         # This covers reasoning models (and any future rebuild path) where
         # OpenWebUI regenerates assistant ``content`` from the ``output``
@@ -2514,6 +2555,15 @@ class Filter:
         # DB content (e.g. reasoning is folded into a
         # ``<details type="reasoning">`` block in the DB but stripped from
         # the body).  Content-level comparison cannot succeed in that case.
+        #
+        # The body need NOT be fully idless.  ``process_messages_with_output``
+        # only strips ``output`` (not ``id``), so user / system / no-output
+        # assistant messages keep their DB node ``id`` while only the
+        # rebuilt assistant-with-output messages become idless — the request
+        # body is mixed-id in practice.  We reach this fallback only when
+        # ``_current_branch_refs(messages) is None`` upstream (i.e. the body
+        # as a whole does not expose a usable ref sequence), so requiring
+        # all-idless here would wrongly reject every real reasoning chat.
         #
         # Guards against false positives:
         # - ``unfolded_messages`` non-empty rules out conversion failures
@@ -2526,7 +2576,6 @@ class Filter:
         #   ``tool_call_id`` to match (catches tampered tool calls).
         if (
             unfolded_messages
-            and all(not self._get_message_id(m) for m in body_messages)
             and len(body_messages) == len(db_messages)
             and all(
                 self._body_position_matches_db_message(body_message, db_message)
@@ -2534,6 +2583,21 @@ class Filter:
             )
         ):
             return list(range(len(db_messages) + 1))
+
+        if (
+            unfolded_messages
+            and len(body_messages) == len(db_messages)
+            and self.valves.debug_mode
+        ):
+            first_mismatch = self._first_body_position_mismatch(
+                body_messages, db_messages
+            )
+            if first_mismatch is not None:
+                mismatch_index, mismatch_reason = first_mismatch
+                logger.info(
+                    "[Summary Snapshot] Path 3 position fallback rejected at "
+                    f"index={mismatch_index}: {mismatch_reason}"
+                )
 
         return None
 

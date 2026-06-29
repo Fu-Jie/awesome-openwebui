@@ -186,31 +186,22 @@ def _owui_process_messages_with_output(messages, reasoning_format=None):
     return processed
 
 
-def _strip_ids(messages):
-    """Simulate the OpenWebUI frontend: request body carries no message node ids.
-
-    ``process_messages_with_output`` itself only strips ``output``; it does NOT
-    remove ``id``.  But the request body that hits the inlet filter has no
-    ``id`` fields — the frontend sends plain chat-completion messages.  This
-    helper strips ids after reconstruction to match the real inlet payload.
-    """
-    result = []
-    for msg in messages:
-        clean = {k: v for k, v in msg.items() if k != 'id' and k != 'message_id'}
-        result.append(clean)
-    return result
-
-
 def _build_body_from_db(db_messages, reasoning_format=None):
-    """Simulate the full OpenWebUI inlet pipeline:
+    """Simulate the real OpenWebUI inlet pipeline.
 
-    1. process_messages_with_output (rebuilds assistant content from output)
-    2. strip message node ids (frontend sends plain chat-completion messages)
+    ``process_messages_with_output`` rebuilds assistant messages that carry an
+    ``output`` array via ``convert_output_to_messages`` (idless), but for every
+    other message it only strips the ``output`` key — the DB node ``id``
+    survives.  The request body that hits the inlet filter is therefore
+    **mixed-id**: user / system / no-output assistant messages keep their
+    ``id``; only rebuilt assistant-with-output messages are idless.
+
+    This mirrors the behaviour confirmed against the OpenWebUI main branch
+    (``clean_message = {k: v for k, v in message.items() if k != 'output'}``).
     """
-    rebuilt = _owui_process_messages_with_output(
+    return _owui_process_messages_with_output(
         deepcopy(db_messages), reasoning_format=reasoning_format
     )
-    return _strip_ids(rebuilt)
 
 
 def _owui_get_reasoning_format(model):
@@ -724,16 +715,35 @@ class TestIssue98E2E(unittest.TestCase):
         )
         self.assertIsNone(coverage, "Must reject tampered tool_calls")
 
-    # ── Scenario 7: Verify body has no ids (precondition for Path 3) ──
+    # ── Scenario 7: Verify body is mixed-id (real OWUI shape) ─────────
 
-    def test_openai_reasoning_body_has_no_message_ids(self):
-        """Verify that process_messages_with_output strips ids from body."""
+    def test_openai_reasoning_body_is_mixed_id(self):
+        """Real OWUI body is mixed-id: rebuilt assistant-with-output messages
+        are idless, but user / no-output messages keep their DB node id.
+
+        ``process_messages_with_output`` only strips ``output``, not ``id``.
+        """
         db_messages, body_messages = _build_reasoning_chat_openai_compatible()
-        for msg in body_messages:
-            self.assertIsNone(
-                self.filter._get_message_id(msg),
-                "Body messages must not carry OpenWebUI ids (plain chat)",
-            )
+        # assistant-with-output message (index 1) is rebuilt → idless
+        self.assertIsNone(self.filter._get_message_id(body_messages[1]))
+        # user messages (index 0, 2) keep their DB id
+        self.assertIsNotNone(self.filter._get_message_id(body_messages[0]))
+        self.assertIsNotNone(self.filter._get_message_id(body_messages[2]))
+
+    def test_mixed_id_body_path3_accepts(self):
+        """Path 3 must accept a mixed-id body (the real OWUI shape).
+
+        Regression for the all-idless guard that wrongly rejected real
+        reasoning chats where user messages keep their id.
+        """
+        db_messages, body_messages = _build_reasoning_chat_openai_compatible()
+        # Confirm the body is genuinely mixed-id before asserting Path 3.
+        has_id = [bool(self.filter._get_message_id(m)) for m in body_messages]
+        self.assertEqual(has_id, [True, False, True])
+        coverage = self.filter._body_to_db_coverage_map_for_ref_fallback(
+            body_messages, db_messages
+        )
+        self.assertEqual(coverage, [0, 1, 2, 3])
 
     # ── Scenario 8: Full inlet for Ollama reasoning ───────────────────
 
