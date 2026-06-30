@@ -350,8 +350,13 @@ class ContentNormalizer:
         # then the same closing marker. The opening marker is moved before the word so
         # the punctuation (e.g. an added comma) renders together with the word.
         # NOTE: Alternation lists longer markers first so *** / ___ win over ** / __.
+        # NOTE: `word` uses `\w+` (includes underscore) so snake_case identifiers
+        # like `my_var**,**` stay intact instead of being split into `my_` + `var`.
+        # This is safe because `content` is restricted to pure punctuation
+        # (`[^\s\w]+?`), so legitimate `my_var__bold__` markup is never matched
+        # (`bold` contains word chars and fails the content constraint).
         "intra_word_emphasis": re.compile(
-            r"(?P<word>[^\W_]+)"
+            r"(?P<word>\w+)"
             r"(?P<marker>\*\*\*|___|\*\*|__|~~)"
             r"(?P<content>[^\s\w]+?)"
             r"(?P=marker)"
@@ -783,13 +788,12 @@ class ContentNormalizer:
             # Protect inline code (backtick spans) from modification.
             inline_parts = parts[i].split("`")
             for k in range(0, len(inline_parts), 2):  # Even indices = non-code
-                while True:
-                    new_segment = self._PATTERNS["intra_word_emphasis"].sub(
-                        replacer, inline_parts[k]
-                    )
-                    if new_segment == inline_parts[k]:
-                        break
-                    inline_parts[k] = new_segment
+                # Single-pass is sufficient: the pattern cannot nest because
+                # `content` is restricted to pure punctuation, so a match cannot
+                # contain another word+marker+content+marker sequence.
+                inline_parts[k] = self._PATTERNS["intra_word_emphasis"].sub(
+                    replacer, inline_parts[k]
+                )
             parts[i] = "`".join(inline_parts)
         return "```".join(parts)
 

@@ -49,6 +49,13 @@ class TestIntraWordEmphasisFix:
             ),
             # CJK word prefix
             ("中文**,**", "**中文,**"),
+            # snake_case variable name with punctuation addition — the
+            # underscore inside the identifier must NOT split the word, so
+            # `my_var` stays intact and the marker moves to its start.
+            ("my_var__,__", "__my_var,__"),
+            ("my_var**,**", "**my_var,**"),
+            ("my_var~~,~~", "~~my_var,~~"),
+            ("snake_case_var**.**", "**snake_case_var.**"),
         ],
     )
     def test_intra_word_emphasis_fixed(
