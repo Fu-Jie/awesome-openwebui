@@ -29,6 +29,7 @@ def normalizer():
         enable_table_fix=True,
         enable_xml_tag_cleanup=True,
         enable_emphasis_spacing_fix=True,
+        enable_intra_word_emphasis_fix=True,
     )
     return ContentNormalizer(config)
 
@@ -50,6 +51,29 @@ def emphasis_only_normalizer():
         enable_table_fix=False,
         enable_xml_tag_cleanup=False,
         enable_emphasis_spacing_fix=True,
+        enable_intra_word_emphasis_fix=False,
+    )
+    return ContentNormalizer(config)
+
+
+@pytest.fixture
+def intra_word_only_normalizer():
+    """Normalizer with only intra-word emphasis fix enabled."""
+    config = NormalizerConfig(
+        enable_escape_fix=False,
+        enable_thought_tag_fix=False,
+        enable_details_tag_fix=False,
+        enable_code_block_fix=False,
+        enable_latex_fix=False,
+        enable_list_fix=False,
+        enable_unclosed_block_fix=False,
+        enable_fullwidth_symbol_fix=False,
+        enable_mermaid_fix=False,
+        enable_heading_fix=False,
+        enable_table_fix=False,
+        enable_xml_tag_cleanup=False,
+        enable_emphasis_spacing_fix=False,
+        enable_intra_word_emphasis_fix=True,
     )
     return ContentNormalizer(config)
 

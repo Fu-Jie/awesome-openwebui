@@ -3,7 +3,7 @@ title: Markdown Normalizer
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 1.2.8
+version: 1.2.9
 openwebui_id: baaa8732-9348-40b7-8359-7e009660e23c
 description: A content normalizer filter that fixes common Markdown formatting issues in LLM outputs, such as broken code blocks, LaTeX formulas, and list formatting. Including LaTeX command protection.
 """
@@ -38,6 +38,7 @@ TRANSLATIONS = {
         "fix_table": "Table Format",
         "fix_xml": "XML Cleanup",
         "fix_emphasis": "Emphasis Spacing",
+        "fix_intra_word": "Intra-word Emphasis",
         "fix_custom": "Custom Cleaner",
     },
     "zh-CN": {
@@ -55,6 +56,7 @@ TRANSLATIONS = {
         "fix_table": "表格格式",
         "fix_xml": "XML清理",
         "fix_emphasis": "强调空格",
+        "fix_intra_word": "词内强调",
         "fix_custom": "自定义清理",
     },
     "zh-HK": {
@@ -72,6 +74,7 @@ TRANSLATIONS = {
         "fix_table": "表格格式",
         "fix_xml": "XML清理",
         "fix_emphasis": "強調空格",
+        "fix_intra_word": "詞內強調",
         "fix_custom": "自訂清理",
     },
     "zh-TW": {
@@ -89,6 +92,7 @@ TRANSLATIONS = {
         "fix_table": "表格格式",
         "fix_xml": "XML清理",
         "fix_emphasis": "強調空格",
+        "fix_intra_word": "詞內強調",
         "fix_custom": "自訂清理",
     },
     "ko-KR": {
@@ -106,6 +110,7 @@ TRANSLATIONS = {
         "fix_table": "표 형식",
         "fix_xml": "XML 정리",
         "fix_emphasis": "강조 공백",
+        "fix_intra_word": "단어 내 강조",
         "fix_custom": "사용자 정의 정리",
     },
     "ja-JP": {
@@ -123,6 +128,7 @@ TRANSLATIONS = {
         "fix_table": "表形式",
         "fix_xml": "XMLクリーンアップ",
         "fix_emphasis": "強調の空白",
+        "fix_intra_word": "単語内強調",
         "fix_custom": "カスタムクリーナー",
     },
     "fr-FR": {
@@ -140,6 +146,7 @@ TRANSLATIONS = {
         "fix_table": "Format de tableau",
         "fix_xml": "Nettoyage XML",
         "fix_emphasis": "Espacement d'emphase",
+        "fix_intra_word": "Emphase intra-mot",
         "fix_custom": "Nettoyeur personnalisé",
     },
     "de-DE": {
@@ -157,6 +164,7 @@ TRANSLATIONS = {
         "fix_table": "Tabellenformat",
         "fix_xml": "XML-Bereinigung",
         "fix_emphasis": "Hervorhebungsabstände",
+        "fix_intra_word": "Wortinterne Hervorhebung",
         "fix_custom": "Benutzerdefinierter Reiniger",
     },
     "es-ES": {
@@ -174,6 +182,7 @@ TRANSLATIONS = {
         "fix_table": "Formato de tabla",
         "fix_xml": "Limpieza XML",
         "fix_emphasis": "Espaciado de énfasis",
+        "fix_intra_word": "Énfasis intra-palabra",
         "fix_custom": "Limpiador personalizado",
     },
     "it-IT": {
@@ -191,6 +200,7 @@ TRANSLATIONS = {
         "fix_table": "Formato tabella",
         "fix_xml": "Pulizia XML",
         "fix_emphasis": "Spaziatura enfasi",
+        "fix_intra_word": "Enfasi intra-parola",
         "fix_custom": "Pulitore personalizzato",
     },
     "vi-VN": {
@@ -208,6 +218,7 @@ TRANSLATIONS = {
         "fix_table": "Định dạng bảng",
         "fix_xml": "Dọn dẹp XML",
         "fix_emphasis": "Khoảng cách nhấn mạnh",
+        "fix_intra_word": "Nhấn mạnh trong từ",
         "fix_custom": "Trình dọn dẹp tùy chỉnh",
     },
     "id-ID": {
@@ -225,6 +236,7 @@ TRANSLATIONS = {
         "fix_table": "Format tabel",
         "fix_xml": "Pembersihan XML",
         "fix_emphasis": "Spasi penekanan",
+        "fix_intra_word": "Penekanan intra-kata",
         "fix_custom": "Pembersih kustom",
     },
 }
@@ -256,6 +268,9 @@ class NormalizerConfig:
     enable_table_fix: bool = True  # Fix missing closing pipe in tables
     enable_xml_tag_cleanup: bool = True  # Cleanup leftover XML tags
     enable_emphasis_spacing_fix: bool = False  # Fix spaces inside **emphasis**
+    enable_intra_word_emphasis_fix: bool = (
+        False  # Move opening emphasis marker to word start (e.g. series**,** -> **series,**)
+    )
 
     # Custom cleaner functions (for advanced extension)
     custom_cleaners: List[Callable[[str], str]] = field(default_factory=list)
@@ -328,6 +343,26 @@ class ContentNormalizer:
         # Supports: * (italic), ** (bold), *** (bold+italic), _ (italic), __ (bold), ___ (bold+italic)
         "emphasis_spacing": re.compile(
             r"(?<!\*|_)(\*{1,3}|_{1,3})(?P<inner>(?:(?!\1)[^\n])*?)(\1)(?!\*|_)"
+        ),
+        # Intra-word emphasis: series**,** -> **series,**
+        # Matches an alphanumeric word directly followed by an opening emphasis marker
+        # (~~, **, __, ***, ___) that wraps ONLY punctuation (no whitespace/word chars),
+        # then the same closing marker. The opening marker is moved before the word so
+        # the punctuation (e.g. an added comma) renders together with the word.
+        # NOTE: Alternation lists longer markers first so *** / ___ win over ** / __.
+        # NOTE: `word` is `[^\W_]+(?:_[^\W_]+)*` so snake_case identifiers like
+        # `my_var` stay intact instead of being split into `my_` + `var`. The
+        # trailing `(?:_[^\W_]+)*` only allows underscores that sit *between*
+        # word-char runs, so a run of trailing underscores (e.g. `word___`)
+        # is left for the marker alternation to consume as `___` rather than
+        # being swallowed by `word`. This keeps triple-underscore markers
+        # (`word___,___`) working while still protecting `my_var__bold__`
+        # (which never matches because `content` excludes word chars).
+        "intra_word_emphasis": re.compile(
+            r"(?P<word>[^\W_]+(?:_[^\W_]+)*)"
+            r"(?P<marker>\*\*\*|___|\*\*|__|~~)"
+            r"(?P<content>[^\s\w]+?)"
+            r"(?P=marker)"
         ),
     }
 
@@ -434,6 +469,14 @@ class ContentNormalizer:
                 content = self._fix_emphasis_spacing(content)
                 if content != original:
                     self.applied_fixes.append("Fix Emphasis Spacing")
+
+            # 13. Intra-word emphasis fix (run after emphasis spacing so any
+            # inner spaces are already collapsed, e.g. `** , **` -> `**, **` first)
+            if self.config.enable_intra_word_emphasis_fix:
+                original = content
+                content = self._fix_intra_word_emphasis(content)
+                if content != original:
+                    self.applied_fixes.append("Fix Intra-word Emphasis")
 
             # 9. Custom cleaners
             for cleaner in self.config.custom_cleaners:
@@ -718,6 +761,45 @@ class ContentNormalizer:
                 parts[i] = new_part
         return "```".join(parts)
 
+    def _fix_intra_word_emphasis(self, content: str) -> str:
+        """Move opening emphasis marker to the start of an intra-word group.
+
+        When LLMs mark up punctuation-only additions inside a word boundary,
+        e.g. `series**,**` (added comma) or `word~~,~~` (added strikethrough),
+        many Markdown parsers refuse to render the inline emphasis because the
+        opening delimiter is intra-word. Moving the opening marker to the start
+        of the word produces a renderable `**series,**` / `~~word,~~`.
+
+        Only transforms cases where the wrapped content is *pure punctuation*
+        (no whitespace, no word characters) so legitimate `**bold**` /
+        `__bold__` / `~~strike~~` markup is left untouched. Code blocks and
+        inline code are skipped via the standard `split("```")` partitioning.
+        """
+
+        def replacer(match):
+            word = match.group("word")
+            marker = match.group("marker")
+            inner = match.group("content")
+            # Skip if content somehow slipped through with whitespace or word
+            # chars (defensive; the regex already restricts this).
+            if any(c.isspace() or c.isalnum() for c in inner):
+                return match.group(0)
+            return f"{marker}{word}{inner}{marker}"
+
+        parts = content.split("```")
+        for i in range(0, len(parts), 2):  # Even indices are markdown text
+            # Protect inline code (backtick spans) from modification.
+            inline_parts = parts[i].split("`")
+            for k in range(0, len(inline_parts), 2):  # Even indices = non-code
+                # Single-pass is sufficient: the pattern cannot nest because
+                # `content` is restricted to pure punctuation, so a match cannot
+                # contain another word+marker+content+marker sequence.
+                inline_parts[k] = self._PATTERNS["intra_word_emphasis"].sub(
+                    replacer, inline_parts[k]
+                )
+            parts[i] = "`".join(inline_parts)
+        return "```".join(parts)
+
 
 class Filter:
     class Valves(BaseModel):
@@ -780,6 +862,14 @@ class Filter:
         enable_emphasis_spacing_fix: bool = Field(
             default=False,
             description="Fix spaces inside **emphasis** (e.g. ** text ** -> **text**).",
+        )
+        enable_intra_word_emphasis_fix: bool = Field(
+            default=False,
+            description=(
+                "Move opening emphasis marker to the start of an intra-word "
+                "group (e.g. series**,** -> **series,**) so added punctuation "
+                "renders. Useful for grammar/spelling diff outputs."
+            ),
         )
         show_status: bool = Field(
             default=True,
@@ -964,6 +1054,7 @@ class Filter:
             "Fix Tables": "fix_table",
             "Cleanup XML Tags": "fix_xml",
             "Fix Emphasis Spacing": "fix_emphasis",
+            "Fix Intra-word Emphasis": "fix_intra_word",
             "Custom Cleaner": "fix_custom",
         }
 
@@ -1061,6 +1152,7 @@ class Filter:
                     enable_table_fix=self.valves.enable_table_fix,
                     enable_xml_tag_cleanup=self.valves.enable_xml_tag_cleanup,
                     enable_emphasis_spacing_fix=self.valves.enable_emphasis_spacing_fix,
+                    enable_intra_word_emphasis_fix=self.valves.enable_intra_word_emphasis_fix,
                 )
 
                 normalizer = ContentNormalizer(config)
