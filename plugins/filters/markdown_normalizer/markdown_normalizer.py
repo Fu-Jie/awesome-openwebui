@@ -350,8 +350,16 @@ class ContentNormalizer:
         # then the same closing marker. The opening marker is moved before the word so
         # the punctuation (e.g. an added comma) renders together with the word.
         # NOTE: Alternation lists longer markers first so *** / ___ win over ** / __.
+        # NOTE: `word` is `[^\W_]+(?:_[^\W_]+)*` so snake_case identifiers like
+        # `my_var` stay intact instead of being split into `my_` + `var`. The
+        # trailing `(?:_[^\W_]+)*` only allows underscores that sit *between*
+        # word-char runs, so a run of trailing underscores (e.g. `word___`)
+        # is left for the marker alternation to consume as `___` rather than
+        # being swallowed by `word`. This keeps triple-underscore markers
+        # (`word___,___`) working while still protecting `my_var__bold__`
+        # (which never matches because `content` excludes word chars).
         "intra_word_emphasis": re.compile(
-            r"(?P<word>[^\W_]+)"
+            r"(?P<word>[^\W_]+(?:_[^\W_]+)*)"
             r"(?P<marker>\*\*\*|___|\*\*|__|~~)"
             r"(?P<content>[^\s\w]+?)"
             r"(?P=marker)"
@@ -783,13 +791,12 @@ class ContentNormalizer:
             # Protect inline code (backtick spans) from modification.
             inline_parts = parts[i].split("`")
             for k in range(0, len(inline_parts), 2):  # Even indices = non-code
-                while True:
-                    new_segment = self._PATTERNS["intra_word_emphasis"].sub(
-                        replacer, inline_parts[k]
-                    )
-                    if new_segment == inline_parts[k]:
-                        break
-                    inline_parts[k] = new_segment
+                # Single-pass is sufficient: the pattern cannot nest because
+                # `content` is restricted to pure punctuation, so a match cannot
+                # contain another word+marker+content+marker sequence.
+                inline_parts[k] = self._PATTERNS["intra_word_emphasis"].sub(
+                    replacer, inline_parts[k]
+                )
             parts[i] = "`".join(inline_parts)
         return "```".join(parts)
 
