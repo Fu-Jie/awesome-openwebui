@@ -1548,10 +1548,13 @@ class Action:
                     if u.lower().startswith(("http://", "https://"))
                     and not self._extract_owui_api_file_id(u)
                 }
-                for u in ext_urls:
-                    data = await self._fetch_external_image(u)
-                    if data:
-                        self._prefetched_external_images[u] = data
+                urls = list(ext_urls)
+                results = await asyncio.gather(
+                    *(self._fetch_external_image(u) for u in urls)
+                )
+                self._prefetched_external_images = {
+                    u: d for u, d in zip(urls, results) if d
+                }
 
             # Set default fonts
             self.set_document_default_font(doc)
