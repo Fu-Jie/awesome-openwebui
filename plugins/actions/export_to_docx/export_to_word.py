@@ -154,6 +154,23 @@ class Action:
             "export_failed": "Export failed: {error}",
             "figure_prefix": "Figure",
             "references": "References",
+            "user_label": "User",
+            "assistant_label": "Assistant",
+            "session_info": "Session Information",
+            "collected_urls": "Collected URLs",
+            "message_statistics": "Message Statistics",
+            "export_time": "Export Time",
+            "total_messages": "Total Messages",
+            "user_messages": "User Messages",
+            "assistant_messages": "Assistant Messages",
+            "chat_title_label": "Chat Title",
+            "model_label": "Model",
+            "prompt_tokens": "Prompt Tokens",
+            "completion_tokens": "Completion Tokens",
+            "total_tokens": "Total Tokens",
+            "message_label": "Message",
+            "no_urls_found": "No URLs found in this conversation.",
+            "full_chat_converting": "Converting full chat to Word document...",
         },
         "zh": {
             "converting": "正在转换为 Word 文档...",
@@ -164,6 +181,23 @@ class Action:
             "export_failed": "导出失败: {error}",
             "figure_prefix": "图",
             "references": "参考文献",
+            "user_label": "用户",
+            "assistant_label": "助手",
+            "session_info": "会话信息",
+            "collected_urls": "收集的链接",
+            "message_statistics": "消息统计",
+            "export_time": "导出时间",
+            "total_messages": "消息总数",
+            "user_messages": "用户消息数",
+            "assistant_messages": "助手消息数",
+            "chat_title_label": "聊天标题",
+            "model_label": "模型",
+            "prompt_tokens": "提示 Token",
+            "completion_tokens": "完成 Token",
+            "total_tokens": "总 Token",
+            "message_label": "消息",
+            "no_urls_found": "本次对话中未找到链接。",
+            "full_chat_converting": "正在将完整对话转换为 Word 文档...",
         },
     }
 
@@ -285,6 +319,28 @@ class Action:
             description="UI language for export messages. Options: 'en' (English), 'zh' (Chinese)",
         )
 
+        # Full chat export configuration
+        EXPORT_FULL_CHAT: bool = Field(
+            default=False,
+            description="Export the complete chat (all user prompts and assistant replies) instead of only the last assistant message.",
+        )
+        FULL_CHAT_SKIP_SYSTEM: bool = Field(
+            default=True,
+            description="Skip system-role messages when exporting the full chat.",
+        )
+        FULL_CHAT_INCLUDE_STATS: bool = Field(
+            default=True,
+            description="Include per-message statistics (model, tokens, timestamp) in the full chat export.",
+        )
+        FULL_CHAT_INCLUDE_SESSION_INFO: bool = Field(
+            default=True,
+            description="Append a session information summary (title, message counts, export time) at the end of the full chat export.",
+        )
+        FULL_CHAT_INCLUDE_URLS: bool = Field(
+            default=True,
+            description="Append a 'Collected URLs' section listing every URL found across all messages and sources.",
+        )
+
     class UserValves(BaseModel):
         TITLE_SOURCE: Optional[str] = Field(
             default=None,
@@ -357,6 +413,22 @@ class Action:
         MATH_INLINE_DOLLAR_ENABLE: Optional[bool] = Field(
             default=None,
             description="Enable inline $...$ math conversion into Word equations (conservative parsing to reduce false positives)",
+        )
+        EXPORT_FULL_CHAT: Optional[bool] = Field(
+            default=None,
+            description="Export the complete chat (all user prompts and assistant replies) instead of only the last assistant message.",
+        )
+        FULL_CHAT_INCLUDE_STATS: Optional[bool] = Field(
+            default=None,
+            description="Include per-message statistics (model, tokens, timestamp) in the full chat export.",
+        )
+        FULL_CHAT_INCLUDE_SESSION_INFO: Optional[bool] = Field(
+            default=None,
+            description="Append a session information summary at the end of the full chat export.",
+        )
+        FULL_CHAT_INCLUDE_URLS: Optional[bool] = Field(
+            default=None,
+            description="Append a 'Collected URLs' section listing every URL found across all messages and sources.",
         )
 
     def __init__(self):
@@ -548,7 +620,7 @@ class Action:
             self._api_base_url = _get_default_base_url()
 
         if __event_emitter__:
-            last_assistant_message = body["messages"][-1]
+            last_assistant_message = body["messages"][-1] if body.get("messages") else {}
 
             await __event_emitter__(
                 {
@@ -561,7 +633,7 @@ class Action:
             )
 
             try:
-                message_content = last_assistant_message["content"]
+                message_content = last_assistant_message.get("content", "")
                 if isinstance(message_content, str):
                     if __event_emitter__ and self.valves.SHOW_DEBUG_LOG:
                         debug_data = {}
@@ -682,18 +754,30 @@ class Action:
                                 "Relative Heading Algorithm",
                                 f"Normalized headings by shifting -{shift} levels.",
                             )
-                sources = (
-                    last_assistant_message.get("sources") or body.get("sources") or []
-                )
-                doc = await self.markdown_to_docx(
-                    message_content,
-                    top_heading=top_heading,
 
-                    sources=sources,
-                    event_emitter=__event_emitter__,
-                    user_name=user_name,
-                    title=title,
-                )
+                if self.valves.EXPORT_FULL_CHAT:
+                    doc = await self._export_full_chat(
+                        body=body,
+                        event_emitter=__event_emitter__,
+                        user_name=user_name,
+                        user_id=user_id,
+                        chat_title=chat_title,
+                        top_heading=top_heading,
+                        title=title,
+                    )
+                else:
+                    sources = (
+                        last_assistant_message.get("sources") or body.get("sources") or []
+                    )
+                    doc = await self.markdown_to_docx(
+                        message_content,
+                        top_heading=top_heading,
+
+                        sources=sources,
+                        event_emitter=__event_emitter__,
+                        user_name=user_name,
+                        title=title,
+                    )
 
                 # Save to memory
                 doc_buffer = io.BytesIO()
@@ -1570,6 +1654,272 @@ class Action:
             self._add_image_placeholder(
                 paragraph, alt, f"unsupported image type: {error_msg}"
             )
+
+    # ── Full chat export (issue #84) ───────────────────────────────────
+
+    @staticmethod
+    def _extract_message_text(content: Any) -> str:
+        """Extract plain text from an Open WebUI message content field.
+
+        Content may be a plain string or a list of content parts
+        (multimodal: text, image_url, etc.). Only text parts are joined.
+        """
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text" and isinstance(part.get("text"), str):
+                        parts.append(part["text"])
+                elif isinstance(part, str):
+                    parts.append(part)
+            return "\n".join(parts)
+        return ""
+
+    @staticmethod
+    def _collect_urls_from_text(text: str) -> List[str]:
+        """Return ordered, de-duplicated list of URLs found in *text*."""
+        if not text:
+            return []
+        seen: List[str] = []
+        for m in _AUTO_URL_RE.finditer(text):
+            url = m.group(0).rstrip(".,);:!?")
+            if url not in seen:
+                seen.append(url)
+        return seen
+
+    def _collect_urls_from_sources(self, sources: List[dict]) -> List[str]:
+        """Extract URLs from Open WebUI RAG source dicts."""
+        urls: List[str] = []
+        for source in sources or []:
+            if not isinstance(source, dict):
+                continue
+            src_info = source.get("source") or {}
+            metadatas = source.get("metadata") or []
+            if not isinstance(metadatas, list):
+                metadatas = []
+            for meta in metadatas:
+                if not isinstance(meta, dict):
+                    continue
+                url = meta.get("url") or meta.get("source")
+                if isinstance(url, str) and re.match(r"^https?://", url) and url not in urls:
+                    urls.append(url)
+            if isinstance(src_info, dict):
+                src_urls = src_info.get("urls")
+                if isinstance(src_urls, list):
+                    for u in src_urls:
+                        if isinstance(u, str) and re.match(r"^https?://", u) and u not in urls:
+                            urls.append(u)
+                src_id = src_info.get("id")
+                if isinstance(src_id, str) and re.match(r"^https?://", src_id) and src_id not in urls:
+                    urls.append(src_id)
+        return urls
+
+    async def _export_full_chat(
+        self,
+        body: dict,
+        event_emitter: Optional[Callable],
+        user_name: str,
+        user_id: str,
+        chat_title: str,
+        top_heading: str,
+        title: str,
+    ) -> Document:
+        """Build a Word document containing the complete chat transcript.
+
+        Iterates over every message in ``body["messages"]``, labels each by
+        role (User / Assistant), collects sources/URLs/statistics, and appends
+        a session-information summary plus a collected-URLs section at the end.
+        """
+        messages = body.get("messages") or []
+        if event_emitter:
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": self._get_msg("full_chat_converting"),
+                        "done": False,
+                    },
+                }
+            )
+
+        combined_parts: List[str] = []
+        all_sources: List[dict] = []
+        all_urls: List[str] = []
+        per_message_stats: List[Dict[str, Any]] = []
+        user_count = 0
+        assistant_count = 0
+
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = (msg.get("role") or "").strip().lower()
+            if role == "system" and self.valves.FULL_CHAT_SKIP_SYSTEM:
+                continue
+
+            raw_content = msg.get("content", "")
+            text = self._extract_message_text(raw_content)
+            text = self._strip_reasoning_blocks(text)
+            if not text or not text.strip():
+                continue
+
+            if role == "user":
+                user_count += 1
+                label = self._get_msg("user_label")
+            elif role == "assistant":
+                assistant_count += 1
+                label = self._get_msg("assistant_label")
+            else:
+                label = role.capitalize() if role else "Message"
+
+            combined_parts.append(f"\n## {label}\n\n{text}\n")
+
+            # Collect sources from assistant messages
+            if role == "assistant":
+                msg_sources = msg.get("sources") or []
+                if msg_sources:
+                    all_sources.extend(msg_sources)
+                    all_urls.extend(self._collect_urls_from_sources(msg_sources))
+
+            # Collect URLs from the message text itself
+            all_urls.extend(self._collect_urls_from_text(text))
+
+            # Collect statistics
+            info = msg.get("info") if isinstance(msg.get("info"), dict) else {}
+            stats: Dict[str, Any] = {
+                "role": label,
+                "model": info.get("model") or msg.get("model") or "",
+                "prompt_tokens": info.get("prompt_tokens"),
+                "completion_tokens": info.get("completion_tokens"),
+                "total_tokens": info.get("total_tokens"),
+                "timestamp": msg.get("timestamp") or "",
+            }
+            per_message_stats.append(stats)
+
+        # De-duplicate URLs preserving order
+        deduped_urls: List[str] = []
+        for u in all_urls:
+            if u not in deduped_urls:
+                deduped_urls.append(u)
+
+        combined_markdown = "\n".join(combined_parts).strip()
+        if not combined_markdown:
+            combined_markdown = self._get_msg("error_no_content")
+
+        doc = await self.markdown_to_docx(
+            combined_markdown,
+            top_heading=top_heading,
+            sources=all_sources,
+            event_emitter=event_emitter,
+            user_name=user_name,
+            title=title,
+        )
+
+        # ── Append supplementary sections ──
+        if self.valves.FULL_CHAT_INCLUDE_STATS and per_message_stats:
+            self._add_message_stats_section(doc, per_message_stats)
+
+        if self.valves.FULL_CHAT_INCLUDE_URLS:
+            self._add_collected_urls_section(doc, deduped_urls)
+
+        if self.valves.FULL_CHAT_INCLUDE_SESSION_INFO:
+            self._add_session_info_section(
+                doc,
+                chat_title=chat_title,
+                user_name=user_name,
+                total_messages=user_count + assistant_count,
+                user_count=user_count,
+                assistant_count=assistant_count,
+            )
+
+        return doc
+
+    def _add_session_info_section(
+        self,
+        doc: Document,
+        chat_title: str,
+        user_name: str,
+        total_messages: int,
+        user_count: int,
+        assistant_count: int,
+    ):
+        """Append a session-information summary at the end of the document."""
+        self.add_heading(doc, self._get_msg("session_info"), 2)
+
+        export_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        rows = [
+            (self._get_msg("chat_title_label"), chat_title or "—"),
+            (self._get_msg("total_messages"), str(total_messages)),
+            (self._get_msg("user_messages"), str(user_count)),
+            (self._get_msg("assistant_messages"), str(assistant_count)),
+            (self._get_msg("export_time"), export_time),
+        ]
+
+        table = doc.add_table(rows=len(rows), cols=2)
+        table.style = "Light Grid Accent 1" if "Light Grid Accent 1" in [s.name for s in doc.styles] else None
+        for idx, (key, value) in enumerate(rows):
+            cells = table.rows[idx].cells
+            cells[0].text = ""
+            cells[1].text = ""
+            p0 = cells[0].paragraphs[0]
+            run0 = p0.add_run(key)
+            run0.bold = True
+            cells[1].paragraphs[0].add_run(value)
+
+    def _add_collected_urls_section(self, doc: Document, urls: List[str]):
+        """Append a 'Collected URLs' section listing every URL found."""
+        self.add_heading(doc, self._get_msg("collected_urls"), 2)
+
+        if not urls:
+            para = doc.add_paragraph()
+            run = para.add_run(self._get_msg("no_urls_found"))
+            run.italic = True
+            return
+
+        for idx, url in enumerate(urls, start=1):
+            para = doc.add_paragraph(style="List Number")
+            self._add_hyperlink(para, url, url, display_text=url)
+
+    def _add_message_stats_section(self, doc: Document, stats: List[Dict[str, Any]]):
+        """Append a per-message statistics table."""
+        self.add_heading(doc, self._get_msg("message_statistics"), 2)
+
+        headers = [
+            "#",
+            self._get_msg("message_label"),
+            self._get_msg("model_label"),
+            self._get_msg("prompt_tokens"),
+            self._get_msg("completion_tokens"),
+            self._get_msg("total_tokens"),
+        ]
+
+        table = doc.add_table(rows=1, cols=len(headers))
+        try:
+            table.style = "Light List Accent 1"
+        except KeyError:
+            pass
+
+        hdr_cells = table.rows[0].cells
+        for i, h in enumerate(headers):
+            hdr_cells[i].text = ""
+            run = hdr_cells[i].paragraphs[0].add_run(h)
+            run.bold = True
+
+        for idx, s in enumerate(stats, start=1):
+            row_cells = table.add_row().cells
+            values = [
+                str(idx),
+                str(s.get("role", "")),
+                str(s.get("model", "") or "—"),
+                str(s.get("prompt_tokens") or "—"),
+                str(s.get("completion_tokens") or "—"),
+                str(s.get("total_tokens") or "—"),
+            ]
+            for i, v in enumerate(values):
+                row_cells[i].text = ""
+                row_cells[i].paragraphs[0].add_run(v)
 
     async def markdown_to_docx(
         self,

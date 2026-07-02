@@ -23,6 +23,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 
 ## 🔥 What's New in v0.5.0
 
+- 🗂️ **Full Chat Export**: New `EXPORT_FULL_CHAT` valve exports the complete conversation (all user prompts and assistant replies) with role labels, per-message statistics, collected URLs, and a session-information summary — instead of only the last assistant message.
 - 🔠 **Heading-Level Font Customization**: New `FONT_H1_LATIN`, `FONT_H1_ASIAN`, `FONT_H2_LATIN`, `FONT_H2_ASIAN` valves — configure H1 and H2 fonts independently from body text.
 - ⬆️ **Relative Heading Algorithm**: When content has no H1, heading levels are automatically promoted (e.g., `## → #`) so the document hierarchy stays correct.
 - 🧹 **Metadata Sanitization**: Word document properties (`author`, `last_modified_by`, etc.) now use the real user name instead of exposing `python-docx` library fingerprints.
@@ -31,6 +32,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 ## ✨ Key Features
 
 - 🚀 **One-Click Export**: Adds an "Export to Word" action button to the chat.
+- 🗂️ **Full Chat Export**: Optionally export the entire conversation with all user/assistant messages, per-message statistics, collected URLs, and session info.
 - 📄 **Markdown Conversion**: Full Markdown syntax support (headings, bold, italic, code, tables, lists).
 - 🎨 **Syntax Highlighting**: Code blocks highlighted with Pygments (500+ languages).
 - 🔢 **Native Math Equations**: LaTeX math (`$$...$$`, `\[...\]`, `$...$`) converted to editable Word equations.
@@ -65,6 +67,10 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 | **Table Zebra Color** | `FBFBFB` | Alternating row color (hex) |
 | **Mermaid PNG Scale** | `3.0` | Resolution multiplier for Mermaid images |
 | **Math Enable** | `True` | Enable LaTeX math conversion |
+| **Export Full Chat** | `False` | Export the complete conversation (all user/assistant messages) instead of only the last assistant message |
+| **Full Chat Include Stats** | `True` | Include per-message statistics (model, tokens) in full chat export |
+| **Full Chat Include Session Info** | `True` | Append session info summary (title, message counts, export time) |
+| **Full Chat Include URLs** | `True` | Append a 'Collected URLs' section with every URL found across all messages and sources |
 
 ## ⭐ Support
 
