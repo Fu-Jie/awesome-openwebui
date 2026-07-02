@@ -2,7 +2,7 @@
 
 Smart Mind Map is a powerful OpenWebUI action plugin that intelligently analyzes long-form text content and automatically generates interactive mind maps, helping users structure and visualize knowledge.
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v1.0.1 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v1.0.2 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -23,13 +23,13 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
 
-## What's New in v1.0.1
+## What's New in v1.0.2
 
-### OpenWebUI 0.9.x Compatibility Fix
+### OpenWebUI v0.10+ Compatibility Fix (issue #101)
 
-- **Version-aware DB access**: User lookup now adapts to both synchronous and asynchronous OpenWebUI database runtimes.
-- **Runtime-safe fallback**: The action automatically chooses the correct database call style at runtime, preventing failures during 0.9+ upgrades.
-- **No visual regression**: Mind map rendering, direct embed mode, PNG export, theme switching, and i18n behavior remain unchanged.
+- **Frontend crash fixed**: The action no longer appends an id-less message on early-return paths, which caused `Cannot read properties of undefined (reading 'content')` in OWUI v0.10+'s `chatActionHandler`. The existing last message is updated in place instead.
+- **Empty content recovered**: OWUI v0.10+ stores assistant replies in a structured `output` field and leaves `content` empty. The plugin now rebuilds the text from `output` via OWUI's `convert_output_to_messages` (reasoning excluded), with a DB-lookup fallback via `ChatMessages.get_message_by_id`.
+- **Minimum OWUI declared**: `required_open_webui_version: 0.10.2` is now in the metadata. On older OWUI, install [v1.0.1](https://github.com/Fu-Jie/openwebui-extensions/releases/tag/smart-mind-map-v1.0.1) instead.
 
 ## Key Features 🔑
 

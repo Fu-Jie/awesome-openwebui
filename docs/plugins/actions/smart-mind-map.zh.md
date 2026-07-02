@@ -2,7 +2,7 @@
 
 思维导图是一个强大的 OpenWebUI 动作插件，能够智能分析长篇文本内容，自动生成交互式思维导图，帮助用户结构化和可视化知识。
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.0.1 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.0.2 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -23,13 +23,13 @@
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
 
-## v1.0.1 最新更新
+## v1.0.2 最新更新
 
-### OpenWebUI 0.9.x 兼容性修复
+### OpenWebUI v0.10+ 兼容性修复（issue #101）
 
-- **版本感知的数据库访问**：用户查询现在可以同时兼容 OpenWebUI 的同步与异步数据库运行时。
-- **运行时安全回退**：Action 会在运行时自动选择正确的数据库调用方式，避免 0.9+ 升级时出现失败。
-- **无视觉回归**：思维导图渲染、直出模式、PNG 导出、主题切换与多语言行为保持不变。
+- **修复前端崩溃**：动作的早退路径不再追加无 `id` 的消息，避免 OWUI v0.10+ 的 `chatActionHandler` 报 `Cannot read properties of undefined (reading 'content')`。改为原地更新已存在的最后一条消息。
+- **空内容恢复**：OWUI v0.10+ 把助手回复存到结构化的 `output` 字段、`content` 留空。插件现在通过 OWUI 原生的 `convert_output_to_messages`（排除推理内容）从 `output` 重建文本，并以 `ChatMessages.get_message_by_id` 数据库查询作为兜底。
+- **声明最低 OWUI 版本**：元数据已加入 `required_open_webui_version: 0.10.2`。旧版 OWUI 用户请安装 [v1.0.1](https://github.com/Fu-Jie/openwebui-extensions/releases/tag/smart-mind-map-v1.0.1)。
 
 ## 核心特性 🔑
 
