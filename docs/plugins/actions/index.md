@@ -23,7 +23,7 @@ Actions are interactive plugins that:
 
     Intelligently analyzes text content and generates interactive mind maps with beautiful visualizations.
 
-    **Version:** 1.0.1
+    **Version:** 1.0.3
 
     [:octicons-arrow-right-24: Documentation](smart-mind-map.md)
 
