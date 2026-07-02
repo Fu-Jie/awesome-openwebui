@@ -185,7 +185,7 @@ class Action:
                         existing = msg.get("content")
                         if not (isinstance(existing, str) and existing.strip()):
                             recovered = await self._fetch_message_output_text(
-                                chat_id, str(msg.get("id", ""))
+                                chat_id, str(msg.get("id") or "")
                             )
                             if recovered:
                                 msg["content"] = recovered
