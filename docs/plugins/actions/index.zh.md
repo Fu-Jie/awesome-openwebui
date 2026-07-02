@@ -23,7 +23,7 @@ Actions 是交互式插件，能够：
 
     智能分析文本并生成交互式、精美的思维导图。
 
-    **版本：** 1.0.3
+    **版本：** 1.0.2
 
     [:octicons-arrow-right-24: 查看文档](smart-mind-map.md)
 
