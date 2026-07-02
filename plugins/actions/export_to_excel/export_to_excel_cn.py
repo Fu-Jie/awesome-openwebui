@@ -3,7 +3,8 @@ title: 导出为 Excel
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.3.9
+version: 0.3.10
+required_open_webui_version: 0.10.2
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0xNSAySDZhMiAyIDAgMCAwLTIgMnYxNmEyIDIgMCAwIDAgMiAyaDEyYTIgMiAwIDAgMCAyLTJWN1oiLz48cGF0aCBkPSJNMTQgMnY0YTIgMiAwIDAgMCAyIDJoNCIvPjxwYXRoIGQ9Ik04IDEzaDIiLz48cGF0aCBkPSJNMTQgMTNoMiIvPjxwYXRoIGQ9Ik04IDE3aDIiLz48cGF0aCBkPSJNMTQgMTdoMiIvPjwvc3ZnPg==
 description: 从聊天消息中提取表格并导出为 Excel (.xlsx) 文件，支持智能格式化。
 """
@@ -17,8 +18,10 @@ from typing import Optional, Callable, Awaitable, Any, List, Dict
 import datetime
 import asyncio
 from open_webui.models.chats import Chats
+from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.users import Users
 from open_webui.utils.chat import generate_chat_completion
+from open_webui.utils.misc import convert_output_to_messages
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -170,6 +173,21 @@ class Action:
                 else:
                     target_messages = [messages[-1]]
 
+                chat_ctx = self._get_chat_context(body, None)
+                chat_id = chat_ctx["chat_id"]
+
+                # OWUI 0.10+ 将回复存储为结构化 output，扁平的 content 为空；
+                # 逐条恢复消息文本，以便表格提取与标题生成能够读取。
+                if chat_id:
+                    for msg in target_messages:
+                        existing = msg.get("content")
+                        if not (isinstance(existing, str) and existing.strip()):
+                            recovered = await self._fetch_message_output_text(
+                                chat_id, str(msg.get("id", ""))
+                            )
+                            if recovered:
+                                msg["content"] = recovered
+
                 all_tables = []
                 all_sheet_names = []
 
@@ -268,8 +286,6 @@ class Action:
 
                 # Generate Workbook Title (Filename)
                 title = ""
-                chat_ctx = self._get_chat_context(body, None)
-                chat_id = chat_ctx["chat_id"]
                 chat_title = ""
                 if chat_id:
                     chat_title = await self.fetch_chat_title(chat_id, user_id)
@@ -592,6 +608,30 @@ class Action:
         title = data.get("title") or getattr(chat, "title", "")
         return title.strip() if isinstance(title, str) else ""
 
+    def _extract_text_from_output(self, output: Any) -> str:
+        """通过 OWUI 的 convert_output_to_messages 从结构化 output 重建助手文本（排除推理内容）；无内容时返回空字符串。"""
+        if not isinstance(output, list) or not output:
+            return ""
+        reconstructed = convert_output_to_messages(output)
+        assistant_texts = [
+            msg["content"]
+            for msg in reconstructed
+            if isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].strip()
+        ]
+        return "\n".join(assistant_texts)
+
+    async def _fetch_message_output_text(self, chat_id: str, message_id: str) -> str:
+        """通过 OWUI 的 ChatMessages 存储获取某条消息的助手文本：其结构化 output 由 convert_output_to_messages 重建，未找到时返回空字符串。"""
+        if not chat_id or not message_id:
+            return ""
+        message = await _call_db(
+            ChatMessages.get_message_by_id, f"{chat_id}-{message_id}"
+        )
+        return self._extract_text_from_output(message.output) if message else ""
+
     def extract_tables_from_message(self, message: str) -> List[Dict]:
         """
         从消息文本中提取Markdown表格及位置信息
@@ -706,8 +746,12 @@ class Action:
         return workbook_name, sheet_names
 
     def clean_filename(self, name: str) -> str:
-        """清理文件名中的非法字符"""
-        return re.sub(r'[\\/*?:"<>|]', "", name).strip()
+        """清理文件名中的非法字符并限制长度（保证文件系统安全）"""
+        if not isinstance(name, str):
+            return ""
+        cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".")
+        return cleaned[:50].strip()
 
     def clean_sheet_name(self, name: str) -> str:
         """清理sheet名称(限制31字符,去除非法字符)"""

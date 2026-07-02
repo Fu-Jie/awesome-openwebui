@@ -3,7 +3,8 @@ title: Export to Excel
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.3.9
+version: 0.3.10
+required_open_webui_version: 0.10.2
 openwebui_id: 244b8f9d-7459-47d6-84d3-c7ae8e3ec710
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0xNSAySDZhMiAyIDAgMCAwLTIgMnYxNmEyIDIgMCAwIDAgMiAyaDEyYTIgMiAwIDAgMCAyLTJWN1oiLz48cGF0aCBkPSJNMTQgMnY0YTIgMiAwIDAgMCAyIDJoNCIvPjxwYXRoIGQ9Ik04IDEzaDIiLz48cGF0aCBkPSJNMTQgMTNoMiIvPjxwYXRoIGQ9Ik04IDE3aDIiLz48cGF0aCBkPSJNMTQgMTdoMiIvPjwvc3ZnPg==
 description: Extracts tables from chat messages and exports them to Excel (.xlsx) files with smart formatting.
@@ -18,8 +19,10 @@ from typing import Optional, Callable, Awaitable, Any, List, Dict
 import datetime
 import asyncio
 from open_webui.models.chats import Chats
+from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.users import Users
 from open_webui.utils.chat import generate_chat_completion
+from open_webui.utils.misc import convert_output_to_messages
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -171,6 +174,22 @@ class Action:
                 else:
                     target_messages = [messages[-1]]
 
+                chat_ctx = self._get_chat_context(body, None)
+                chat_id = chat_ctx["chat_id"]
+
+                # OWUI 0.10+ stores replies as structured `output` and leaves the flat
+                # `content` empty; recover each target message's text so table
+                # extraction and title generation see it.
+                if chat_id:
+                    for msg in target_messages:
+                        existing = msg.get("content")
+                        if not (isinstance(existing, str) and existing.strip()):
+                            recovered = await self._fetch_message_output_text(
+                                chat_id, str(msg.get("id", ""))
+                            )
+                            if recovered:
+                                msg["content"] = recovered
+
                 all_tables = []
                 all_sheet_names = []
 
@@ -278,8 +297,6 @@ class Action:
                 # Generate Workbook Title (Filename)
                 # Use the title of the chat, or the first header of the first message with tables
                 title = ""
-                chat_ctx = self._get_chat_context(body, None)
-                chat_id = chat_ctx["chat_id"]
                 chat_title = ""
                 if chat_id:
                     chat_title = await self.fetch_chat_title(chat_id, user_id)
@@ -604,6 +621,32 @@ class Action:
         title = data.get("title") or getattr(chat, "title", "")
         return title.strip() if isinstance(title, str) else ""
 
+    def _extract_text_from_output(self, output: Any) -> str:
+        """Rebuild assistant text from structured ``output`` via OWUI's
+        ``convert_output_to_messages`` (reasoning excluded); "" if none."""
+        if not isinstance(output, list) or not output:
+            return ""
+        reconstructed = convert_output_to_messages(output)
+        assistant_texts = [
+            msg["content"]
+            for msg in reconstructed
+            if isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].strip()
+        ]
+        return "\n".join(assistant_texts)
+
+    async def _fetch_message_output_text(self, chat_id: str, message_id: str) -> str:
+        """Assistant text for a message via OWUI's ChatMessages store: its structured
+        ``output`` reconstructed by convert_output_to_messages. "" if not found."""
+        if not chat_id or not message_id:
+            return ""
+        message = await _call_db(
+            ChatMessages.get_message_by_id, f"{chat_id}-{message_id}"
+        )
+        return self._extract_text_from_output(message.output) if message else ""
+
     def extract_tables_from_message(self, message: str) -> List[Dict]:
         """
         Extract Markdown tables and their positions from message text
@@ -718,8 +761,12 @@ class Action:
         return workbook_name, sheet_names
 
     def clean_filename(self, name: str) -> str:
-        """Clean illegal characters in filename"""
-        return re.sub(r'[\\/*?:"<>|]', "", name).strip()
+        """Clean illegal characters and clamp length for filesystem safety."""
+        if not isinstance(name, str):
+            return ""
+        cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".")
+        return cleaned[:50].strip()
 
     def clean_sheet_name(self, name: str) -> str:
         """Clean sheet name (limit 31 chars, remove illegal chars)"""
