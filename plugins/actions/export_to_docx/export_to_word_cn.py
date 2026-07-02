@@ -42,6 +42,7 @@ from open_webui.models.chats import Chats
 from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.users import Users
 from open_webui.storage.provider import Storage
+from open_webui.retrieval.web.utils import get_ssrf_safe_session, validate_url
 from open_webui.utils.chat import generate_chat_completion
 
 # OWUI 0.10+ 将回复存储为结构化 output；convert_output_to_messages
@@ -131,6 +132,8 @@ _ANALYSIS_RE = re.compile(
 # Markdown 引用定义行（[label]: target）不会被渲染，需从导出内容中移除；
 # 与 OpenWebUI removeFormattings 相同的模式（src/lib/utils/index.ts）：/^\[[^\]]+\]:\s*.*$/gm
 _MD_REFERENCE_DEF_RE = re.compile(r"^\[[^\]]+\]:\s*.*$\n?", re.MULTILINE)
+# Markdown 图片 URL：![alt](url ...)，可带 <...> 包裹，捕获其中的 URL。
+_MD_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)>\s]+)")
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,10 @@ class Action:
         最大嵌入图片大小MB: int = Field(
             default=20,
             description="Maximum image size to embed into DOCX (MB). Applies to data URLs and /api/v1/files/<id>/content images.",
+        )
+        嵌入外部图片: bool = Field(
+            default=False,
+            description="是否下载并嵌入外部 http(s) 链接引用的图片。受 最大嵌入图片大小MB 限制，无法获取时显示占位符。",
         )
 
         # Font configuration
@@ -372,6 +379,7 @@ class Action:
         self._prefetched_files: dict = (
             {}
         )  # file_id -> FileModel, pre-fetched async before sync doc build
+        self._prefetched_external_images: dict = {}  # url -> bytes, pre-fetched async
 
     def _get_lang_key(self, user_language: str) -> str:
         """Convert user language code to i18n key (e.g., 'zh-CN' -> 'zh', 'en-US' -> 'en')."""
@@ -1378,6 +1386,49 @@ class Action:
         logger.warning(f"File {file_id} found but no content accessible via Storage.")
         return None
 
+    async def _fetch_external_image(self, url: str) -> Optional[bytes]:
+        """下载外部图片 URL 为字节（由 嵌入外部图片 阀门控制）。
+
+        SSRF 防护复用 OpenWebUI：先用 validate_url() 预检，再用 get_ssrf_safe_session()
+        会话（其解析器在连接时重新校验 IP，防御 DNS 重绑定）。受 最大嵌入图片大小MB
+        限制并要求 image/* 内容类型。任何失败均返回 None（回退为占位符）。
+        """
+        max_bytes = self._max_embed_image_bytes()
+        try:
+            validate_url(url)
+        except Exception as exc:
+            logger.warning(f"External image blocked by validate_url: {url} ({exc})")
+            return None
+        try:
+            async with get_ssrf_safe_session() as session:
+                async with session.get(url) as resp:
+                    if not (200 <= resp.status < 300):
+                        logger.warning(f"External image HTTP {resp.status}: {url}")
+                        return None
+                    ctype = (
+                        (resp.headers.get("Content-Type") or "")
+                        .split(";")[0]
+                        .strip()
+                        .lower()
+                    )
+                    if ctype and not ctype.startswith("image/"):
+                        logger.warning(
+                            f"External URL is not an image (Content-Type={ctype}): {url}"
+                        )
+                        return None
+                    buf = bytearray()
+                    async for chunk in resp.content.iter_chunked(65536):
+                        buf += chunk
+                        if len(buf) > max_bytes:
+                            logger.warning(
+                                f"External image exceeds {max_bytes} bytes: {url}"
+                            )
+                            return None
+                    return bytes(buf)
+        except Exception as exc:
+            logger.warning(f"Failed to fetch external image {url}: {exc}")
+            return None
+
     def _add_image_placeholder(self, paragraph, alt: str, reason: str):
         label = (alt or "").strip() or "image"
         msg = f"[{label} not embedded: {reason}]"
@@ -1421,15 +1472,22 @@ class Action:
         else:
             file_id = self._extract_owui_api_file_id(u)
             if not file_id:
-                # External images are not fetched; treat as non-embeddable.
-                self._add_image_placeholder(paragraph, alt, "external URL")
-                return
-            image_bytes = self._image_bytes_from_owui_file_id(file_id, max_bytes)
-            if image_bytes is None:
-                self._add_image_placeholder(
-                    paragraph, alt, f"file unavailable ({file_id})"
+                # 外部图片：阀门开启且已预取时嵌入其字节，否则保留占位符。
+                image_bytes = (
+                    self._prefetched_external_images.get(u)
+                    if self.valves.嵌入外部图片
+                    else None
                 )
-                return
+                if image_bytes is None:
+                    self._add_image_placeholder(paragraph, alt, "external URL")
+                    return
+            else:
+                image_bytes = self._image_bytes_from_owui_file_id(file_id, max_bytes)
+                if image_bytes is None:
+                    self._add_image_placeholder(
+                        paragraph, alt, f"file unavailable ({file_id})"
+                    )
+                    return
 
         success, error_msg = self._try_embed_image(paragraph, image_bytes)
         if not success:
@@ -1477,6 +1535,23 @@ class Action:
                             self._prefetched_files[fid] = fobj
                     except Exception as e:
                         logger.warning(f"Failed to prefetch file {fid}: {e}")
+
+            # 预取外部图片（可选），以便同步构建文档时嵌入。
+            self._prefetched_external_images = {}
+            if self.valves.嵌入外部图片:
+                ext_urls = {
+                    u
+                    for u in (
+                        m.group(1).strip()
+                        for m in _MD_IMAGE_URL_RE.finditer(markdown_text)
+                    )
+                    if u.lower().startswith(("http://", "https://"))
+                    and not self._extract_owui_api_file_id(u)
+                }
+                for u in ext_urls:
+                    data = await self._fetch_external_image(u)
+                    if data:
+                        self._prefetched_external_images[u] = data
 
             # Set default fonts
             self.set_document_default_font(doc)

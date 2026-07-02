@@ -42,6 +42,7 @@ from open_webui.models.chats import Chats
 from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.users import Users
 from open_webui.storage.provider import Storage
+from open_webui.retrieval.web.utils import get_ssrf_safe_session, validate_url
 from open_webui.utils.chat import generate_chat_completion
 
 # OWUI 0.10+ stores replies as structured `output`; rebuilds text (reasoning excluded). Requires >= 0.10.2.
@@ -131,6 +132,8 @@ _ANALYSIS_RE = re.compile(
 # must be stripped from the export. Same pattern OpenWebUI uses in removeFormattings()
 # — src/lib/utils/index.ts: `/^\[[^\]]+\]:\s*.*$/gm`.
 _MD_REFERENCE_DEF_RE = re.compile(r"^\[[^\]]+\]:\s*.*$\n?", re.MULTILINE)
+# Markdown image URL: ![alt](url ...) with optional <...> wrapping — captures the URL.
+_MD_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)>\s]+)")
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,10 @@ class Action:
         MAX_EMBED_IMAGE_MB: int = Field(
             default=20,
             description="Maximum image size to embed into DOCX (MB). Applies to data URLs and /api/v1/files/<id>/content images.",
+        )
+        EMBED_EXTERNAL_IMAGES: bool = Field(
+            default=False,
+            description="Download and embed images from external http(s) URLs, capped by MAX_EMBED_IMAGE_MB. Unfetchable images show a placeholder instead.",
         )
 
         # Font configuration
@@ -372,6 +379,7 @@ class Action:
         self._prefetched_files: dict = (
             {}
         )  # file_id -> FileModel, pre-fetched async before sync doc build
+        self._prefetched_external_images: dict = {}  # url -> bytes, pre-fetched async
 
     def _get_lang_key(self, user_language: str) -> str:
         """Convert user language code to i18n key (e.g., 'zh-CN' -> 'zh', 'en-US' -> 'en')."""
@@ -1381,6 +1389,50 @@ class Action:
         logger.warning(f"File {file_id} found but no content accessible via Storage.")
         return None
 
+    async def _fetch_external_image(self, url: str) -> Optional[bytes]:
+        """Download an external image URL to bytes (gated by EMBED_EXTERNAL_IMAGES).
+
+        SSRF protection is OpenWebUI's: validate_url() pre-flight + a
+        get_ssrf_safe_session() whose resolver re-validates the resolved IP at
+        connect time (defeats DNS rebinding). Enforces MAX_EMBED_IMAGE_MB and an
+        image/* content type. Returns None (-> placeholder) on any failure.
+        """
+        max_bytes = self._max_embed_image_bytes()
+        try:
+            validate_url(url)
+        except Exception as exc:
+            logger.warning(f"External image blocked by validate_url: {url} ({exc})")
+            return None
+        try:
+            async with get_ssrf_safe_session() as session:
+                async with session.get(url) as resp:
+                    if not (200 <= resp.status < 300):
+                        logger.warning(f"External image HTTP {resp.status}: {url}")
+                        return None
+                    ctype = (
+                        (resp.headers.get("Content-Type") or "")
+                        .split(";")[0]
+                        .strip()
+                        .lower()
+                    )
+                    if ctype and not ctype.startswith("image/"):
+                        logger.warning(
+                            f"External URL is not an image (Content-Type={ctype}): {url}"
+                        )
+                        return None
+                    buf = bytearray()
+                    async for chunk in resp.content.iter_chunked(65536):
+                        buf += chunk
+                        if len(buf) > max_bytes:
+                            logger.warning(
+                                f"External image exceeds {max_bytes} bytes: {url}"
+                            )
+                            return None
+                    return bytes(buf)
+        except Exception as exc:
+            logger.warning(f"Failed to fetch external image {url}: {exc}")
+            return None
+
     def _add_image_placeholder(self, paragraph, alt: str, reason: str):
         label = (alt or "").strip() or "image"
         msg = f"[{label} not embedded: {reason}]"
@@ -1424,15 +1476,23 @@ class Action:
         else:
             file_id = self._extract_owui_api_file_id(u)
             if not file_id:
-                # External images are not fetched; treat as non-embeddable.
-                self._add_image_placeholder(paragraph, alt, "external URL")
-                return
-            image_bytes = self._image_bytes_from_owui_file_id(file_id, max_bytes)
-            if image_bytes is None:
-                self._add_image_placeholder(
-                    paragraph, alt, f"file unavailable ({file_id})"
+                # External image: embed prefetched bytes when the opt-in valve is on,
+                # otherwise leave a placeholder.
+                image_bytes = (
+                    self._prefetched_external_images.get(u)
+                    if self.valves.EMBED_EXTERNAL_IMAGES
+                    else None
                 )
-                return
+                if image_bytes is None:
+                    self._add_image_placeholder(paragraph, alt, "external URL")
+                    return
+            else:
+                image_bytes = self._image_bytes_from_owui_file_id(file_id, max_bytes)
+                if image_bytes is None:
+                    self._add_image_placeholder(
+                        paragraph, alt, f"file unavailable ({file_id})"
+                    )
+                    return
 
         success, error_msg = self._try_embed_image(paragraph, image_bytes)
         if not success:
@@ -1480,6 +1540,23 @@ class Action:
                             self._prefetched_files[fid] = fobj
                     except Exception as e:
                         logger.warning(f"Failed to prefetch file {fid}: {e}")
+
+            # Pre-fetch external images (opt-in) so the sync doc build can embed them.
+            self._prefetched_external_images = {}
+            if self.valves.EMBED_EXTERNAL_IMAGES:
+                ext_urls = {
+                    u
+                    for u in (
+                        m.group(1).strip()
+                        for m in _MD_IMAGE_URL_RE.finditer(markdown_text)
+                    )
+                    if u.lower().startswith(("http://", "https://"))
+                    and not self._extract_owui_api_file_id(u)
+                }
+                for u in ext_urls:
+                    data = await self._fetch_external_image(u)
+                    if data:
+                        self._prefetched_external_images[u] = data
 
             # Set default fonts
             self.set_document_default_font(doc)
