@@ -67,7 +67,13 @@ See the full history on GitHub: [OpenWebUI Extensions](https://github.com/Fu-Jie
 
 This plugin allows you to export your chat history to an Excel (.xlsx) file directly from the chat interface.
 
-## What's New in v0.3.6
+## What's New in v0.3.10
+
+- 🛠️ **Open WebUI 0.10.x Compatibility (Critical)**: OWUI 0.10 moved assistant replies into a structured `output` field and left `content` empty, breaking export with "No tables found to export!". Each target message's text is now recovered via `ChatMessages` + `convert_output_to_messages` (OpenWebUI-native, reasoning excluded), so table extraction and AI title generation see real content again. **Requires OWUI ≥ 0.10.2.**
+- 📏 **Filename Length Clamping**: Long chat titles could exceed the OS filename limit ("File name too long"). The workbook filename is now cleaned and clamped to a safe length.
+
+<details>
+<summary>v0.3.6 changes</summary>
 
 - **OpenWebUI-Style Theme**: Modern dark header (#1f2937) with light gray zebra striping for better readability.
 - **Zebra Striping**: Alternating row colors (#ffffff / #f3f4f6) for improved visual scanning.
@@ -80,6 +86,8 @@ This plugin allows you to export your chat history to an Excel (.xlsx) file dire
 - **Smart Filename Generation**: Supports generating filenames based on Chat Title, AI Summary, or Markdown Headers.
 - **Configuration Options**: Added `TITLE_SOURCE` setting to control filename generation strategy.
 - **AI Title Generation**: Added `MODEL_ID` setting to specify the model for AI title generation, with progress notifications.
+
+</details>
 
 ## Features
 
