@@ -502,3 +502,110 @@ class TestActionUsesOutputRecovery:
         assert all("id" in m for m in msgs)
         assert len(msgs) == 2  # no append
         assert "❌" in msgs[-1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility with pre-v0.10 OWUI
+# ---------------------------------------------------------------------------
+class TestPreV010BackwardCompat:
+    """On older OWUI (no `output` field, no ChatMessages / convert_output_to_messages
+    APIs), the plugin must keep working exactly as before: read `content` directly,
+    never crash due to missing imports, and never attempt a DB lookup it can't do.
+
+    These tests simulate a pre-v0.10 environment by nulling out the v0.10 APIs
+    on the already-loaded module (the guarded imports set them to ``None`` at
+    load time on such versions; here we force the same state in-process).
+    """
+
+    def _disable_v010_apis(self):
+        """Simulate pre-v0.10 where ChatMessages / convert_output_to_messages
+        don't exist — the guarded imports would have set them to None."""
+        smart_mind_map.ChatMessages = None
+        smart_mind_map.convert_output_to_messages = None
+
+    def _restore_v010_apis(self):
+        smart_mind_map.ChatMessages = _FakeChatMessages
+        smart_mind_map.convert_output_to_messages = _fake_convert_output_to_messages
+
+    def test_module_loads_with_v010_apis_absent(self):
+        """The plugin module must import successfully even when the v0.10 APIs
+        are unavailable — that's the whole point of the guarded imports."""
+        # If we got here, the module already loaded. Now force-disable and
+        # re-instantiate to make sure Action() doesn't blow up either.
+        self._disable_v010_apis()
+        try:
+            action = _make_action()
+            assert action is not None
+        finally:
+            self._restore_v010_apis()
+
+    @pytest.mark.asyncio
+    async def test_recover_reads_content_directly_when_v010_apis_absent(self):
+        """With v0.10 APIs absent and a populated `content`, recovery returns
+        that content and never touches output/DB."""
+        self._disable_v010_apis()
+        try:
+            action = _make_action()
+            body = {
+                "chat_id": "chat-1",
+                "id": "msg-1",
+                "messages": [
+                    {"id": "msg-1", "role": "assistant", "content": "legacy content"},
+                ],
+            }
+            msg = body["messages"][0]
+            recovered = await action._recover_message_content(body, msg)
+            assert recovered == "legacy content"
+            assert msg["content"] == "legacy content"
+        finally:
+            self._restore_v010_apis()
+
+    @pytest.mark.asyncio
+    async def test_recover_returns_empty_when_content_empty_and_apis_absent(self):
+        """Pre-v0.10 with empty content: no output field, no DB lookup available
+        → recovery returns empty (action then hits the existing 'no content'
+        early-return path, which v1.0.2 already made crash-safe)."""
+        self._disable_v010_apis()
+        try:
+            action = _make_action()
+            body = {
+                "chat_id": "chat-1",
+                "id": "msg-1",
+                "messages": [{"id": "msg-1", "role": "assistant", "content": ""}],
+            }
+            msg = body["messages"][0]
+            assert await action._recover_message_content(body, msg) == ""
+            # No DB call was attempted (ChatMessages is None).
+            assert _FAKE_DB_RECORDS == {} or "chat-1-msg-1" not in _FAKE_DB_RECORDS
+        finally:
+            self._restore_v010_apis()
+
+    @pytest.mark.asyncio
+    async def test_action_end_to_end_on_pre_v010_payload(self):
+        """Full action flow on a pre-v0.10-style payload (content populated,
+        no output field, v0.10 APIs absent): must not crash, must preserve
+        every message's id."""
+        self._disable_v010_apis()
+        try:
+            action = _make_action()
+            long_text = "z" * 200
+            body = {
+                "model": "test-model",
+                "chat_id": "chat-1",
+                "id": "msg-asst-1",
+                "session_id": "sess-1",
+                "messages": [
+                    {"id": "msg-user-1", "role": "user", "content": "summarize"},
+                    {"id": "msg-asst-1", "role": "assistant", "content": long_text},
+                ],
+            }
+            result = await action.action(
+                body,
+                __user__={"id": "u1", "name": "Test", "language": "en-US"},
+                __event_emitter__=_noop_emitter,
+            )
+            msgs = result["messages"]
+            assert all("id" in m for m in msgs)
+            assert len(msgs) == 2  # no append
+        finally:
+            self._restore_v010_apis()
