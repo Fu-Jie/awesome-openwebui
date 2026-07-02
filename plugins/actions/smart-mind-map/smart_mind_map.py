@@ -3,7 +3,7 @@ title: Smart Mind Map
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 1.0.2
+version: 1.0.3
 openwebui_id: 3094c59a-b4dd-4e0c-9449-15e2dd547dc4
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjE2IiB5PSIxNiIgd2lkdGg9IjYiIGhlaWdodD0iNiIgcng9IjEiLz48cmVjdCB4PSIyIiB5PSIxNiIgd2lkdGg9IjYiIGhlaWdodD0iNiIgcng9IjEiLz48cmVjdCB4PSI5IiB5PSIyIiB3aWR0aD0iNiIgaGVpZ2h0PSI2IiByeD0iMSIvPjxwYXRoIGQ9Ik01IDE2di0zYTEgMSAwIDAgMSAxLTFoMTJhMSAxIDAgMCAxIDEgMXYzIi8+PHBhdGggZD0iTTEyIDEyVjgiLz48L3N2Zz4=
 description: Intelligently analyzes text content and generates interactive mind maps to help users structure and visualize knowledge.
@@ -24,6 +24,19 @@ from pydantic import BaseModel, Field
 
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.models.users import Users
+
+# OWUI v0.10+ stores assistant replies in a structured `output` field and leaves
+# the flat `content` empty. These APIs let us rebuild text from `output`.
+# Guarded imports: on older OWUI versions they don't exist and we silently fall
+# back to reading `content` (issue #101).
+try:
+    from open_webui.models.chat_messages import ChatMessages
+except Exception:  # pragma: no cover - older OWUI without ChatMessages
+    ChatMessages = None  # type: ignore[assignment]
+try:
+    from open_webui.utils.misc import convert_output_to_messages
+except Exception:  # pragma: no cover - older OWUI without convert_output_to_messages
+    convert_output_to_messages = None  # type: ignore[assignment]
 
 try:
     from open_webui.env import VERSION as open_webui_version
@@ -1736,6 +1749,80 @@ class Action:
             return "\n".join(text_parts)
         return str(content) if content else ""
 
+    def _extract_text_from_output(self, output: Any) -> str:
+        """Rebuild assistant text from OWUI v0.10+ structured ``output``.
+
+        Uses OWUI's own ``convert_output_to_messages`` (reasoning excluded) so we
+        follow upstream schema changes instead of hand-rolling a parser. Returns
+        ``""`` when ``output`` is missing/empty or the OWUI API is unavailable.
+        """
+        if convert_output_to_messages is None or not isinstance(output, list) or not output:
+            return ""
+        try:
+            reconstructed = convert_output_to_messages(output)
+        except Exception as e:
+            logger.warning(f"convert_output_to_messages failed: {e}")
+            return ""
+        assistant_texts = [
+            msg["content"]
+            for msg in reconstructed
+            if isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].strip()
+        ]
+        return "\n".join(assistant_texts)
+
+    async def _recover_message_content(self, body: dict, msg: dict) -> str:
+        """Return the assistant text for ``msg``, recovering from ``output`` if
+        the flat ``content`` is empty (OWUI v0.10+).
+
+        Order of resolution:
+        1. ``msg.content`` when it's a non-empty string/list (pre-v0.10, or
+           already-populated by OWUI).
+        2. The structured ``output`` field carried on ``msg`` itself.
+        3. A DB lookup via ``ChatMessages.get_message_by_id(chat_id, message_id)``
+           — needed because the action payload may not include ``output`` at all.
+
+        Returns ``""`` when nothing can be recovered. The original ``msg`` dict
+        is also backfilled with the recovered text so downstream code can read
+        ``msg["content"]`` uniformly.
+        """
+        # 1. Existing flat content.
+        existing = self._extract_text_content(msg.get("content"))
+        if existing.strip():
+            return existing
+
+        # 2. Inline structured output (some OWUI builds attach it to the payload).
+        inline_text = self._extract_text_from_output(msg.get("output"))
+        if inline_text.strip():
+            msg["content"] = inline_text
+            return inline_text
+
+        # 3. DB lookup via OWUI's ChatMessages store.
+        if ChatMessages is None:
+            return ""
+        chat_ctx = self._get_chat_context(body, None)
+        chat_id = chat_ctx.get("chat_id", "")
+        message_id = str(msg.get("id") or "")
+        if not chat_id or not message_id:
+            return ""
+        try:
+            record = await _call_db(
+                ChatMessages.get_message_by_id, f"{chat_id}-{message_id}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"ChatMessages.get_message_by_id failed for {chat_id}-{message_id}: {e}"
+            )
+            return ""
+        if not record:
+            return ""
+        recovered = self._extract_text_from_output(getattr(record, "output", None))
+        if recovered.strip():
+            msg["content"] = recovered
+        return recovered
+
     def _merge_html(
         self,
         existing_html_code: str,
@@ -2474,7 +2561,7 @@ class Action:
         __metadata__: Optional[dict] = None,
         __request__: Optional[Request] = None,
     ) -> Optional[dict]:
-        logger.info("Action: Smart Mind Map (v1.0.2) started")
+        logger.info("Action: Smart Mind Map (v1.0.3) started")
         user_ctx = await self._get_user_context(__user__, __event_call__, __request__)
         user_language = user_ctx["user_language"]
         user_name = user_ctx["user_name"]
@@ -2519,10 +2606,14 @@ class Action:
         message_count = min(self.valves.MESSAGE_COUNT, len(messages))
         recent_messages = messages[-message_count:]
 
-        # Aggregate content from selected messages with labels
+        # Aggregate content from selected messages with labels.
+        # On OWUI v0.10+ the flat `content` may be empty (text lives in the
+        # structured `output` field); _recover_message_content rebuilds it.
         aggregated_parts = []
         for i, msg in enumerate(recent_messages, 1):
-            text_content = self._extract_text_content(msg.get("content"))
+            if not isinstance(msg, dict):
+                continue
+            text_content = await self._recover_message_content(body, msg)
             if text_content:
                 aggregated_parts.append(f"{text_content}")
 
@@ -2748,7 +2839,7 @@ class Action:
                     ),
                     "success",
                 )
-                logger.info("Action: Smart Mind Map (v1.0.2) completed in image mode")
+                logger.info("Action: Smart Mind Map (v1.0.3) completed in image mode")
                 return body
 
             # HTML mode
@@ -2831,7 +2922,7 @@ class Action:
                     ),
                     "success",
                 )
-                logger.info("Action: Smart Mind Map (v1.0.2) completed in Direct Mode")
+                logger.info("Action: Smart Mind Map (v1.0.3) completed in Direct Mode")
 
                 return (
                     final_html_direct,
@@ -2859,7 +2950,7 @@ class Action:
                     "success",
                 )
                 logger.info(
-                    "Action: Smart Mind Map (v1.0.2) completed in Legacy HTML mode"
+                    "Action: Smart Mind Map (v1.0.3) completed in Legacy HTML mode"
                 )
 
         except Exception as e:

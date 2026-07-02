@@ -4,20 +4,26 @@ Issue: On OpenWebUI v0.10+, clicking the Smart Mind Map action produces
 ``Cannot read properties of undefined (reading 'content')`` at
 ``Chat.svelte`` (inside ``chatActionHandler``).
 
-Root cause: The action's early-return paths (no messages / no extractable
-content / text too short) appended a *new* message dict without an ``id``
-field to ``body["messages"]``:
+Two layers of the bug are covered here:
 
-    body["messages"].append({"role": "assistant", "content": "❌ ..."})
+1. **Frontend crash** — the action's early-return paths appended a *new*
+   message dict without an ``id`` field to ``body["messages"]``:
 
-The OWUI v0.10+ frontend iterates the returned ``messages`` and does
-``history.messages[message.id].content`` for each entry. When ``message.id``
-is ``undefined`` (the appended message has no id), ``history.messages[undefined]``
-is ``undefined`` and accessing ``.content`` throws.
+       body["messages"].append({"role": "assistant", "content": "❌ ..."})
 
-Fix: Update the *existing* last message's content (it already carries a valid
-``id``) instead of appending a new id-less message. The frontend preserves the
-original content as ``originalContent`` before applying the update.
+   The OWUI v0.10+ frontend iterates the returned ``messages`` and does
+   ``history.messages[message.id].content`` for each entry. When
+   ``message.id`` is ``undefined``, ``history.messages[undefined]`` is
+   ``undefined`` and accessing ``.content`` throws. Fixed by updating the
+   existing last message (which carries a valid id) in place.
+
+2. **Empty content on v0.10** — OWUI v0.10+ stores assistant replies in a
+   structured ``output`` field and leaves the flat ``content`` empty, so the
+   plugin's ``_extract_text_content`` returned nothing and the action hit the
+   early-return path even when the assistant reply was perfectly valid. Fixed
+   by ``_recover_message_content``: rebuild text from ``msg.output`` (inline)
+   or via ``ChatMessages.get_message_by_id`` DB lookup using OWUI's own
+   ``convert_output_to_messages``.
 """
 
 import importlib.util
@@ -31,19 +37,57 @@ import pytest
 # Mock the ``open_webui`` packages that smart_mind_map.py imports at load
 # time, so the module can be imported in a standalone test environment.
 # ---------------------------------------------------------------------------
+# Mutable registries so individual tests can swap implementations.
+_FAKE_DB_RECORDS: dict = {}
+_FAKE_CONVERT_OUTPUT = None
+
+
+def _fake_convert_output_to_messages(output):
+    """Test-only stand-in for OWUI's convert_output_to_messages.
+
+    Recognises a simple ``[{"type": "text", "content": "..."}]`` shape and
+    returns ``[{"role": "assistant", "content": "..."}]`` so the plugin's
+    recovery path can rebuild text. Tests that need to simulate a specific
+    structured-output schema can override ``_FAKE_CONVERT_OUTPUT``.
+    """
+    if _FAKE_CONVERT_OUTPUT is not None:
+        return _FAKE_CONVERT_OUTPUT(output)
+    if not isinstance(output, list):
+        return []
+    out = []
+    for item in output:
+        if isinstance(item, dict) and item.get("type") == "text":
+            out.append({"role": "assistant", "content": item.get("content", "")})
+    return out
+
+
+class _FakeChatMessages:
+    """Test-only stand-in for OWUI's ChatMessages model."""
+
+    @staticmethod
+    async def get_message_by_id(message_id):
+        return _FAKE_DB_RECORDS.get(message_id)
+
+
 _MOCK_MODULES = {
     "open_webui": types.ModuleType("open_webui"),
     "open_webui.utils": types.ModuleType("open_webui.utils"),
     "open_webui.utils.chat": types.ModuleType("open_webui.utils.chat"),
+    "open_webui.utils.misc": types.ModuleType("open_webui.utils.misc"),
     "open_webui.models": types.ModuleType("open_webui.models"),
     "open_webui.models.users": types.ModuleType("open_webui.models.users"),
+    "open_webui.models.chat_messages": types.ModuleType("open_webui.models.chat_messages"),
     "open_webui.env": types.ModuleType("open_webui.env"),
 }
 _MOCK_MODULES["open_webui.utils.chat"].generate_chat_completion = lambda *a, **kw: None
+_MOCK_MODULES["open_webui.utils.misc"].convert_output_to_messages = (
+    _fake_convert_output_to_messages
+)
 _MOCK_MODULES["open_webui.models.users"].Users = types.SimpleNamespace(
     get_user_by_id=lambda *a, **kw: None
 )
-_MOCK_MODULES["open_webui.env"].VERSION = "0.0.0"
+_MOCK_MODULES["open_webui.models.chat_messages"].ChatMessages = _FakeChatMessages
+_MOCK_MODULES["open_webui.env"].VERSION = "0.10.2"
 for _name, _mod in _MOCK_MODULES.items():
     sys.modules.setdefault(_name, _mod)
 
@@ -239,3 +283,222 @@ class TestActionEarlyReturnNoIdlessMessages:
         msgs = result["messages"]
         assert all("id" in m for m in msgs)
         assert len(msgs) == 2  # no append
+
+
+# ---------------------------------------------------------------------------
+# OWUI v0.10+ structured-output recovery (the *second* layer of issue #101)
+# ---------------------------------------------------------------------------
+class TestRecoverContentFromOutput:
+    """OWUI v0.10+ stores assistant replies in a structured ``output`` field
+    and leaves ``content`` empty. The plugin must rebuild the text instead of
+    reporting "no content found to export".
+    """
+
+    def test_extract_text_from_output_rebuilds_assistant_text(self):
+        action = _make_action()
+        output = [{"type": "text", "content": "Hello world"}]
+        assert action._extract_text_from_output(output) == "Hello world"
+
+    def test_extract_text_from_output_empty_when_no_text_part(self):
+        action = _make_action()
+        assert action._extract_text_from_output([]) == ""
+        assert action._extract_text_from_output(None) == ""
+        assert action._extract_text_from_output([{"type": "image_url"}]) == ""
+
+    def test_extract_text_from_output_skips_reasoning_role(self):
+        """Reasoning is carried in a separate ``reasoning`` field by OWUI's
+        ``convert_output_to_messages``; only ``content`` is joined."""
+        action = _make_action()
+        output = [{"type": "text", "content": "final answer"}]
+        global _FAKE_CONVERT_OUTPUT
+        _FAKE_CONVERT_OUTPUT = lambda out: [
+            {"role": "assistant", "content": "final answer", "reasoning": "thinking..."},
+        ]
+        try:
+            assert action._extract_text_from_output(output) == "final answer"
+        finally:
+            _FAKE_CONVERT_OUTPUT = None
+
+    @pytest.mark.asyncio
+    async def test_recover_uses_inline_output_when_content_empty(self):
+        """When ``msg.content`` is empty but ``msg.output`` carries the text,
+        recovery should populate ``msg.content`` from ``output``."""
+        action = _make_action()
+        body = {
+            "chat_id": "chat-1",
+            "id": "msg-asst-1",
+            "messages": [
+                {
+                    "id": "msg-asst-1",
+                    "role": "assistant",
+                    "content": "",
+                    "output": [{"type": "text", "content": "Recovered inline text"}],
+                }
+            ],
+        }
+        msg = body["messages"][0]
+        recovered = await action._recover_message_content(body, msg)
+        assert recovered == "Recovered inline text"
+        # Backfilled onto the message for downstream code.
+        assert msg["content"] == "Recovered inline text"
+
+    @pytest.mark.asyncio
+    async def test_recover_uses_db_lookup_when_content_and_output_empty(self):
+        """When both ``content`` and ``output`` are absent, recovery should
+        fall back to ``ChatMessages.get_message_by_id``."""
+        action = _make_action()
+        _FAKE_DB_RECORDS.clear()
+        _FAKE_DB_RECORDS["chat-1-msg-asst-1"] = types.SimpleNamespace(
+            output=[{"type": "text", "content": "Recovered from DB"}]
+        )
+        try:
+            body = {
+                "chat_id": "chat-1",
+                "id": "msg-asst-1",
+                "messages": [
+                    {"id": "msg-asst-1", "role": "assistant", "content": ""},
+                ],
+            }
+            msg = body["messages"][0]
+            recovered = await action._recover_message_content(body, msg)
+            assert recovered == "Recovered from DB"
+            assert msg["content"] == "Recovered from DB"
+        finally:
+            _FAKE_DB_RECORDS.clear()
+
+    @pytest.mark.asyncio
+    async def test_recover_returns_empty_when_db_record_missing(self):
+        action = _make_action()
+        _FAKE_DB_RECORDS.clear()
+        body = {
+            "chat_id": "chat-1",
+            "id": "msg-asst-1",
+            "messages": [{"id": "msg-asst-1", "role": "assistant", "content": ""}],
+        }
+        msg = body["messages"][0]
+        assert await action._recover_message_content(body, msg) == ""
+
+    @pytest.mark.asyncio
+    async def test_recover_prefers_existing_nonempty_content(self):
+        """If ``content`` is already populated (pre-v0.10 or OWUI backfilled
+        it), recovery must return it as-is and not touch ``output``/DB."""
+        action = _make_action()
+        body = {
+            "chat_id": "chat-1",
+            "id": "msg-asst-1",
+            "messages": [
+                {
+                    "id": "msg-asst-1",
+                    "role": "assistant",
+                    "content": "original content",
+                    "output": [{"type": "text", "content": "should not be used"}],
+                }
+            ],
+        }
+        msg = body["messages"][0]
+        recovered = await action._recover_message_content(body, msg)
+        assert recovered == "original content"
+
+    @pytest.mark.asyncio
+    async def test_recover_returns_empty_when_no_chat_id(self):
+        """Without chat_id/message_id the DB lookup can't run — return empty
+        rather than crashing."""
+        action = _make_action()
+        body = {"messages": [{"id": "", "role": "assistant", "content": ""}]}
+        msg = body["messages"][0]
+        assert await action._recover_message_content(body, msg) == ""
+
+
+class TestActionUsesOutputRecovery:
+    """End-to-end: when the v0.10 payload has empty ``content`` but valid
+    ``output``, the action must not crash and every returned message must
+    keep its ``id``. (Recovery correctness is covered by the unit tests above;
+    these tests focus on the frontend-safety invariant under the full action
+    flow, including when downstream steps like user-lookup / LLM call fail in
+    the test environment.)
+    """
+
+    @pytest.mark.asyncio
+    async def test_action_recovers_from_inline_output_no_crash(self):
+        action = _make_action()
+        long_text = "x" * 200
+        body = {
+            "model": "test-model",
+            "chat_id": "chat-1",
+            "id": "msg-asst-1",
+            "session_id": "sess-1",
+            "messages": [
+                {"id": "msg-user-1", "role": "user", "content": "summarize"},
+                {
+                    "id": "msg-asst-1",
+                    "role": "assistant",
+                    "content": "",
+                    "output": [{"type": "text", "content": long_text}],
+                },
+            ],
+        }
+        result = await action.action(
+            body,
+            __user__={"id": "u1", "name": "Test", "language": "en-US"},
+            __event_emitter__=_noop_emitter,
+        )
+        msgs = result["messages"]
+        assert all("id" in m for m in msgs), "id-less message would crash OWUI v0.10"
+        assert len(msgs) == 2  # no append
+
+    @pytest.mark.asyncio
+    async def test_action_recovers_from_db_lookup_no_crash(self):
+        action = _make_action()
+        long_text = "y" * 200
+        _FAKE_DB_RECORDS.clear()
+        _FAKE_DB_RECORDS["chat-1-msg-asst-1"] = types.SimpleNamespace(
+            output=[{"type": "text", "content": long_text}]
+        )
+        try:
+            body = {
+                "model": "test-model",
+                "chat_id": "chat-1",
+                "id": "msg-asst-1",
+                "session_id": "sess-1",
+                "messages": [
+                    {"id": "msg-user-1", "role": "user", "content": "summarize"},
+                    {"id": "msg-asst-1", "role": "assistant", "content": ""},
+                ],
+            }
+            result = await action.action(
+                body,
+                __user__={"id": "u1", "name": "Test", "language": "en-US"},
+                __event_emitter__=_noop_emitter,
+            )
+            msgs = result["messages"]
+            assert all("id" in m for m in msgs), "id-less message would crash OWUI v0.10"
+            assert len(msgs) == 2  # no append
+        finally:
+            _FAKE_DB_RECORDS.clear()
+
+    @pytest.mark.asyncio
+    async def test_action_empty_content_and_no_output_still_safe(self):
+        """When content is empty AND no output can be recovered, the action
+        must still not crash the frontend (id invariant holds, error
+        notification sent)."""
+        action = _make_action()
+        _FAKE_DB_RECORDS.clear()
+        body = {
+            "model": "test-model",
+            "chat_id": "chat-1",
+            "id": "msg-asst-1",
+            "session_id": "sess-1",
+            "messages": [
+                {"id": "msg-user-1", "role": "user", "content": "summarize"},
+                {"id": "msg-asst-1", "role": "assistant", "content": ""},
+            ],
+        }
+        result = await action.action(
+            body,
+            __user__={"id": "u1", "name": "Test", "language": "en-US"},
+            __event_emitter__=_noop_emitter,
+        )
+        msgs = result["messages"]
+        assert all("id" in m for m in msgs)
+        assert len(msgs) == 2  # no append
+        assert "❌" in msgs[-1]["content"]
