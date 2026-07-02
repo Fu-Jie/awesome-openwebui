@@ -1,6 +1,6 @@
 # 📝 Export to Word (Enhanced)
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v0.5.0 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v0.5.1 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -21,12 +21,22 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
 
-## 🔥 What's New in v0.5.0
+## 🔥 What's New in v0.5.1
+
+- 🛠️ **Open WebUI 0.10.x Compatibility (Critical)**: OWUI 0.10 moved assistant replies into a structured `output` field and left `content` empty, breaking export with "No content found to export!". Assistant text is now recovered via `ChatMessages` + `convert_output_to_messages` (OpenWebUI-native, reasoning excluded). **Requires OWUI ≥ 0.10.2.**
+- 🖼️ **Unified Storage for File Images**: Replaced the hand-rolled `boto3`/S3 + multi-path disk fallbacks with OpenWebUI's `Storage` provider — local/S3/GCS/Azure all work via OWUI's own storage config. **`boto3` dependency dropped.**
+- 🌐 **Opt-in External Image Embedding**: New `EMBED_EXTERNAL_IMAGES` valve (off by default) downloads and embeds `![](https://…)` images, fetched through OWUI's SSRF-safe `validate_url` + `get_ssrf_safe_session`, capped by `MAX_EMBED_IMAGE_MB`.
+- 🧹 **Reference-Definition Stripping**: Markdown `[label]: target` lines (invisible in chat) are now stripped from the export, matching OpenWebUI's `removeFormattings`.
+
+<details>
+<summary>v0.5.0 changes</summary>
 
 - 🔠 **Heading-Level Font Customization**: New `FONT_H1_LATIN`, `FONT_H1_ASIAN`, `FONT_H2_LATIN`, `FONT_H2_ASIAN` valves — configure H1 and H2 fonts independently from body text.
 - ⬆️ **Relative Heading Algorithm**: When content has no H1, heading levels are automatically promoted (e.g., `## → #`) so the document hierarchy stays correct.
 - 🧹 **Metadata Sanitization**: Word document properties (`author`, `last_modified_by`, etc.) now use the real user name instead of exposing `python-docx` library fingerprints.
 - 🎨 **Heading Style Fixes**: Cleared Word theme font inheritance (`w:asciiTheme`, `w:eastAsiaTheme`) on Title, Heading 1-9, and default styles to prevent Word from overriding custom fonts (e.g., SimSun fallback). Removed spurious underlines and borders from heading styles.
+
+</details>
 
 ## ✨ Key Features
 
@@ -53,6 +63,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 | :--- | :--- | :--- |
 | **Title Source (TITLE_SOURCE)** | `chat_title` | `chat_title`, `ai_generated`, or `markdown_title` |
 | **Max Image Size (MAX_EMBED_IMAGE_MB)** | `20` | Maximum image size to embed (MB) |
+| **Embed External Images (EMBED_EXTERNAL_IMAGES)** | `False` | Download and embed `![](https://…)` images into the .docx (SSRF-safe, capped by `MAX_EMBED_IMAGE_MB`) |
 | **UI Language (UI_LANGUAGE)** | `en` | `en` (English) or `zh` (Chinese) |
 | **Latin Font (FONT_LATIN)** | `Times New Roman` | Font for Latin characters |
 | **Asian Font (FONT_ASIAN)** | `SimSun` | Font for Asian characters |

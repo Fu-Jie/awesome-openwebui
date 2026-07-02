@@ -1,6 +1,6 @@
 # 📊 Export to Excel
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v0.3.9 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v0.3.10 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -67,7 +67,13 @@ See the full history on GitHub: [OpenWebUI Extensions](https://github.com/Fu-Jie
 
 This plugin allows you to export your chat history to an Excel (.xlsx) file directly from the chat interface.
 
-## What's New in v0.3.6
+## What's New in v0.3.10
+
+- 🛠️ **Open WebUI 0.10.x Compatibility (Critical)**: OWUI 0.10 moved assistant replies into a structured `output` field and left `content` empty, breaking export with "No tables found to export!". Each target message's text is now recovered via `ChatMessages` + `convert_output_to_messages` (OpenWebUI-native, reasoning excluded), so table extraction and AI title generation see real content again. **Requires OWUI ≥ 0.10.2.**
+- 📏 **Filename Length Clamping**: Long chat titles could exceed the OS filename limit ("File name too long"). The workbook filename is now cleaned and clamped to a safe length.
+
+<details>
+<summary>v0.3.6 changes</summary>
 
 - **OpenWebUI-Style Theme**: Modern dark header (#1f2937) with light gray zebra striping for better readability.
 - **Zebra Striping**: Alternating row colors (#ffffff / #f3f4f6) for improved visual scanning.
@@ -80,6 +86,8 @@ This plugin allows you to export your chat history to an Excel (.xlsx) file dire
 - **Smart Filename Generation**: Supports generating filenames based on Chat Title, AI Summary, or Markdown Headers.
 - **Configuration Options**: Added `TITLE_SOURCE` setting to control filename generation strategy.
 - **AI Title Generation**: Added `MODEL_ID` setting to specify the model for AI title generation, with progress notifications.
+
+</details>
 
 ## Features
 

@@ -3,12 +3,13 @@ title: 导出为Word增强版
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.5.0
+version: 0.5.1
+required_open_webui_version: 0.10.2
 openwebui_id: 8a6306c0-d005-4e46-aaae-8db3532c9ed5
 icon_url: data:image/svg+xml;base64,PHN2ZwogIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICB3aWR0aD0iMjQiCiAgaGVpZ2h0PSIyNCIKICB2aWV3Qm94PSIwIDAgMjQgMjQiCiAgZmlsbD0ibm9uZSIKICBzdHJva2U9ImN1cnJlbnRDb2xvciIKICBzdHJva2Utd2lkdGg9IjIiCiAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIgogIHN0cm9rZS1saW5lam9pbj0icm91bmQiCj4KICA8cGF0aCBkPSJNNiAyMmEyIDIgMCAwIDEtMi0yVjRhMiAyIDAgMCAxIDItMmg4YTIuNCAyLjQgMCAwIDEgMS43MDQuNzA2bDMuNTg4IDMuNTg4QTIuNCAyLjQgMCAwIDEgMjAgOHYxMmEyIDIgMCAwIDEtMiAyeiIgLz4KICA8cGF0aCBkPSJNMTQgMnY1YTEgMSAwIDAgMCAxIDFoNSIgLz4KICA8cGF0aCBkPSJNMTAgOUg4IiAvPgogIDxwYXRoIGQ9Ik0xNiAxM0g4IiAvPgogIDxwYXRoIGQ9Ik0xNiAxN0g4IiAvPgo8L3N2Zz4K
 requirements: python-docx, Pygments, latex2mathml, mathml2omml
 description: 将对话导出为 Word (.docx)，支持 Mermaid 图表 (客户端渲染 SVG+PNG)、LaTeX 数学公式、真实超链接、增强表格格式、代码高亮和引用块。
-notes: 基于 rbb-dev 增强版 (https://github.com/rbb-dev/openwebui-extensions) 进一步优化。新增多语言支持、可配置字体/颜色、并行 PNG 渲染优化。
+notes: 进一步优化。新增多语言支持、可配置字体/颜色、并行 PNG 渲染优化。
 """
 
 from __future__ import annotations
@@ -38,8 +39,15 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import qn, nsmap
 from docx.oxml import OxmlElement
 from open_webui.models.chats import Chats
+from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.users import Users
+from open_webui.storage.provider import Storage
+from open_webui.retrieval.web.utils import get_ssrf_safe_session, validate_url
 from open_webui.utils.chat import generate_chat_completion
+
+# OWUI 0.10+ 将回复存储为结构化 output；convert_output_to_messages
+# 从中重建消息文本（排除推理内容）。需要 OWUI >= 0.10.2。
+from open_webui.utils.misc import convert_output_to_messages
 from pydantic import BaseModel, Field
 
 # Files are used to embed internal /api/v1/files/<id>/content images.
@@ -65,16 +73,6 @@ try:
     LATEX_MATH_AVAILABLE = True
 except Exception:
     LATEX_MATH_AVAILABLE = False
-
-# boto3 for S3 direct access (faster than API fallback)
-try:
-    import boto3
-    from botocore.config import Config as BotoConfig
-    import os
-
-    BOTO3_AVAILABLE = True
-except ImportError:
-    BOTO3_AVAILABLE = False
 
 
 logging.basicConfig(
@@ -131,6 +129,11 @@ _THINK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTAL
 _ANALYSIS_RE = re.compile(
     r"<analysis\b[^>]*>.*?</analysis\s*>", re.IGNORECASE | re.DOTALL
 )
+# Markdown 引用定义行（[label]: target）不会被渲染，需从导出内容中移除；
+# 与 OpenWebUI removeFormattings 相同的模式（src/lib/utils/index.ts）：/^\[[^\]]+\]:\s*.*$/gm
+_MD_REFERENCE_DEF_RE = re.compile(r"^\[[^\]]+\]:\s*.*$\n?", re.MULTILINE)
+# Markdown 图片 URL：![alt](url ...)，可带 <...> 包裹，捕获其中的 URL。
+_MD_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)>\s]+)")
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,10 @@ class Action:
         最大嵌入图片大小MB: int = Field(
             default=20,
             description="Maximum image size to embed into DOCX (MB). Applies to data URLs and /api/v1/files/<id>/content images.",
+        )
+        嵌入外部图片: bool = Field(
+            default=False,
+            description="是否下载并嵌入外部 http(s) 链接引用的图片。受 最大嵌入图片大小MB 限制，无法获取时显示占位符。",
         )
 
         # Font configuration
@@ -369,11 +376,10 @@ class Action:
         self._bookmark_id_counter: int = 1
         self._active_doc: Optional[Document] = None
         self._user_lang: str = "en"  # Will be set per-request
-        self._api_token: Optional[str] = None
-        self._api_base_url: Optional[str] = None
         self._prefetched_files: dict = (
             {}
         )  # file_id -> FileModel, pre-fetched async before sync doc build
+        self._prefetched_external_images: dict = {}  # url -> bytes, pre-fetched async
 
     def _get_lang_key(self, user_language: str) -> str:
         """Convert user language code to i18n key (e.g., 'zh-CN' -> 'zh', 'en-US' -> 'en')."""
@@ -531,22 +537,6 @@ class Action:
         # Get user language from Valves configuration
         self._user_lang = self._get_lang_key(self.valves.界面语言)
 
-        # Extract API connection info for file fetching (S3/Object Storage support)
-        def _get_default_base_url() -> str:
-            port = os.environ.get("PORT") or "8080"
-            return f"http://localhost:{port}"
-
-        if __request__:
-            try:
-                self._api_token = __request__.headers.get("Authorization")
-                self._api_base_url = str(__request__.base_url).rstrip("/")
-            except Exception:
-                self._api_token = None
-                self._api_base_url = _get_default_base_url()
-        else:
-            self._api_token = None
-            self._api_base_url = _get_default_base_url()
-
         if __event_emitter__:
             last_assistant_message = body["messages"][-1]
 
@@ -561,7 +551,10 @@ class Action:
             )
 
             try:
-                message_content = last_assistant_message["content"]
+                chat_ctx = self._get_chat_context(body, __metadata__)
+                chat_id = chat_ctx["chat_id"]
+
+                message_content = last_assistant_message.get("content")
                 if isinstance(message_content, str):
                     if __event_emitter__ and self.valves.SHOW_DEBUG_LOG:
                         debug_data = {}
@@ -596,6 +589,20 @@ class Action:
 
                     message_content = self._strip_reasoning_blocks(message_content)
 
+                # 动作调用只转发扁平的 content，而 0.10+ 将其留空；
+                # 真实文本位于消息的结构化 output 中。
+                if not message_content or (
+                    isinstance(message_content, str) and not message_content.strip()
+                ):
+                    output_text = await self._fetch_message_output_text(
+                        chat_id, chat_ctx["message_id"]
+                    )
+                    if output_text:
+                        message_content = self._strip_reasoning_blocks(output_text)
+
+                if isinstance(message_content, str):
+                    message_content = self._strip_reference_definitions(message_content)
+
                 if not message_content or not message_content.strip():
                     await self._emit_notification(
                         __event_emitter__, self._get_msg("error_no_content"), "error"
@@ -604,8 +611,6 @@ class Action:
 
                 # Generate filename
                 title = ""
-                chat_ctx = self._get_chat_context(body, __metadata__)
-                chat_id = chat_ctx["chat_id"]
 
                 # Fetch chat_title directly via chat_id as it's usually missing in body
                 chat_title = ""
@@ -1233,6 +1238,30 @@ class Action:
         title = data.get("title") or getattr(chat, "title", "")
         return title.strip() if isinstance(title, str) else ""
 
+    def _extract_text_from_output(self, output: Any) -> str:
+        """通过 OWUI 的 convert_output_to_messages 从结构化 output 重建助手文本（排除推理内容）；无内容时返回空字符串。"""
+        if not isinstance(output, list) or not output:
+            return ""
+        reconstructed = convert_output_to_messages(output)
+        assistant_texts = [
+            msg["content"]
+            for msg in reconstructed
+            if isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].strip()
+        ]
+        return "\n".join(assistant_texts)
+
+    async def _fetch_message_output_text(self, chat_id: str, message_id: str) -> str:
+        """通过 OWUI 的 ChatMessages 存储获取某条消息的助手文本：其结构化 output 由 convert_output_to_messages 重建，未找到时返回空字符串。"""
+        if not chat_id or not message_id:
+            return ""
+        message = await _call_db(
+            ChatMessages.get_message_by_id, f"{chat_id}-{message_id}"
+        )
+        return self._extract_text_from_output(message.output) if message else ""
+
     def clean_filename(self, name: str) -> str:
         """清理文件名中的非法字符并移除 Emoji"""
         if not isinstance(name, str):
@@ -1311,62 +1340,6 @@ class Action:
         b64 = m.group("b64") or ""
         return self._decode_base64_limited(b64, max_bytes)
 
-    def _read_from_s3(self, s3_path: str, max_bytes: int) -> Optional[bytes]:
-        """Read file directly from S3 using environment variables for credentials."""
-        if not BOTO3_AVAILABLE:
-            return None
-
-        # Parse s3://bucket/key
-        if not s3_path.startswith("s3://"):
-            return None
-
-        path_without_prefix = s3_path[5:]  # Remove 's3://'
-        parts = path_without_prefix.split("/", 1)
-        if len(parts) < 2:
-            return None
-
-        bucket = parts[0]
-        key = parts[1]
-
-        # Read S3 config from environment variables
-        endpoint_url = os.environ.get("S3_ENDPOINT_URL")
-        access_key = os.environ.get("S3_ACCESS_KEY_ID")
-        secret_key = os.environ.get("S3_SECRET_ACCESS_KEY")
-        addressing_style = os.environ.get("S3_ADDRESSING_STYLE", "auto")
-
-        if not all([endpoint_url, access_key, secret_key]):
-            logger.debug(
-                "S3 environment variables not fully configured, skipping S3 direct download."
-            )
-            return None
-
-        try:
-            s3_config = BotoConfig(
-                s3={"addressing_style": addressing_style},
-                connect_timeout=5,
-                read_timeout=15,
-            )
-            s3_client = boto3.client(
-                "s3",
-                endpoint_url=endpoint_url,
-                aws_access_key_id=access_key,
-                aws_secret_access_key=secret_key,
-                config=s3_config,
-            )
-
-            response = s3_client.get_object(Bucket=bucket, Key=key)
-            body = response["Body"]
-            data = body.read(max_bytes + 1)
-            body.close()
-
-            if len(data) > max_bytes:
-                return None
-
-            return data
-        except Exception as e:
-            logger.warning(f"S3 direct download failed for {s3_path}: {e}")
-            return None
-
     def _image_bytes_from_owui_file_id(
         self, file_id: str, max_bytes: int
     ) -> Optional[bytes]:
@@ -1397,120 +1370,64 @@ class Action:
                 if isinstance(inline, str) and inline.strip():
                     return self._decode_base64_limited(inline, max_bytes)
 
-        # 2. Try S3 direct download (fastest for object storage)
-        s3_path = getattr(file_obj, "path", None)
-        if isinstance(s3_path, str) and s3_path.startswith("s3://"):
-            s3_data = self._read_from_s3(s3_path, max_bytes)
-            if s3_data is not None:
-                return s3_data
-
-        # 3. Try file paths (Disk stored)
-        # We try multiple path variations to be robust against CWD differences (e.g. Docker vs Local)
-        for attr in ("path", "file_path", "absolute_path"):
-            candidate = getattr(file_obj, attr, None)
-            if isinstance(candidate, str) and candidate.strip():
-                # Skip obviously non-local paths (S3, GCS, HTTP)
-                if re.match(r"^(s3://|gs://|https?://)", candidate, re.IGNORECASE):
-                    logger.debug(f"Skipping local read for non-local path: {candidate}")
-                    continue
-
-                p = Path(candidate)
-
-                # Attempt 1: As-is (Absolute or relative to CWD)
-                raw = self._read_file_bytes_limited(p, max_bytes)
+        # 2. 存储型内容：OWUI 的 Storage 会将 file.path（本地 / S3 / GCS / Azure，
+        # 使用 OWUI 配置的存储）解析为本地路径。
+        path = getattr(file_obj, "path", None)
+        if isinstance(path, str) and path.strip():
+            try:
+                local_path = Storage.get_file(path)
+            except Exception as exc:
+                logger.warning(f"Storage.get_file failed for {file_id} ({path}): {exc}")
+            else:
+                raw = self._read_file_bytes_limited(Path(local_path), max_bytes)
                 if raw is not None:
                     return raw
 
-                # Attempt 2: Relative to ./data (Common in OpenWebUI)
-                if not p.is_absolute():
-                    try:
-                        raw = self._read_file_bytes_limited(
-                            Path("./data") / p, max_bytes
-                        )
-                        if raw is not None:
-                            return raw
-                    except Exception:
-                        pass
-
-                    # Attempt 3: Relative to /app/backend/data (Docker default)
-                    try:
-                        raw = self._read_file_bytes_limited(
-                            Path("/app/backend/data") / p, max_bytes
-                        )
-                        if raw is not None:
-                            return raw
-                    except Exception:
-                        pass
-
-        # 4. Try URL (Object Storage / S3 Public URL)
-        urls_to_try = []
-        url_attr = getattr(file_obj, "url", None)
-        if isinstance(url_attr, str) and url_attr:
-            urls_to_try.append(url_attr)
-
-        if isinstance(data_field, dict):
-            url_data = data_field.get("url")
-            if isinstance(url_data, str) and url_data:
-                urls_to_try.append(url_data)
-
-        if urls_to_try:
-            import urllib.request
-
-            for url in urls_to_try:
-                if not url.startswith(("http://", "https://")):
-                    continue
-                try:
-                    logger.info(
-                        f"Attempting to download file {file_id} from URL: {url}"
-                    )
-                    # Use a timeout to avoid hanging
-                    req = urllib.request.Request(
-                        url, headers={"User-Agent": "OpenWebUI-Export-Plugin"}
-                    )
-                    with urllib.request.urlopen(req, timeout=15) as response:
-                        if 200 <= response.status < 300:
-                            data = response.read(max_bytes + 1)
-                            if len(data) <= max_bytes:
-                                return data
-                            else:
-                                logger.warning(
-                                    f"File {file_id} from URL is too large (> {max_bytes} bytes)"
-                                )
-                except Exception as e:
-                    logger.warning(f"Failed to download {file_id} from {url}: {e}")
-
-        # 5. Try fetching via Local API (Last resort for S3/Object Storage without direct URL)
-        # If we have the API token and base URL, we can try to fetch the content through the backend API.
-        if self._api_base_url:
-            api_url = f"{self._api_base_url}/api/v1/files/{file_id}/content"
-            try:
-                import urllib.request
-
-                headers = {"User-Agent": "OpenWebUI-Export-Plugin"}
-                if self._api_token:
-                    headers["Authorization"] = self._api_token
-
-                req = urllib.request.Request(api_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    if 200 <= response.status < 300:
-                        data = response.read(max_bytes + 1)
-                        if len(data) <= max_bytes:
-                            return data
-            except Exception:
-                # API fetch failed, just fall through to the next method
-                pass
-
-        # 6. Try direct content attributes (last ditch)
-        for attr in ("content", "blob", "data"):
-            raw = getattr(file_obj, attr, None)
-            if isinstance(raw, (bytes, bytearray)):
-                b = bytes(raw)
-                return b if len(b) <= max_bytes else None
-
-        logger.warning(
-            f"File {file_id} found but no content accessible. Attributes: {dir(file_obj)}"
-        )
+        logger.warning(f"File {file_id} found but no content accessible via Storage.")
         return None
+
+    async def _fetch_external_image(self, url: str) -> Optional[bytes]:
+        """下载外部图片 URL 为字节（由 嵌入外部图片 阀门控制）。
+
+        SSRF 防护复用 OpenWebUI：先用 validate_url() 预检，再用 get_ssrf_safe_session()
+        会话（其解析器在连接时重新校验 IP，防御 DNS 重绑定）。受 最大嵌入图片大小MB
+        限制并要求 image/* 内容类型。任何失败均返回 None（回退为占位符）。
+        """
+        max_bytes = self._max_embed_image_bytes()
+        try:
+            validate_url(url)
+        except Exception as exc:
+            logger.warning(f"External image blocked by validate_url: {url} ({exc})")
+            return None
+        try:
+            async with get_ssrf_safe_session() as session:
+                async with session.get(url) as resp:
+                    if not (200 <= resp.status < 300):
+                        logger.warning(f"External image HTTP {resp.status}: {url}")
+                        return None
+                    ctype = (
+                        (resp.headers.get("Content-Type") or "")
+                        .split(";")[0]
+                        .strip()
+                        .lower()
+                    )
+                    if ctype and not ctype.startswith("image/"):
+                        logger.warning(
+                            f"External URL is not an image (Content-Type={ctype}): {url}"
+                        )
+                        return None
+                    buf = bytearray()
+                    async for chunk in resp.content.iter_chunked(65536):
+                        buf += chunk
+                        if len(buf) > max_bytes:
+                            logger.warning(
+                                f"External image exceeds {max_bytes} bytes: {url}"
+                            )
+                            return None
+                    return bytes(buf)
+        except Exception as exc:
+            logger.warning(f"Failed to fetch external image {url}: {exc}")
+            return None
 
     def _add_image_placeholder(self, paragraph, alt: str, reason: str):
         label = (alt or "").strip() or "image"
@@ -1555,15 +1472,22 @@ class Action:
         else:
             file_id = self._extract_owui_api_file_id(u)
             if not file_id:
-                # External images are not fetched; treat as non-embeddable.
-                self._add_image_placeholder(paragraph, alt, "external URL")
-                return
-            image_bytes = self._image_bytes_from_owui_file_id(file_id, max_bytes)
-            if image_bytes is None:
-                self._add_image_placeholder(
-                    paragraph, alt, f"file unavailable ({file_id})"
+                # 外部图片：阀门开启且已预取时嵌入其字节，否则保留占位符。
+                image_bytes = (
+                    self._prefetched_external_images.get(u)
+                    if self.valves.嵌入外部图片
+                    else None
                 )
-                return
+                if image_bytes is None:
+                    self._add_image_placeholder(paragraph, alt, "external URL")
+                    return
+            else:
+                image_bytes = self._image_bytes_from_owui_file_id(file_id, max_bytes)
+                if image_bytes is None:
+                    self._add_image_placeholder(
+                        paragraph, alt, f"file unavailable ({file_id})"
+                    )
+                    return
 
         success, error_msg = self._try_embed_image(paragraph, image_bytes)
         if not success:
@@ -1611,6 +1535,26 @@ class Action:
                             self._prefetched_files[fid] = fobj
                     except Exception as e:
                         logger.warning(f"Failed to prefetch file {fid}: {e}")
+
+            # 预取外部图片（可选），以便同步构建文档时嵌入。
+            self._prefetched_external_images = {}
+            if self.valves.嵌入外部图片:
+                ext_urls = {
+                    u
+                    for u in (
+                        m.group(1).strip()
+                        for m in _MD_IMAGE_URL_RE.finditer(markdown_text)
+                    )
+                    if u.lower().startswith(("http://", "https://"))
+                    and not self._extract_owui_api_file_id(u)
+                }
+                urls = list(ext_urls)
+                results = await asyncio.gather(
+                    *(self._fetch_external_image(u) for u in urls)
+                )
+                self._prefetched_external_images = {
+                    u: d for u, d in zip(urls, results) if d
+                }
 
             # Set default fonts
             self.set_document_default_font(doc)
@@ -1866,6 +1810,12 @@ class Action:
         if m:
             return m.group(1).strip()
         return None
+
+    def _strip_reference_definitions(self, text: str) -> str:
+        """移除 Markdown 引用定义行（[label]: target）：它们不会被渲染，否则会在导出文档中显示为纯文本；与 OpenWebUI removeFormattings 的模式一致。"""
+        if not text:
+            return text
+        return _MD_REFERENCE_DEF_RE.sub("", text)
 
     def _strip_reasoning_blocks(self, text: str) -> str:
         """
