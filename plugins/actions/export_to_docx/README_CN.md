@@ -1,6 +1,6 @@
 # 📝 导出为 Word (增强版)
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v0.5.1 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v0.5.2 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -21,12 +21,19 @@
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
 
-## 🔥 v0.5.1 更新内容
+## 🔥 v0.5.2 更新内容
+
+- 📊 **含 `<br>` 标签的 Mermaid 图表**: 标签中包含 `<br>` 换行的图表会导出为空白方块。Mermaid 11 即使设置了每图的 `htmlLabels:false` 仍会生成 `<foreignObject>` HTML 标签，而未闭合的 `<br>` 使 SVG 成为无效 XML——因此无法栅格化为 PNG。现在在 `mermaid.initialize` 的**顶层**设置 `htmlLabels:false`，彻底禁用 `<foreignObject>`；标签渲染为原生 SVG 文本，图表可正确栅格化。
+
+<details>
+<summary>v0.5.1 更新内容</summary>
 
 - 🛠️ **Open WebUI 0.10.x 兼容性修复（关键）**: OWUI 0.10 将助手回复迁移到结构化 `output` 字段，`content` 变空，导致导出报错 "No content found to export!"。现在通过 `ChatMessages` + `convert_output_to_messages` 用 OpenWebUI 原生方式恢复助手文本（排除推理内容）。**要求 OWUI ≥ 0.10.2。**
 - 🖼️ **统一文件图片存储**: 移除手搓的 `boto3`/S3 + 多路径磁盘回退，改用 OpenWebUI 的 `Storage` 提供器——本地/S3/GCS/Azure 均通过 OWUI 自身的存储配置解析。**移除了 `boto3` 依赖。**
 - 🌐 **可选的外部图片嵌入**: 新增 `嵌入外部图片` 阀门（默认关闭），下载并嵌入 `![](https://…)` 图片，通过 OWUI 的 SSRF 安全 `validate_url` + `get_ssrf_safe_session` 获取，受 `最大嵌入图片大小MB` 限制。
 - 🧹 **引用定义剥离**: Markdown `[label]: target` 行（对话中不可见）现已从导出中剥离，与 OpenWebUI 的 `removeFormattings` 一致。
+
+</details>
 
 <details>
 <summary>v0.5.0 更新内容</summary>
