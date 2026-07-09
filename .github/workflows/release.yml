@@ -567,15 +567,13 @@ jobs:
             echo "" >> release_notes.md
           fi
 
-          # 4. Contributor attribution — inject when the release was triggered by an external contributor's PR
-          if [ "$CONTRIBUTOR_IS_EXTERNAL" = "true" ] && [ -n "$CONTRIBUTOR_PR_NUMBER" ] && [ -n "$CONTRIBUTOR_PR_AUTHOR" ]; then
+          # 4. Contributor attribution — only call out genuine first-time external
+          # contributors. Returning contributors are already credited via their
+          # PR in the changelog; labeling them "New Contributors" is incorrect.
+          if [ "$CONTRIBUTOR_IS_EXTERNAL" = "true" ] && [ "$CONTRIBUTOR_FIRST_TIME" = "true" ] && [ -n "$CONTRIBUTOR_PR_NUMBER" ] && [ -n "$CONTRIBUTOR_PR_AUTHOR" ]; then
             echo "## New Contributors" >> release_notes.md
             echo "" >> release_notes.md
-            if [ "$CONTRIBUTOR_FIRST_TIME" = "true" ]; then
-              echo "* @${CONTRIBUTOR_PR_AUTHOR} made their first contribution in #${CONTRIBUTOR_PR_NUMBER} 🎉" >> release_notes.md
-            else
-              echo "* @${CONTRIBUTOR_PR_AUTHOR} contributed in #${CONTRIBUTOR_PR_NUMBER}" >> release_notes.md
-            fi
+            echo "* @${CONTRIBUTOR_PR_AUTHOR} made their first contribution in #${CONTRIBUTOR_PR_NUMBER} 🎉" >> release_notes.md
             echo "" >> release_notes.md
           fi
 
