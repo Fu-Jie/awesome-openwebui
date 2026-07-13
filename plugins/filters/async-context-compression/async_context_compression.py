@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.7.2
+version: 1.7.3
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -864,6 +864,13 @@ BRANCH_SUMMARY_REQUIRED_COLUMNS = {
 class Filter:
     def __init__(self):
         self.valves = self.Valves()
+        # Diagnostic stash: set by _body_to_db_coverage_map_for_ref_fallback
+        # when Path 3 rejects, read by inlet() to emit to the browser console.
+        self._last_path3_rejection = None
+        # Diagnostic stash: set by _load_full_chat_messages to record which
+        # anchor was used for the DB walk and whether it diverged from
+        # history.currentId.  Read by inlet() to emit to the browser console.
+        self._last_db_walk_anchor = None
         self._owui_db = owui_db
         self._db_engine = owui_engine
         self._fallback_session_factory = (
@@ -1098,6 +1105,105 @@ class Filter:
         """Return the stable OpenWebUI message node id when available."""
         message_id = message.get("id") or message.get("message_id")
         return message_id if isinstance(message_id, str) and message_id else None
+
+    def _normalize_role(self, role: Any) -> str:
+        """Normalize chat-completion roles for position-based comparison.
+
+        OpenWebUI persists tool outputs under role 'tool', but some rebuild
+        paths may surface them as 'function' (legacy OpenAI shape).  Collapse
+        both to 'tool' so a body↔DB role sequence stays comparable even when
+        the exact role string differs across rebuild paths.
+        """
+        if not isinstance(role, str):
+            return ""
+        if role == "function":
+            return "tool"
+        return role
+
+    def _body_position_matches_db_message(
+        self,
+        body_message: Dict[str, Any],
+        db_message: Dict[str, Any],
+    ) -> bool:
+        """Position-based match used when content-level comparison is unsafe.
+
+        OpenWebUI's ``process_messages_with_output`` regenerates assistant
+        ``content`` from the ``output`` array before the inlet filter runs,
+        so for DB messages that carry an ``output`` array the body content
+        structurally differs from the persisted content (e.g. reasoning is
+        folded into a ``<details type="reasoning">`` block in the DB but
+        stripped from the body).  Content comparison cannot succeed there.
+
+        This helper validates the parts that ``process_messages_with_output``
+        preserves verbatim:
+        - role (normalized)
+        - tool_calls (rebuilt from output, but the function names/args match)
+        - tool_call_id
+
+        For DB messages WITHOUT an ``output`` array the content is not
+        rebuilt, so it must still match exactly — this catches genuine edits
+        (user-edited body payloads, corrupted tool calls) that position+role
+        alignment alone would miss.
+        """
+        if self._normalize_role(body_message.get("role")) != self._normalize_role(
+            db_message.get("role")
+        ):
+            return False
+
+        if body_message.get("tool_calls") != db_message.get("tool_calls"):
+            return False
+
+        if body_message.get("tool_call_id") != db_message.get("tool_call_id"):
+            return False
+
+        db_output = db_message.get("output")
+        has_db_output = isinstance(db_output, list) and bool(db_output)
+        if not has_db_output:
+            if body_message.get("content") != db_message.get("content"):
+                return False
+
+        return True
+
+    def _first_body_position_mismatch(
+        self,
+        body_messages: List[Dict[str, Any]],
+        db_messages: List[Dict[str, Any]],
+    ) -> Optional[tuple]:
+        """Return (index, reason) of the first position mismatch, or None.
+
+        Mirrors :meth:`_body_position_matches_db_message` but returns a
+        human-readable reason instead of a boolean, so the inlet can log
+        exactly which position and field caused Path 3 to reject the body.
+        """
+        for index, (body_message, db_message) in enumerate(
+            zip(body_messages, db_messages)
+        ):
+            if self._normalize_role(body_message.get("role")) != self._normalize_role(
+                db_message.get("role")
+            ):
+                return index, (
+                    f"role mismatch (body={body_message.get('role')!r}, "
+                    f"db={db_message.get('role')!r})"
+                )
+            if body_message.get("tool_calls") != db_message.get("tool_calls"):
+                return index, "tool_calls mismatch"
+            if body_message.get("tool_call_id") != db_message.get("tool_call_id"):
+                return index, (
+                    f"tool_call_id mismatch "
+                    f"(body={body_message.get('tool_call_id')!r}, "
+                    f"db={db_message.get('tool_call_id')!r})"
+                )
+            db_output = db_message.get("output")
+            has_db_output = isinstance(db_output, list) and bool(db_output)
+            if not has_db_output:
+                if body_message.get("content") != db_message.get("content"):
+                    body_preview = str(body_message.get("content"))[:120]
+                    db_preview = str(db_message.get("content"))[:120]
+                    return index, (
+                        f"content mismatch on no-output message "
+                        f"(body={body_preview!r}, db={db_preview!r})"
+                    )
+        return None
 
     def _message_fingerprint(self, message: Dict[str, Any]) -> str:
         """Fingerprint the model-visible payload to detect in-place edits."""
@@ -1729,25 +1835,24 @@ class Filter:
         sortable_messages.sort(key=lambda item: (item[0], item[1]))
         return [message for _, _, message in sortable_messages]
 
-    def _is_failed_assistant_message(self, message: Dict[str, Any]) -> bool:
-        """Mirror OpenWebUI middleware's failed-assistant filter."""
-        return (
-            isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and "error" in message
-        )
-
-    def _filter_model_visible_history_messages(
-        self, messages: List[Dict[str, Any]]
+    async def _load_full_chat_messages(
+        self,
+        chat_id: str,
+        anchor_message_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        return [
-            message
-            for message in messages
-            if not self._is_failed_assistant_message(message)
-        ]
+        """Load the full persisted chat history for summary decisions when available.
 
-    async def _load_full_chat_messages(self, chat_id: str) -> List[Dict[str, Any]]:
-        """Load the full persisted chat history for summary decisions when available."""
+        OpenWebUI builds the inlet request body by walking the ``parentId``
+        chain from ``metadata['user_message_id']`` (see
+        ``load_messages_from_db`` in ``utils/middleware.py``).  ``currentId``
+        instead points at the tip of the currently-displayed branch — which,
+        after a regeneration or edit, can be a *different* branch than the one
+        the request body walks.  When ``anchor_message_id`` (the
+        ``user_message_id`` from the inlet metadata) is available, walk from
+        it so our DB reconstruction matches OpenWebUI's body reconstruction.
+        Fall back to ``currentId`` for outlet / non-inlet callers where the
+        just-completed assistant message should be included.
+        """
         if not chat_id or Chats is None:
             return []
 
@@ -1765,20 +1870,65 @@ class Filter:
         if isinstance(history, dict):
             history_messages = history.get("messages")
             if isinstance(history_messages, dict) and history_messages:
-                current_id = history.get("currentId") or history.get("current_id")
+                walk_anchor = None
+                anchor_source = None
+                if isinstance(anchor_message_id, str) and anchor_message_id in history_messages:
+                    walk_anchor = anchor_message_id
+                    anchor_source = "user_message_id"
+                if not walk_anchor:
+                    walk_anchor = history.get("currentId") or history.get("current_id")
+                    anchor_source = "currentId (fallback)"
+                # Stash the anchor diagnostic so inlet() can emit it to the
+                # browser console.  When anchor_source is "currentId (fallback)"
+                # the branch-divergence fix is NOT active (anchor missing),
+                # and mismatches can occur after regeneration/edit.
+                #
+                # "diverged" here means TRUE branch divergence: the anchor
+                # (user_message_id) is NOT on the currentId ancestor chain.
+                # Simply comparing anchor != currentId is useless because they
+                # are always different nodes (user vs assistant message).  We
+                # walk up parentId from currentId; if we reach the anchor, both
+                # are on the same branch (currentId is a descendant of the
+                # user_message_id, the normal case).  If not, the body and DB
+                # walk are on different branches — the v1.7.3 fix is actively
+                # steering the DB walk onto the body's branch.
+                current_id_in_history = history.get("currentId") or history.get("current_id")
+                same_branch = False
+                if walk_anchor and current_id_in_history:
+                    cursor = current_id_in_history
+                    visited = set()
+                    while (
+                        cursor
+                        and cursor in history_messages
+                        and cursor not in visited
+                    ):
+                        if cursor == walk_anchor:
+                            same_branch = True
+                            break
+                        visited.add(cursor)
+                        cursor = (
+                            history_messages[cursor].get("parentId")
+                            or history_messages[cursor].get("parent_id")
+                        )
+                self._last_db_walk_anchor = {
+                    "anchor": walk_anchor,
+                    "source": anchor_source,
+                    "currentId": current_id_in_history,
+                    "diverged": (
+                        not same_branch
+                        if walk_anchor and current_id_in_history
+                        else False
+                    ),
+                }
                 branch_messages = self._reconstruct_active_history_branch(
-                    history_messages, current_id
+                    history_messages, walk_anchor
                 )
                 if branch_messages:
-                    return self._filter_model_visible_history_messages(
-                        branch_messages
-                    )
+                    return branch_messages
 
         direct_messages = chat_payload.get("messages")
         if isinstance(direct_messages, list) and direct_messages:
-            return self._filter_model_visible_history_messages(
-                deepcopy(direct_messages)
-            )
+            return deepcopy(direct_messages)
 
         return []
 
@@ -2430,22 +2580,88 @@ class Filter:
         unfolded_messages, db_to_body_boundaries = (
             self._unfold_db_branch_for_body_ref_fallback(db_messages)
         )
-        if len(body_messages) != len(unfolded_messages):
-            return None
-
-        if not all(
-            self._body_message_matches_unfolded_db_message(
-                body_message,
-                unfolded_message,
-            )
-            for body_message, unfolded_message in zip(
-                body_messages,
-                unfolded_messages,
+        if (
+            len(body_messages) == len(unfolded_messages)
+            and all(
+                self._body_message_matches_unfolded_db_message(
+                    body_message,
+                    unfolded_message,
+                )
+                for body_message, unfolded_message in zip(
+                    body_messages,
+                    unfolded_messages,
+                )
             )
         ):
-            return None
+            return db_to_body_boundaries
 
-        return db_to_body_boundaries
+        # Path 3 (position-based fallback): when the body matches the DB
+        # active branch 1:1 in count and role / tool_calls / tool_call_id
+        # sequence, accept the DB refs by position.
+        #
+        # This covers reasoning models (and any future rebuild path) where
+        # OpenWebUI regenerates assistant ``content`` from the ``output``
+        # array via ``convert_output_to_messages`` before the inlet filter
+        # runs, so the body content structurally differs from the persisted
+        # DB content (e.g. reasoning is folded into a
+        # ``<details type="reasoning">`` block in the DB but stripped from
+        # the body).  Content-level comparison cannot succeed in that case.
+        #
+        # The body need NOT be fully idless.  ``process_messages_with_output``
+        # only strips ``output`` (not ``id``), so user / system / no-output
+        # assistant messages keep their DB node ``id`` while only the
+        # rebuilt assistant-with-output messages become idless — the request
+        # body is mixed-id in practice.  We reach this fallback only when
+        # ``_current_branch_refs(messages) is None`` upstream (i.e. the body
+        # as a whole does not expose a usable ref sequence), so requiring
+        # all-idless here would wrongly reject every real reasoning chat.
+        #
+        # Guards against false positives:
+        # - ``unfolded_messages`` non-empty rules out conversion failures
+        #   (when ``_unfold_db_branch_for_body_ref_fallback`` cannot parse
+        #   the output array it returns ``[]``; we keep rejecting in that
+        #   case so a corrupt output never silently passes).
+        # - ``_body_position_matches_db_message`` still requires exact
+        #   ``content`` match for DB messages WITHOUT ``output`` (catches
+        #   user-edited bodies) and always requires ``tool_calls`` /
+        #   ``tool_call_id`` to match (catches tampered tool calls).
+        if (
+            unfolded_messages
+            and len(body_messages) == len(db_messages)
+            and all(
+                self._body_position_matches_db_message(body_message, db_message)
+                for body_message, db_message in zip(body_messages, db_messages)
+            )
+        ):
+            return list(range(len(db_messages) + 1))
+
+        if (
+            unfolded_messages
+            and len(body_messages) == len(db_messages)
+            and self.valves.debug_mode
+        ):
+            first_mismatch = self._first_body_position_mismatch(
+                body_messages, db_messages
+            )
+            if first_mismatch is not None:
+                mismatch_index, mismatch_reason = first_mismatch
+                # Stash for the inlet to emit to the browser console so users
+                # can see exactly which position/field caused the rejection
+                # without digging through backend logs.
+                self._last_path3_rejection = (
+                    mismatch_index,
+                    mismatch_reason,
+                )
+                logger.info(
+                    "[Summary Snapshot] Path 3 position fallback rejected at "
+                    f"index={mismatch_index}: {mismatch_reason}"
+                )
+            else:
+                self._last_path3_rejection = None
+        else:
+            self._last_path3_rejection = None
+
+        return None
 
     def _compatible_db_branch_for_body_ref_fallback(
         self,
@@ -3076,6 +3292,130 @@ class Filter:
         )
         table.drop(bind=self._db_engine, checkfirst=True)
 
+    def _drop_legacy_chat_summary_indexes(self):
+        """Drop indexes that share names SQLAlchemy will reuse for the new table.
+
+        PostgreSQL may keep an index alive even after its parent table is
+        dropped (e.g. when a previous, partially-failed init left a legacy
+        unique index ``ix_chat_summary_chat_id`` behind), which makes the
+        subsequent CREATE INDEX fail with ``DuplicateTable``.  Best-effort,
+        idempotent cleanup of any candidate colliding names before recreating
+        the table.  ``DROP INDEX IF EXISTS`` is a no-op when the index is
+        already gone, so this is safe on both PostgreSQL and SQLite.
+        """
+        # Index names the new ChatSummary table will create (Column index=True
+        # → ix_<table>_<column>, plus the explicit unique dedup index).  Also
+        # cover the legacy unique index name old versions used on chat_id.
+        names_to_drop = [
+            "ix_chat_summary_chat_id",
+            "ix_chat_summary_covered_refs_hash",
+            "ix_chat_summary_branch_tip_id",
+            CHAT_SUMMARY_DEDUP_INDEX_NAME,
+        ]
+
+        from sqlalchemy import text as sqlalchemy_text
+
+        dropped: list[str] = []
+        with self._db_engine.begin() as connection:
+            for name in names_to_drop:
+                qualified = (
+                    f'{owui_schema}."{name}"' if owui_schema else f'"{name}"'
+                )
+                try:
+                    connection.execute(
+                        sqlalchemy_text(f"DROP INDEX IF EXISTS {qualified}")
+                    )
+                    dropped.append(name)
+                except Exception as exc:
+                    # Non-fatal: we only want to clear the way for CREATE INDEX.
+                    logger.warning(
+                        f"[Database] ⚠️ Could not drop legacy index {name}: {exc}"
+                    )
+        if dropped:
+            logger.info(
+                f"[Database] Cleared legacy chat_summary index names before rebuild: {dropped}"
+            )
+
+    def _dedup_chat_summary_metadata_indexes(self):
+        """Remove colliding index definitions from the shared declarative metadata.
+
+        OpenWebUI reuses a single declarative base across plugin reloads.  When
+        an older ChatSummary definition (with a unique index on ``chat_id``)
+        is replaced by a newer one (plain ``index=True`` on ``chat_id``), the
+        ``extend_existing=True`` table arg merges columns but leaves BOTH index
+        definitions alive in ``owui_Base.metadata`` — and they share the name
+        ``ix_chat_summary_chat_id``.  CREATE TABLE then emits two CREATE INDEX
+        statements with the same name, the second one failing with
+        ``DuplicateTable``.
+
+        For each index name present more than once on the chat_summary table,
+        keep the one declared by the current class (in
+        ``ChatSummary.__table__.indexes`` set by class body evaluation) and
+        discard the duplicates.  If all copies claim to be "current" (same
+        object identity is impossible since they differ), prefer the non-unique
+        one to match the new schema intent.
+        """
+        table = ChatSummary.__table__
+        # Group every index on the table by name.
+        by_name: dict[str, list[Any]] = {}
+        for idx in list(table.indexes):
+            name = getattr(idx, "name", None)
+            if name:
+                by_name.setdefault(name, []).append(idx)
+
+        # Also scan the shared metadata table in case extend_existing attached
+        # stale indexes that are not in ChatSummary.__table__.indexes.
+        metadata_table = owui_Base.metadata.tables.get("chat_summary")
+        if metadata_table is not None and metadata_table is not table:
+            for idx in list(metadata_table.indexes):
+                name = getattr(idx, "name", None)
+                if name:
+                    bucket = by_name.setdefault(name, [])
+                    if idx not in bucket:
+                        bucket.append(idx)
+
+        stale_indexes: list[tuple[str, Any]] = []
+        for name, bucket in by_name.items():
+            if len(bucket) <= 1:
+                continue
+            # Prefer the non-unique copy: the current schema declares
+            # chat_id/covered_refs_hash/branch_tip_id as plain index=True and
+            # only the explicit dedup index is unique.  A stale unique copy on
+            # a name that should now be non-unique is the legacy leftover.
+            non_unique = [i for i in bucket if not getattr(i, "unique", False)]
+            unique = [i for i in bucket if getattr(i, "unique", False)]
+            # When we have both unique and non-unique copies of the same name,
+            # keep one non-unique (current) and drop the rest.
+            if non_unique and unique:
+                keep = non_unique[0]
+                drop = [i for i in bucket if i is not keep]
+            else:
+                # All copies share uniqueness flag — drop all but the first.
+                keep = bucket[0]
+                drop = [i for i in bucket if i is not keep]
+            for idx in drop:
+                stale_indexes.append((name, idx))
+
+        if not stale_indexes:
+            return
+
+        for name, idx in stale_indexes:
+            try:
+                table.indexes.discard(idx)
+            except Exception as exc:
+                logger.warning(
+                    f"[Database] ⚠️ Could not detach stale metadata index {name}: {exc}"
+                )
+            if metadata_table is not None:
+                try:
+                    metadata_table.indexes.discard(idx)
+                except Exception:
+                    pass
+        logger.info(
+            f"[Database] Detached stale chat_summary metadata indexes: "
+            f"{[name for name, _ in stale_indexes]}"
+        )
+
     def _deduplicate_chat_summary_rows(self) -> int:
         target_table = ChatSummary.__table__
         deleted_count = 0
@@ -3239,6 +3579,12 @@ class Filter:
                 if schema_is_branch_aware is None:
                     return
                 if not schema_is_branch_aware:
+                    # PostgreSQL may leave behind indexes that share the name
+                    # SQLAlchemy will reuse for the new table (e.g. the legacy
+                    # unique index ix_chat_summary_chat_id).  Drop them first so
+                    # CREATE TABLE / CREATE INDEX does not collide with
+                    # "relation ... already exists" (DuplicateTable).
+                    self._drop_legacy_chat_summary_indexes()
                     ChatSummary.__table__.drop(bind=self._db_engine, checkfirst=True)
                     has_summary_table = False
                     logger.info(
@@ -3246,6 +3592,11 @@ class Filter:
                     )
 
             if not has_summary_table:
+                # Clear stale index definitions from the shared declarative
+                # metadata before CREATE TABLE — otherwise SQLAlchemy may emit
+                # two CREATE INDEX statements that share a name (legacy unique
+                # vs. new non-unique) and abort the whole CREATE TABLE.
+                self._dedup_chat_summary_metadata_indexes()
                 # Create the chat_summary table if it doesn't exist
                 ChatSummary.__table__.create(bind=self._db_engine, checkfirst=True)
                 logger.info(
@@ -3268,7 +3619,12 @@ class Filter:
             self._summary_db_available = True
 
         except Exception as e:
-            logger.error(f"[Database] ❌ Initialization failed: {str(e)}")
+            logger.error(
+                f"[Database] ❌ Initialization failed: {str(e)}\n"
+                f"[Database] ❌ Exception type: {type(e).__name__}\n"
+                f"[Database] ❌ Traceback:",
+                exc_info=True,
+            )
 
     class Valves(BaseModel):
         priority: int = Field(
@@ -4182,6 +4538,7 @@ class Filter:
         live_message_refs_by_id: Optional[Dict[str, Dict[str, str]]] = None,
         max_coverage_count: Optional[int] = None,
         enforce_keep_first: bool = True,
+        anchor_message_id: Optional[str] = None,
     ) -> Optional[ChatSummary]:
         snapshots = await self._load_summary_snapshots(chat_id)
         if not snapshots:
@@ -4202,7 +4559,9 @@ class Filter:
         if require_full_coverage or self._current_branch_refs(messages) is not None:
             return None
 
-        db_messages = await self._load_full_chat_messages(chat_id)
+        db_messages = await self._load_full_chat_messages(
+            chat_id, anchor_message_id=anchor_message_id
+        )
         (
             compatible_db_messages,
             db_to_body_boundaries,
@@ -5425,10 +5784,77 @@ class Filter:
         # Load only branch-valid summary rows. Legacy count-only chat_summary
         # rows are rebuilt during database initialization and are never trusted
         # as coverage proof.
+        #
+        # OpenWebUI builds the inlet body by walking the parentId chain from
+        # ``metadata['user_message_id']`` (load_messages_from_db).  Pass it as
+        # the DB walk anchor so our reconstruction follows the SAME branch the
+        # body came from — ``history['currentId']`` can point at a different
+        # (regenerated/edited) branch and cause a mid-chain role divergence.
+        inlet_user_message_id = (
+            __metadata__.get("user_message_id")
+            if isinstance(__metadata__, dict)
+            else None
+        )
+        # Diagnostic: show which anchor the DB walk will use, and whether it
+        # diverges from history.currentId.  When these differ, the filter is
+        # relying on the v1.7.3 branch-divergence fix to walk the SAME branch
+        # the body came from.  If currentId fallback is used instead (anchor
+        # missing), branch mismatches can silently reject the summary.
+        await self._log(
+            f"[Inlet] 📍 DB walk anchor: user_message_id={inlet_user_message_id!r}",
+            event_call=__event_call__,
+        )
         summary_snapshot = await self._load_applicable_summary_snapshot(
             chat_id,
             messages,
+            anchor_message_id=inlet_user_message_id,
         )
+
+        # Diagnostic: emit the actual DB walk result — which anchor was used
+        # (user_message_id vs currentId fallback) and whether the anchor is on
+        # the same branch as currentId.  "TRUE DIVERGENCE" means the
+        # user_message_id is NOT an ancestor of currentId, so the body and DB
+        # walk are on different branches — the v1.7.3 fix is actively steering
+        # the DB walk onto the body's branch.  If a "same branch" result is
+        # shown, the fix and the legacy currentId walk would produce the same
+        # branch (the fix is a no-op for this request).
+        if self._last_db_walk_anchor is not None:
+            anc = self._last_db_walk_anchor
+            diverged_marker = (
+                " ⚠️ TRUE DIVERGENCE (anchor not on currentId branch)"
+                if anc.get("diverged")
+                else " (same branch as currentId)"
+            )
+            await self._log(
+                f"[Inlet] 🧭 DB walk used {anc.get('source')}: "
+                f"anchor={anc.get('anchor')!r} currentId={anc.get('currentId')!r}"
+                f"{diverged_marker}",
+                event_call=__event_call__,
+            )
+            self._last_db_walk_anchor = None
+
+        # Diagnostic: show whether a branch-valid summary was found.  When
+        # this is None despite a summary existing in the DB, the branch-validity
+        # check rejected it — look for the Path 3 rejection log below to see why.
+        await self._log(
+            f"[Inlet] 📦 Summary snapshot: {'FOUND (will inject)' if summary_snapshot else 'NONE (full context sent)'}",
+            event_call=__event_call__,
+        )
+
+        # Diagnostic: if Path 3 (position-based fallback) rejected the body,
+        # surface the exact mismatch index/reason in the browser console so
+        # users can see WHY the summary was dropped without digging through
+        # backend logs.  This is the key signal for branch-divergence bugs:
+        # a "role mismatch" at equal length means the DB walk and body walk
+        # are on different branches.
+        if self._last_path3_rejection is not None:
+            rej_index, rej_reason = self._last_path3_rejection
+            await self._log(
+                f"[Inlet] ⚠️ Path 3 rejected at index={rej_index}: {rej_reason}",
+                log_type="warning",
+                event_call=__event_call__,
+            )
+            self._last_path3_rejection = None
 
         # Calculate effective_keep_first to ensure all system messages are protected
         effective_keep_first = self._get_effective_keep_first(messages)
@@ -6017,6 +6443,26 @@ class Filter:
                 if len(summary_messages) != len(messages)
                 else "outlet-body"
             )
+
+        # When the body lacks per-message ids (the common case for plain chat,
+        # where OpenWebUI does not put message node ids into the request body),
+        # _save_summary cannot build branch refs and fails closed.  Fall back to
+        # the DB active branch, which carries ids, when the unfolded body shape
+        # matches the persisted branch.  This mirrors the idless reuse path in
+        # _load_applicable_summary_snapshot so plain-chat summaries persist.
+        if self._current_branch_refs(summary_messages) is None and chat_id:
+            db_messages_fallback = await self._load_full_chat_messages(chat_id)
+            (
+                compatible_db_messages,
+                _db_to_body_boundaries,
+                _ignored_terminal_assistant,
+            ) = self._compatible_db_branch_for_body_ref_fallback(
+                summary_messages,
+                db_messages_fallback,
+            )
+            if compatible_db_messages is not None:
+                summary_messages = compatible_db_messages
+                message_source = f"{message_source}+db-refs"
 
         restored_count_before = len(summary_messages)
         summary_messages = self._restore_pending_inlet_messages(
@@ -6758,6 +7204,12 @@ class Filter:
                     log_type="warning",
                     event_call=__event_call__,
                 )
+                await self._emit_summary_terminal_status(
+                    __event_emitter__,
+                    lang,
+                    "summary generated but was not persisted",
+                )
+                return
 
             source_refs = self._current_branch_refs(messages) or []
             source_current_id = source_refs[-1]["id"] if source_refs else None
