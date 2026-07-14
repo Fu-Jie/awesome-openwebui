@@ -3,7 +3,7 @@ title: Flash Card
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.2.4
+version: 0.2.5
 openwebui_id: 65a2ea8f-2a13-4587-9d76-55eea0035cc8
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwb2x5Z29uIHBvaW50cz0iMTIgMiAyIDcgMTIgMTIgMjIgNyAxMiAyIi8+PHBvbHlsaW5lIHBvaW50cz0iMiAxNyAxMiAyMiAyMiAxNyIvPjxwb2x5bGluZSBwb2ludHM9IjIgMTIgMTIgMTcgMjIgMTIiLz48L3N2Zz4=
 description: Quickly generates beautiful flashcards from text, extracting key points and categories.
@@ -16,6 +16,18 @@ import logging
 import re
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.models.users import Users
+import asyncio
+from inspect import iscoroutinefunction
+
+
+async def _call_db(method, *args, **kwargs):
+    if iscoroutinefunction(method):
+        return await method(*args, **kwargs)
+    res = method(*args, **kwargs)
+    if asyncio.iscoroutine(res):
+        return await res
+    return res
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -223,7 +235,7 @@ class Action:
 
             user_ctx = self._get_user_context(__user__)
             user_id = user_ctx["user_id"]
-            user_obj = Users.get_user_by_id(user_id)
+            user_obj = await _call_db(Users.get_user_by_id, user_id)
 
             target_model = (
                 self.valves.MODEL_ID if self.valves.MODEL_ID else body.get("model")

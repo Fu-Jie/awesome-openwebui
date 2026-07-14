@@ -1,7 +1,7 @@
 # Smart Infographic
 
 <span class="category-badge action">Action</span>
-<span class="version-badge">v1.4.9</span>
+<span class="version-badge">v1.6.3</span>
 
 An AntV Infographic engine powered plugin that transforms long text into professional, beautiful infographics with a single click.
 

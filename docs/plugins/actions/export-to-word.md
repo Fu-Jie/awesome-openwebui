@@ -1,7 +1,7 @@
 # Export to Word
 
 <span class="category-badge action">Action</span>
-<span class="version-badge">v0.5.0</span>
+<span class="version-badge">v0.5.3</span>
 
 Export conversation to Word (.docx) with **syntax highlighting**, **native math equations**, **Mermaid diagrams**, **citations**, and **enhanced table formatting**.
 

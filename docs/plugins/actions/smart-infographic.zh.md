@@ -1,7 +1,7 @@
 # Smart Infographic（智能信息图）
 
 <span class="category-badge action">Action</span>
-<span class="version-badge">v1.4.9</span>
+<span class="version-badge">v1.6.3</span>
 
 基于 AntV 信息图引擎，将长文本一键转成专业、美观的信息图。
 

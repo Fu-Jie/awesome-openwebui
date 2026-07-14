@@ -3,7 +3,7 @@ title: Export to Excel
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.3.10
+version: 0.3.11
 required_open_webui_version: 0.10.2
 openwebui_id: 244b8f9d-7459-47d6-84d3-c7ae8e3ec710
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0xNSAySDZhMiAyIDAgMCAwLTIgMnYxNmEyIDIgMCAwIDAgMiAyaDEyYTIgMiAwIDAgMCAyLTJWN1oiLz48cGF0aCBkPSJNMTQgMnY0YTIgMiAwIDAgMCAyIDJoNCIvPjxwYXRoIGQ9Ik04IDEzaDIiLz48cGF0aCBkPSJNMTQgMTNoMiIvPjxwYXRoIGQ9Ik04IDE3aDIiLz48cGF0aCBkPSJNMTQgMTdoMiIvPjwvc3ZnPg==
@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from typing import Optional, Callable, Awaitable, Any, List, Dict
 import datetime
 import asyncio
+from inspect import iscoroutinefunction
 from open_webui.models.chats import Chats
 from open_webui.models.chat_messages import ChatMessages
 from open_webui.models.users import Users
@@ -43,10 +44,12 @@ def _owui_version_ge(threshold: str) -> bool:
 
 
 async def _call_db(method, *args, **kwargs):
-    if _owui_version_ge("0.9.0"):
+    if iscoroutinefunction(method):
         return await method(*args, **kwargs)
-    else:
-        return method(*args, **kwargs)
+    res = method(*args, **kwargs)
+    if asyncio.iscoroutine(res):
+        return await res
+    return res
 
 
 app = FastAPI()

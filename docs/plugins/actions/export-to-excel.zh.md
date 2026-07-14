@@ -1,10 +1,14 @@
 # Export to Excel（导出到 Excel）
 
 <span class="category-badge action">Action</span>
-<span class="version-badge">v0.3.9</span>
+<span class="version-badge">v0.3.11</span>
 
 将聊天记录导出为 Excel 表格，便于分析、归档和分享。
 
+
+### v0.3.11 最新更新
+
+- **OpenWebUI >= 0.9.0 / v0.10.1 上的异步 DB 兼容性**：`_call_db` 现在用 `iscoroutinefunction` + `asyncio.iscoroutine` 检测 DB 方法是否为异步，不再依赖 `_owui_version_ge("0.9.0")`。在隔离的插件沙箱里版本导入有时会回退到 `"0.0.0"`，此前会导致异步 DB 方法被同步调用。本版本解决 `RuntimeWarning: coroutine '_call_db' was never awaited` 和 `AttributeError: 'coroutine' object has no attribute 'params'/'email'`。OpenWebUI < 0.9.0 上行为不变。
 
 ### v0.3.9 更新内容
 - 📏 **可配置行高**：新增 `ROW_HEIGHT` 配置项，可控制数据行高度。设为 `0`（默认）根据内容自动调整，或设置固定值（如 `20`）以获得紧凑的单行显示。
