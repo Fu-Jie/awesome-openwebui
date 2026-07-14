@@ -1,6 +1,6 @@
 # Async Context Compression Filter
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.2 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v1.7.4 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -20,6 +20,19 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
+
+## What's new in 1.7.4
+
+- **Async DB compatibility on OpenWebUI >= 0.9.0 / v0.10.1**: `_call_db` and `_call_db_sync` now use `iscoroutinefunction` + `asyncio.iscoroutine` to detect whether a DB method is async, instead of relying on `_owui_version_ge("0.9.0")`. In isolated filter sandboxes the version import can fall back to `"0.0.0"`, which previously caused async DB methods (`Users.get_user_by_id`, `Chats.get_chat_by_id`, `Models.get_model_by_id`) to be called synchronously. This resolves `RuntimeWarning: coroutine '_call_db' was never awaited` and `AttributeError: 'coroutine' object has no attribute 'params' / 'email'`. Behavior on OpenWebUI < 0.9.0 is unchanged. (Thanks to @linbanana for PR #107.)
+
+## What's new in 1.7.3
+
+- **Summary persistence on fresh PostgreSQL**: Fixed `DuplicateTable: relation "ix_chat_summary_chat_id" already exists` and the resulting `⚠️ Summary generated but was not persisted`. The shared SQLAlchemy metadata is now deduplicated before `CREATE TABLE`, and legacy colliding indexes are cleared idempotently.
+- **Outlet summary reuse for idless plain-chat branches**: When the outlet request carries a `chat_id` but no stable message refs, the filter now reads the active DB branch and aligns the body against it so the generated summary can be persisted and reused on subsequent turns.
+- **Reasoning-model inlet reuse (issue #98)**: Reasoning models store folded `<details type="reasoning">` content in the DB, but the request body reconstructed by `process_messages_with_output` strips or re-tags the reasoning, so cached summaries were rejected every turn. A new position-based fallback (Path 3) accepts the snapshot when body and DB branches have equal length and roles / tool_calls / tool_call_id match position-by-position. DB messages with an `output` array are exempted from content comparison; DB messages without `output` still require exact content equality, so edited or tampered bodies are rejected.
+- **Path 3 mixed-id fix**: `process_messages_with_output` only strips `output` (not `id`), so real reasoning-chat bodies are mixed-id — the all-idless guard was removed; Path 3 now accepts real reasoning chats.
+- **Path 3 diagnostic logging**: when Path 3 is eligible but a per-position check fails, `debug_mode` now logs the first failing index and the mismatched field (role / tool_calls / tool_call_id / content), so silent rejections are observable.
+- **End-to-end verification**: A new test module inlines `convert_output_to_messages`, `process_messages_with_output`, and `reconcile_tool_pairs` copied verbatim from the OpenWebUI main branch, and replays OpenAI-compatible / Ollama / llama.cpp / tool-call reasoning chats through the full `inlet()` entry point. The body builder mirrors the real pipeline exactly (genuinely mixed-id), with regression tests covering the mixed-id shape and Path 3 acceptance.
 
 ## What's new in 1.7.2
 
@@ -222,6 +235,6 @@ If this plugin has been useful, a star on [OpenWebUI Extensions](https://github.
 
 ## Changelog
 
-See [`v1.7.2` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.2.md) for the release-specific summary.
+See [`v1.7.4` Release Notes](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.4.md) for the release-specific summary.
 
 See the full history on GitHub: [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)

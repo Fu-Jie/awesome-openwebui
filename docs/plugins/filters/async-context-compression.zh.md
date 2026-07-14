@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.2 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.4 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -22,6 +22,19 @@
 
 > [!IMPORTANT]
 > 如果你已经安装了 OpenWebUI 官方社区里的同名版本，请先删除旧版本，否则重新安装时可能报错。删除后，Batch Install Plugins 后续就可以继续负责更新这个插件。
+
+## 1.7.4 版本更新
+
+- **OpenWebUI >= 0.9.0 / v0.10.1 上的异步 DB 兼容性**：`_call_db` 和 `_call_db_sync` 现在用 `iscoroutinefunction` + `asyncio.iscoroutine` 检测 DB 方法是否为异步，不再依赖 `_owui_version_ge("0.9.0")`。在隔离的 filter 沙箱里版本导入有时会回退到 `"0.0.0"`，此前会导致异步 DB 方法（`Users.get_user_by_id`、`Chats.get_chat_by_id`、`Models.get_model_by_id`）被同步调用。本版本解决 `RuntimeWarning: coroutine '_call_db' was never awaited` 和 `AttributeError: 'coroutine' object has no attribute 'params' / 'email'`。OpenWebUI < 0.9.0 上行为不变。（感谢 @linbanana 在 PR #107 中贡献。）
+
+## 1.7.3 版本更新
+
+- **新 PostgreSQL 上的 summary 持久化**：修复了 `DuplicateTable: relation "ix_chat_summary_chat_id" already exists` 以及随之出现的 `⚠️ Summary generated but was not persisted`。`CREATE TABLE` 之前会先对共享的 SQLAlchemy metadata 做索引去重，并幂等清理撞名的 legacy 索引。
+- **无 id 普通对话分支的 outlet summary 复用**：当 outlet 请求带 `chat_id` 但没有稳定 message refs 时，插件现在会读取数据库里的 active branch 并对齐 body，使生成的 summary 可以持久化并在后续轮次复用。
+- **Reasoning model 的 inlet 复用（issue #98）**：Reasoning model 在数据库里保存带折叠 `<details type="reasoning">` 的 content，但 `process_messages_with_output` 重建请求 body 时会剥离或改写 reasoning，导致缓存的 summary 每轮都被拒绝。新增的 position-based 兜底路径（Path 3）在 body 与 DB 分支长度相同、role / tool_calls / tool_call_id 按位置匹配时接受 snapshot。带 `output` 数组的 DB 消息豁免 content 比对；没有 `output` 的 DB 消息仍要求 content 精确匹配，因此被编辑或篡改的 body 会被拒绝。
+- **Path 3 混合 id 修复**：`process_messages_with_output` 只剥离 `output`（不剥离 `id`），真实 reasoning 对话的 body 是混合 id 的——all-idless 守卫已移除，Path 3 现在能接受真实 reasoning 对话。
+- **Path 3 诊断日志**：当 Path 3 满足条件但某个位置检查失败时，`debug_mode` 现在会记录第一个失败的位置索引和不匹配的字段（role / tool_calls / tool_call_id / content），让静默拒绝变得可见。
+- **端到端验证**：新增测试模块内联了从 OpenWebUI main 分支逐行复制的 `convert_output_to_messages`、`process_messages_with_output` 和 `reconcile_tool_pairs`，并对 OpenAI 兼容 / Ollama / llama.cpp / 带 tool_calls 的 reasoning 对话走完整 `inlet()` 入口进行回放验证。body 构造精确镜像真实管道（真正的混合 id），回归测试覆盖混合 id 形状和 Path 3 接受。
 
 ## 1.7.2 版本更新
 
@@ -257,6 +270,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.7.2` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.2_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.7.4` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.4_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)
