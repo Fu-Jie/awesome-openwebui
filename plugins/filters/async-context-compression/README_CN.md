@@ -1,6 +1,6 @@
 # 异步上下文压缩过滤器
 
-| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.3 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
+| 作者：[Fu-Jie](https://github.com/Fu-Jie) · v1.7.4 | [⭐ 点个 Star 支持项目](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -29,6 +29,10 @@
 - **单表持久化**：分支专属的可复用覆盖范围以多行形式写入 `chat_summary`；不再保留单独的 current pointer 行。插件会保留 branch-valid 历史摘要行，使用户从更早位置分叉时仍能复用当前分支上最接近的祖先摘要。
 - **受保护头部追踪**：摘要行会记录有多少开头消息是在摘要之外按原文保留的。如果当前 `keep_first` 策略已经不再保留这些消息，该摘要行不会作为 branch-valid 覆盖范围复用。
 - **安全升级行为**：没有覆盖范围元数据的 legacy summary 不再被当成可信覆盖。升级后的第一轮对话可能会发送更多原始上下文，直到生成 branch-valid 摘要行。
+
+## 1.7.4 版本更新
+
+- **OpenWebUI >= 0.9.0 / v0.10.1 上的异步 DB 兼容性**：`_call_db` 和 `_call_db_sync` 现在用 `iscoroutinefunction` + `asyncio.iscoroutine` 检测 DB 方法是否为异步，不再依赖 `_owui_version_ge("0.9.0")`。在隔离的 filter 沙箱里版本导入有时会回退到 `"0.0.0"`，此前会导致异步 DB 方法（`Users.get_user_by_id`、`Chats.get_chat_by_id`、`Models.get_model_by_id`）被同步调用。本版本解决 `RuntimeWarning: coroutine '_call_db' was never awaited` 和 `AttributeError: 'coroutine' object has no attribute 'params' / 'email'`。OpenWebUI < 0.9.0 上行为不变。（感谢 @linbanana 在 PR #107 中贡献。）
 
 ## 1.7.3 版本更新
 
@@ -271,6 +275,6 @@ flowchart TD
 
 ## 更新日志
 
-请查看 [`v1.7.3` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.3_CN.md) 获取本次版本的独立发布摘要。
+请查看 [`v1.7.4` 版本发布说明](https://github.com/Fu-Jie/openwebui-extensions/blob/main/plugins/filters/async-context-compression/v1.7.4_CN.md) 获取本次版本的独立发布摘要。
 
 完整历史请查看 GitHub 项目： [OpenWebUI Extensions](https://github.com/Fu-Jie/openwebui-extensions)
