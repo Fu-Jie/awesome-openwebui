@@ -3,7 +3,7 @@ title: Export to Word Enhanced
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.5.2
+version: 0.5.3
 required_open_webui_version: 0.10.2
 openwebui_id: fca6a315-2a45-42cc-8c96-55cbc85f87f2
 icon_url: data:image/svg+xml;base64,PHN2ZwogIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICB3aWR0aD0iMjQiCiAgaGVpZ2h0PSIyNCIKICB2aWV3Qm94PSIwIDAgMjQgMjQiCiAgZmlsbD0ibm9uZSIKICBzdHJva2U9ImN1cnJlbnRDb2xvciIKICBzdHJva2Utd2lkdGg9IjIiCiAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIgogIHN0cm9rZS1saW5lam9pbj0icm91bmQiCj4KICA8cGF0aCBkPSJNNiAyMmEyIDIgMCAwIDEtMi0yVjRhMiAyIDAgMCAxIDItMmg4YTIuNCAyLjQgMCAwIDEgMS43MDQuNzA2bDMuNTg4IDMuNTg4QTIuNCAyLjQgMCAwIDEgMjAgOHYxMmEyIDIgMCAwIDEtMiAyeiIgLz4KICA8cGF0aCBkPSJNMTQgMnY1YTEgMSAwIDAgMCAxIDFoNSIgLz4KICA8cGF0aCBkPSJNMTAgOUg4IiAvPgogIDxwYXRoIGQ9Ik0xNiAxM0g4IiAvPgogIDxwYXRoIGQ9Ik0xNiAxN0g4IiAvPgo8L3N2Zz4K
@@ -20,6 +20,7 @@ import datetime
 import time
 import io
 import asyncio
+from inspect import iscoroutinefunction
 import logging
 import hashlib
 import struct
@@ -97,10 +98,12 @@ def _owui_version_ge(threshold: str) -> bool:
 
 
 async def _call_db(method, *args, **kwargs):
-    if _owui_version_ge("0.9.0"):
+    if iscoroutinefunction(method):
         return await method(*args, **kwargs)
-    else:
-        return method(*args, **kwargs)
+    res = method(*args, **kwargs)
+    if asyncio.iscoroutine(res):
+        return await res
+    return res
 
 
 _AUTO_URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>()]+")

@@ -1,7 +1,7 @@
 # Export to Word（导出为 Word）
 
 <span class="category-badge action">Action</span>
-<span class="version-badge">v0.5.0</span>
+<span class="version-badge">v0.5.3</span>
 
 将当前对话导出为完美格式的 Word 文档，支持**代码语法高亮**、**原生数学公式**、**Mermaid 图表**、**引用资料**以及**增强表格**渲染。
 

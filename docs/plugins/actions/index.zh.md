@@ -23,7 +23,7 @@ Actions 是交互式插件，能够：
 
     智能分析文本并生成交互式、精美的思维导图。
 
-    **版本：** 1.0.2
+    **版本：** 1.0.3
 
     [:octicons-arrow-right-24: 查看文档](smart-mind-map.md)
 
@@ -33,7 +33,7 @@ Actions 是交互式插件，能够：
 
     使用 AntV 可视化引擎，将文本转成专业的信息图。
 
-    **版本：** 1.6.2
+    **版本：** 1.6.3
 
     [:octicons-arrow-right-24: 查看文档](smart-infographic.md)
 
@@ -43,7 +43,7 @@ Actions 是交互式插件，能够：
 
     快速生成精美的学习记忆卡片，非常适合学习和快速记忆。
 
-    **版本：** 0.2.4
+    **版本：** 0.2.5
 
     [:octicons-arrow-right-24: 查看文档](flash-card.md)
 
@@ -53,7 +53,7 @@ Actions 是交互式插件，能够：
 
     将聊天记录导出为 Excel 电子表格，方便分析或归档。
 
-    **版本：** 0.3.9
+    **版本：** 0.3.11
 
     [:octicons-arrow-right-24: 查看文档](export-to-excel.md)
 
@@ -63,7 +63,7 @@ Actions 是交互式插件，能够：
 
     将当前对话导出为完美格式的 Word 文档，支持**代码语法高亮**、**原生数学公式**、**Mermaid 图表**、**引用资料**以及**增强表格**渲染。
 
-    **版本：** 0.5.0
+    **版本：** 0.5.3
 
     [:octicons-arrow-right-24: 查看文档](export-to-word.md)
 

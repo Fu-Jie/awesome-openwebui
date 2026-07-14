@@ -23,7 +23,7 @@ Actions are interactive plugins that:
 
     Intelligently analyzes text content and generates interactive mind maps with beautiful visualizations.
 
-    **Version:** 1.0.2
+    **Version:** 1.0.3
 
     [:octicons-arrow-right-24: Documentation](smart-mind-map.md)
 
@@ -33,7 +33,7 @@ Actions are interactive plugins that:
 
     Transform text into professional infographics using AntV visualization engine with various templates.
 
-    **Version:** 1.6.2
+    **Version:** 1.6.3
 
     [:octicons-arrow-right-24: Documentation](smart-infographic.md)
 
@@ -43,7 +43,7 @@ Actions are interactive plugins that:
 
     Quickly generates beautiful flashcards from text, extracting key points and categories.
 
-    **Version:** 0.2.4
+    **Version:** 0.2.5
 
     [:octicons-arrow-right-24: Documentation](flash-card.md)
 
@@ -53,7 +53,7 @@ Actions are interactive plugins that:
 
     Export chat conversations to Excel spreadsheet format for analysis and archiving.
 
-    **Version:** 0.3.9
+    **Version:** 0.3.11
 
     [:octicons-arrow-right-24: Documentation](export-to-excel.md)
 
@@ -63,7 +63,7 @@ Actions are interactive plugins that:
 
     Export the current conversation to a formatted Word doc with **syntax highlighting**, **native math equations**, **Mermaid diagrams**, **citations**, and **enhanced table formatting**.
 
-    **Version:** 0.5.0
+    **Version:** 0.5.3
 
     [:octicons-arrow-right-24: Documentation](export-to-word.md)
 
