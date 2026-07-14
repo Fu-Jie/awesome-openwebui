@@ -5,7 +5,7 @@ author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
 description: Reduces token consumption in long conversations while maintaining coherence through intelligent summarization and message compression.
-version: 1.7.3
+version: 1.7.4
 openwebui_id: b1655bc8-6de9-4cad-8cb5-a6f7829a02ce
 license: MIT
 
@@ -488,10 +488,12 @@ async def _call_db(method, *args, **kwargs):
     - OpenWebUI >= 0.9.0: DB methods are async, so we await them.
     - OpenWebUI <  0.9.0: DB methods are sync, so we call them directly.
     """
-    if _owui_version_ge("0.9.0"):
+    if iscoroutinefunction(method):
         return await method(*args, **kwargs)
-    else:
-        return method(*args, **kwargs)
+    res = method(*args, **kwargs)
+    if asyncio.iscoroutine(res):
+        return await res
+    return res
 
 
 def _call_db_sync(method, *args, **kwargs):
@@ -500,12 +502,16 @@ def _call_db_sync(method, *args, **kwargs):
     - OpenWebUI <  0.9.0: DB methods are sync, call directly.
     - OpenWebUI >= 0.9.0: DB methods are async, run in a separate thread with its own event loop.
     """
-    if not _owui_version_ge("0.9.0"):
-        return method(*args, **kwargs)
-    import concurrent.futures
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, method(*args, **kwargs)).result()
+    if iscoroutinefunction(method):
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, method(*args, **kwargs)).result()
+    res = method(*args, **kwargs)
+    if asyncio.iscoroutine(res):
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, res).result()
+    return res
 
 
 CHAT_SUMMARY_DEDUP_INDEX_NAME = "ix_chat_summary_chat_id_covered_refs_hash_unique"
