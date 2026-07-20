@@ -15,7 +15,7 @@ Pipes 可以用于：
 
 ## 可用的 Pipe 插件
 
-- [GitHub Copilot SDK](github-copilot-sdk.zh.md) (v0.13.2) - GitHub Copilot SDK 官方集成。具备**工作区安全隔离**、**零配置工具桥接**与**BYOK (自带 Key) 支持**。**v0.13.2 更新：BYOK 模型优先级——当同时配置 BYOK_MODELS 和 BYOK_BASE_URL 时，插件现在优先使用用户显式配置的模型列表**。[[查看深度架构解析](github-copilot-sdk-deep-dive.zh.md) | [**查看 进阶 实战教程**](github-copilot-sdk-tutorial.zh.md) | [**查看详细使用手册**](github-copilot-sdk-usage-guide.zh.md)。
+- [GitHub Copilot SDK](github-copilot-sdk.zh.md) (v0.13.3) - GitHub Copilot SDK 官方集成。具备**工作区安全隔离**、**零配置工具桥接**与**BYOK (自带 Key) 支持**。**v0.13.3 更新：迁移至 github-copilot-sdk 1.0.2 稳定 API——移除已弃用的 SubprocessConfig/SessionConfig 包装器，采用重命名的类型（SessionMode、ModeSetRequest）和方法（get_events、disconnect）**。[[查看深度架构解析](github-copilot-sdk-deep-dive.zh.md) | [**查看 进阶 实战教程**](github-copilot-sdk-tutorial.zh.md) | [**查看详细使用手册**](github-copilot-sdk-usage-guide.zh.md)。
 - **[实战案例：GitHub 100 Star 增长预测](star-prediction-example.zh.md)** - 展示如何使用 GitHub Copilot SDK Pipe 结合 Minimax 2.1 模型，自动编写脚本分析 CSV 数据并生成详细的项目增长报告。
 - **[实战案例：视频高质量 GIF 转换与加速](video-processing-example.zh.md)** - 演示模型如何通过底层 FFmpeg 工具对录屏进行加速、缩放及双阶段色彩优化处理。
 
