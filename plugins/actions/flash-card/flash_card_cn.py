@@ -3,13 +3,15 @@ title: 闪记卡 (Flash Card)
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.2.5
+version: 0.2.6
+required_open_webui_version: 0.11.0
 openwebui_id: 4a31eac3-a3c4-4c30-9ca5-dab36b5fac65
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwb2x5Z29uIHBvaW50cz0iMTIgMiAyIDcgMTIgMTIgMjIgNyAxMiAyIi8+PHBvbHlsaW5lIHBvaW50cz0iMiAxNyAxMiAyMiAyMiAxNyIvPjxwb2x5bGluZSBwb2ludHM9IjIgMTIgMTIgMTcgMjIgMTIiLz48L3N2Zz4=
 description: 快速将文本提炼为精美的学习记忆卡片，支持核心要点提取与分类。
 """
 
 from pydantic import BaseModel, Field
+from fastapi.responses import HTMLResponse
 from typing import Optional, Dict, Any, List
 import json
 import logging
@@ -171,7 +173,7 @@ class Action:
         __user__: Optional[Dict[str, Any]] = None,
         __event_emitter__: Optional[Any] = None,
         __request__: Optional[Any] = None,
-    ) -> Optional[dict]:
+    ) -> Any:
         logger.info(f"Action: {__name__} 触发")
 
         if not __event_emitter__:
@@ -332,9 +334,6 @@ class Action:
                         "", card_content, card_style, "", self.valves.LANGUAGE
                     )
 
-            html_embed_tag = f"```html\n{final_html}\n```"
-            body["messages"][-1]["content"] += f"\n\n{html_embed_tag}"
-
             await self._emit_status(
                 __event_emitter__, "✅ 闪记卡: 生成完成！", done=True
             )
@@ -342,7 +341,14 @@ class Action:
                 __event_emitter__, "⚡ 闪记卡生成成功！", "success"
             )
 
-            return body
+            # OpenWebUI >= 0.11 processes Action results through
+            # process_tool_result(). Only an inline HTMLResponse is emitted as
+            # a Rich UI embed; mutating body["messages"] is not persisted or
+            # rendered by the current Action pipeline.
+            return HTMLResponse(
+                content=final_html,
+                headers={"Content-Disposition": "inline"},
+            )
 
         except Exception as e:
             logger.error(f"Error generating knowledge card: {e}")
