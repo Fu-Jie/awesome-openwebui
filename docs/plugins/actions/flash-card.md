@@ -2,7 +2,7 @@
 
 Generate polished learning flashcards from any text—title, summary, key points, tags, and category—ready for review and sharing.
 
-| By [Fu-Jie](https://github.com/Fu-Jie) · v0.2.5 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
+| By [Fu-Jie](https://github.com/Fu-Jie) · v0.2.6 | [⭐ Star this repo](https://github.com/Fu-Jie/openwebui-extensions) |
 | :--- | ---: |
 
 | ![followers](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_followers.json&label=%F0%9F%91%A5&style=flat) | ![points](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_points.json&label=%E2%AD%90&style=flat) | ![top](https://img.shields.io/badge/%F0%9F%8F%86-Top%20%3C1%25-10b981?style=flat) | ![contributions](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_contributions.json&label=%F0%9F%93%A6&style=flat) | ![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_downloads.json&label=%E2%AC%87%EF%B8%8F&style=flat) | ![saves](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_saves.json&label=%F0%9F%92%BE&style=flat) | ![views](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2FFu-Jie%2Fdb3d95687075a880af6f1fba76d679c6%2Fraw%2Fbadge_views.json&label=%F0%9F%91%81%EF%B8%8F&style=flat) |
@@ -21,15 +21,10 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 > [!IMPORTANT]
 > If the official OpenWebUI Community version is already installed, remove it first. After that, Batch Install Plugins can keep this plugin updated in future runs.
 
-## What's New in v0.2.5
+## What's New in v0.2.6
 
-- **Async DB compatibility on OpenWebUI >= 0.9.0 / v0.10.1**: `Users.get_user_by_id` was previously called without `await`, which returned a coroutine object instead of the user row on OWUI >= 0.9.0, causing `AttributeError: 'coroutine' object has no attribute 'email'`. The call is now wrapped in a new `_call_db` helper that uses `iscoroutinefunction` + `asyncio.iscoroutine` for runtime async detection. Behavior on OpenWebUI < 0.9.0 is unchanged.
-
-## What's New
-
-### v0.2.4
-
-- **Clean Output**: Removed debug messages from output.
+- **OpenWebUI 0.11+ Rich UI compatibility**: Successful generations now return an inline `HTMLResponse`, allowing OpenWebUI to emit the generated card as a Rich UI embed.
+- **Reliable rendering**: Removed the fenced-HTML message mutation that newer OpenWebUI versions no longer persist or render.
 
 ## Key Features 🔑
 
@@ -44,7 +39,7 @@ When the selection dialog opens, search for this plugin, check it, and continue.
 1. **Install**: Add the plugin to your OpenWebUI instance.
 2. **Configure**: Adjust settings in the Valves menu (optional).
 3. **Trigger**: Send text to the chat.
-4. **Result**: Watch status updates; the card HTML is embedded into the latest message.
+4. **Result**: Watch status updates; the generated card is rendered as an inline Rich UI embed.
 
 ## Configuration (Valves) ⚙️
 

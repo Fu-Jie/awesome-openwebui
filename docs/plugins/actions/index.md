@@ -43,7 +43,7 @@ Actions are interactive plugins that:
 
     Quickly generates beautiful flashcards from text, extracting key points and categories.
 
-    **Version:** 0.2.5
+    **Version:** 0.2.6
 
     [:octicons-arrow-right-24: Documentation](flash-card.md)
 
