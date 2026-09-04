@@ -3,7 +3,7 @@ title: OpenWebUI Skills Manager Tool
 author: Fu-Jie
 author_url: https://github.com/Fu-Jie/openwebui-extensions
 funding_url: https://github.com/open-webui
-version: 0.3.3
+version: 0.3.4
 openwebui_id: b4bce8e4-08e7-4f90-bea7-dc31d463a0bb
 requirements:
 description: Standalone OpenWebUI tool for managing native Workspace Skills (list/show/install/create/update/delete) for any model.
@@ -829,11 +829,29 @@ def _require_skills_model():
 
 
 async def _user_skills(user_id: str, access: str = "read") -> List[Any]:
-    """Load user-scoped skills using OpenWebUI Skills model."""
+    """Load user-scoped skills across OpenWebUI Skills API generations."""
+    get_by_user_id = getattr(Skills, "get_skills_by_user_id", None)
+    if get_by_user_id is not None:
+        return await _call_openwebui_compat(
+            get_by_user_id,
+            user_id,
+            access,
+            prefer_thread_for_sync=True,
+        ) or []
+
+    # OpenWebUI >= 0.11.1 moved read-scoped user filtering into get_skills.
+    # Keep the explicit guard so a future caller cannot accidentally turn this
+    # fallback into an unscoped or differently authorized query.
+    if access != "read":
+        raise RuntimeError(f"unsupported_skills_access: {access}")
+
+    get_skills = getattr(Skills, "get_skills", None)
+    if get_skills is None:
+        raise RuntimeError("skills_model_unavailable")
+
     return await _call_openwebui_compat(
-        Skills.get_skills_by_user_id,
-        user_id,
-        access,
+        get_skills,
+        user_id=user_id,
         prefer_thread_for_sync=True,
     ) or []
 

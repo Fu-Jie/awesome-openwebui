@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -15,6 +16,55 @@ openwebui_skills_manager = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = openwebui_skills_manager
 SPEC.loader.exec_module(openwebui_skills_manager)
+
+
+def test_user_skills_supports_legacy_user_scoped_api(monkeypatch):
+    calls = []
+
+    class LegacySkills:
+        async def get_skills_by_user_id(self, user_id, access):
+            calls.append((user_id, access))
+            return ["legacy-skill"]
+
+    monkeypatch.setattr(openwebui_skills_manager, "Skills", LegacySkills())
+
+    result = asyncio.run(openwebui_skills_manager._user_skills("user-1", "read"))
+
+    assert result == ["legacy-skill"]
+    assert calls == [("user-1", "read")]
+
+
+def test_user_skills_supports_get_skills_user_filter(monkeypatch):
+    calls = []
+
+    class CurrentSkills:
+        async def get_skills(self, *, user_id=None):
+            calls.append(user_id)
+            return ["current-skill"]
+
+    monkeypatch.setattr(openwebui_skills_manager, "Skills", CurrentSkills())
+
+    result = asyncio.run(openwebui_skills_manager._user_skills("user-2", "read"))
+
+    assert result == ["current-skill"]
+    assert calls == ["user-2"]
+
+
+def test_user_skills_does_not_use_unscoped_current_api(monkeypatch):
+    class CurrentSkills:
+        async def get_skills(self, *, user_id=None):
+            assert user_id is not None
+            return []
+
+    monkeypatch.setattr(openwebui_skills_manager, "Skills", CurrentSkills())
+
+    with_error = None
+    try:
+        asyncio.run(openwebui_skills_manager._user_skills("user-3", "write"))
+    except RuntimeError as exc:
+        with_error = exc
+
+    assert str(with_error) == "unsupported_skills_access: write"
 
 
 def test_parse_skill_md_meta_supports_folded_multiline_description():
